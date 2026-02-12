@@ -3,6 +3,7 @@
 from collections import defaultdict
 from collections.abc import Iterable
 
+import torch
 from torch import fx
 from torch._inductor.pattern_matcher import (
     CallFunctionVarArgs,
@@ -17,6 +18,7 @@ from vllm.ir.op import IrOp
 from vllm.logger import init_logger
 from vllm.logging_utils import lazy
 
+from ..fx_utils import is_func
 from ..vllm_inductor_pass import VllmInductorPass
 
 logger = init_logger(__name__)
@@ -138,3 +140,35 @@ class VllmIRLoweringPass(VllmInductorPass):
         if failed_nodes or failed_ops:
             logger.warning("Failed to lower vLLM IR ops: %s", ",".join(failed_ops))
             logger.warning("Full node list: %s", failed_nodes)
+
+
+class CloneCleanupPass(VllmInductorPass):
+    """
+    This pass removes clone nodes that are no longer needed after vLLM IR lowering.
+    """
+
+    def __init__(self, vllm_config: VllmConfig) -> None:
+        super().__init__(vllm_config)
+
+    @VllmInductorPass.time_and_log
+    def __call__(self, graph: fx.Graph) -> None:
+        count = 0
+        for node in graph.nodes:
+            if "custom" in node.meta:
+                logger.info(
+                    "Node %s with meta['custom']=%s, users: %s",
+                    node,
+                    node.meta["custom"],
+                    list(node.users),
+                )
+
+            if not is_func(node, torch.ops.aten.clone.default):
+                continue
+
+            logger.info("Node %s is a clone node, removing it", node)
+            continue  # TODO
+            node.replace_all_uses_with(node.args[0])
+            graph.erase_node(node)
+            count += 1
+
+        logger.debug("CloneCleanupPass removed %d clone nodes", count)

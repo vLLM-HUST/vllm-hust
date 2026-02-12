@@ -28,6 +28,9 @@ class VllmIRInplaceRaisingPass(VllmInductorPass):
     The maybe_inplace overloads have the same signature as the default overload
     so the pass simply replaces the called overload.
     That makes the graph properly functional.
+
+    This pass operates pre-AOTAutograd,
+    so it must handle non-normalized and non-functional IR.
     """
 
     def __init__(self, vllm_config: VllmConfig) -> None:
@@ -56,12 +59,40 @@ class VllmIRInplaceRaisingPass(VllmInductorPass):
             # must have maybe_inplace overload and allow_inplace
             assert ir_op.allow_inplace and ir_op.maybe_inplace is not None
 
+            # Check that activation inputs are not used after this op
+            for arg_idx in ir_op.activation_indices:
+                arg = node.args[arg_idx]
+                assert isinstance(arg, fx.Node), "Activation inputs must be fx.Node"
+                for user in arg.users:
+                    if user is not node:
+                        # TODO only check topologically?
+                        logger.warning(
+                            "Node %s (input to %s) has another use", arg, node
+                        )
+                        # TODO raise error, this is undefined behavior, which should not be allowed.
+                        #  Users can just use the default overload if they want to keep activation inputs untouched.
+
+                if arg.op == "placeholder":
+                    # This node represents a graph input, and maybe_inplace might modify it,
+                    # meaning the user does not care about it.
+                    # Mark it dirty so downstream passes know it can be modified without affecting correctness.
+                    # TODO should we store this in node.meta instead?
+                    arg.meta["custom"] = {
+                        "is_consumed": True,
+                        **arg.meta.get("custom", {}),
+                    }
+                    logger.debug(
+                        "vLLM IR op %s has an activation input that is a graph input",
+                        ir_op.name,
+                    )
+
             # Same signature, just replace the overload that's called.
             node.target = ir_op.torch_op
+            node.meta["custom"] = {"maybe_inplace": True, **node.meta.get("custom", {})}
             self.raised_ops[ir_op.name] += 1
 
         count = sum(self.raised_ops.values())
         ops = ",".join(self.raised_ops.keys())
         logger.debug(
-            "VllmIRLoweringPass raised %d vLLM IR nodes for op(s) %s", count, ops
+            "VllmIRInplaceRaisingPass raised %d vLLM IR nodes for op(s) %s", count, ops
         )

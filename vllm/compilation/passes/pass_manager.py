@@ -14,7 +14,7 @@ from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.utils.system_utils import set_env_var
 
-from .ir.lowering_pass import VllmIRLoweringPass
+from .ir.lowering_pass import CloneCleanupPass, VllmIRLoweringPass
 from .vllm_inductor_pass import VllmInductorPass
 
 if rocm_aiter_ops.is_enabled():
@@ -109,6 +109,8 @@ class PostGradPassManager(CustomGraphPass):  # type: ignore[misc]
         # DCE handles mutating ops correctly as well.
         self.ir_lowering(graph)
         VllmInductorPass.dump_prefix += 1
+        self.clone_cleanup(graph)
+        VllmInductorPass.dump_prefix += 1
 
         # clean up after lowering again
         self.post_cleanup(graph)
@@ -161,6 +163,7 @@ class PostGradPassManager(CustomGraphPass):  # type: ignore[misc]
                 self.passes += [QKNormRoPEFusionPass(config)]
 
             self.ir_lowering = VllmIRLoweringPass(config)
+            self.clone_cleanup = CloneCleanupPass(config)
             self.post_cleanup = PostCleanupPass(config)
             self.fix_functionalization = FixFunctionalizationPass(config)
 
@@ -182,6 +185,7 @@ class PostGradPassManager(CustomGraphPass):  # type: ignore[misc]
 
         passes.append(self.post_cleanup.uuid())
         passes.append(self.ir_lowering.uuid())
+        passes.append(self.clone_cleanup.uuid())
         passes.append(self.post_cleanup.uuid())
         passes.append(self.fix_functionalization.uuid())
 

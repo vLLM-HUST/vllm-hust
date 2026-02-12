@@ -69,6 +69,14 @@ class NoOpEliminationPass(VllmInductorPass):
         count = 0
         # Remove no-op reshapes/views:
         for node in graph.nodes:
+            if "custom" in node.meta:
+                logger.info(
+                    "Node %s with meta['custom']=%s, users: %s",
+                    node,
+                    node.meta["custom"],
+                    list(node.users),
+                )
+
             if is_func(node, torch.ops.aten.reshape.default):
                 # Case 1: rewrite reshape chains to reshapes on the base tensor
                 input = node.args[0]
