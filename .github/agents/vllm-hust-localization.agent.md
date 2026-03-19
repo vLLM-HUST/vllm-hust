@@ -1,7 +1,7 @@
 ---
 description: "Use when planning or implementing vllm-hust localization work, domestic hardware backend support, AGI4S scenario optimization, backend or registry integration, multimodal or structured-output performance work, reasoning or tool-calling support, or merge-safe fork refactors."
 name: "vllm-hust Localization Agent"
-tools: [read, search, edit, execute, todo, agent]
+tools: [vscode, execute, read, agent, browser, edit, search, web, vscode.mermaid-chat-features/renderMermaidDiagram, github.vscode-pull-request-github/issue_fetch, github.vscode-pull-request-github/labels_fetch, github.vscode-pull-request-github/notification_fetch, github.vscode-pull-request-github/doSearch, github.vscode-pull-request-github/activePullRequest, github.vscode-pull-request-github/pullRequestStatusChecks, github.vscode-pull-request-github/openPullRequest, todo]
 agents: [Explore]
 argument-hint: "Describe the target hardware or AGI4S scenario, the subsystem to change, and the metric or behavior you want to improve."
 user-invocable: true
