@@ -64,6 +64,83 @@ Install vLLM with `pip` or [from source](https://docs.vllm.ai/en/latest/getting_
 pip install vllm
 ```
 
+### Workspace Ascend Plugin (vllm-ascend)
+
+For this multi-root workspace, you can install local `vllm-ascend` as a
+platform plugin for `vllm-hust` with:
+
+```bash
+cd /home/shuhao/vllm-hust
+bash scripts/install_local_ascend_plugin.sh
+```
+
+If your `vllm-ascend` repo is in a different location:
+
+```bash
+bash scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend
+```
+
+This script installs `vllm-ascend` in editable mode and verifies that entry
+points under `vllm.platform_plugins` are discoverable.
+It defaults to lightweight mode (`COMPILE_CUSTOM_KERNELS=0`, `--no-deps`) so
+you can wire the plugin in workspace even when Ascend custom-op toolchain is
+not fully configured.
+
+### Avoid Mixed Ascend Runtime (Recommended)
+
+To avoid mixing multiple CANN/Ascend toolkit trees in one shell session,
+always source a single runtime first:
+
+```bash
+cd /home/shuhao/vllm-hust
+source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
+```
+
+The script now also loads `/usr/local/Ascend/nnal/atb/set_env.sh` to ensure
+ATB operator runtime variables are configured. If this file is missing, install
+NNAL/ATB package first.
+
+Then run the benchmark through the wrapper (it sources the same environment
+script internally):
+
+```bash
+bash scripts/run_ascend_latency_bench.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
+```
+
+If you omit the path, scripts use a default toolkit root suitable for this
+workspace.
+
+### One-Click Ascend Bootstrap
+
+To make local Ascend deployment closer to a one-command flow, use:
+
+```bash
+cd /home/shuhao/vllm-hust
+bash scripts/bootstrap_ascend.sh Qwen/Qwen2.5-1.5B-Instruct
+```
+
+This wrapper will:
+
+- call Ascend manager first (local repo if present, otherwise install from PyPI)
+- auto-detect and source a single Ascend runtime
+- run an Ascend environment health check
+- install `vllm-hust` in editable mode
+- install the local `vllm-ascend` plugin
+- prefer a local Hugging Face cache snapshot when available
+- launch the OpenAI-compatible server with the best compatible runtime mode
+
+Manager integration defaults:
+
+- manager repo path: `/home/shuhao/vllm-hust-dev-hub/ascend-runtime-manager`
+- manager PyPI package: `hust-ascend-manager`
+- disable manager: `HUST_DISABLE_ASCEND_MANAGER=1`
+- manager strict mode: `HUST_MANAGER_STRICT=1`
+- manager system install steps: `HUST_MANAGER_APPLY_SYSTEM=1`
+- manager PyPI override: `HUST_ASCEND_MANAGER_PYPI_SPEC='hust-ascend-manager==0.1.0'`
+
+If you need strict `npugraph_ex` validation, set `HUST_REQUIRE_NPUGRAPH=1`
+before running the script.
+
 Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
 
 - [Installation](https://docs.vllm.ai/en/latest/getting_started/installation.html)

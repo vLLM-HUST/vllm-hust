@@ -39,6 +39,7 @@ Documentation="https://docs.vllm.ai/en/latest/"
 Slack="https://slack.vllm.ai/"
 
 [project.scripts]
+vllm = "vllm.entrypoints.cli.main:main"
 vllm-hust = "vllm.entrypoints.cli.main:main"
 
 [project.entry-points."vllm.general_plugins"]

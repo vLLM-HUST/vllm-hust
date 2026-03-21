@@ -13,6 +13,21 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
+def _resolve_cli_version() -> str:
+    for distribution_name in ("vllm", "vllm-hust"):
+        try:
+            return importlib.metadata.version(distribution_name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+
+    try:
+        import vllm
+
+        return getattr(vllm, "__version__", "unknown")
+    except Exception:
+        return "unknown"
+
+
 def main():
     import vllm.entrypoints.cli.benchmark.main
     import vllm.entrypoints.cli.collect_env
@@ -58,7 +73,7 @@ def main():
         "-v",
         "--version",
         action="version",
-        version=importlib.metadata.version("vllm"),
+        version=_resolve_cli_version(),
     )
     subparsers = parser.add_subparsers(required=False, dest="subparser")
     cmds = {}
