@@ -119,15 +119,39 @@ cd /home/shuhao/vllm-hust
 bash scripts/bootstrap_ascend.sh Qwen/Qwen2.5-1.5B-Instruct
 ```
 
-This wrapper will:
+### Separate Local OpenAI Server Command
 
-- call Ascend manager first (local repo if present, otherwise install from PyPI)
-- auto-detect and source a single Ascend runtime
-- run an Ascend environment health check
-- install `vllm-hust` in editable mode
-- install the local `vllm-ascend` plugin
-- prefer a local Hugging Face cache snapshot when available
-- launch the OpenAI-compatible server with the best compatible runtime mode
+If you only want to start the local vllm-hust OpenAI-compatible server on Ascend,
+use the native `vllm-hust serve` command directly instead of going through workstation:
+
+```bash
+cd /home/shuhao/vllm-hust
+source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
+export PYTHONPATH="/usr/local/Ascend/ascend-toolkit.bak.8.1/latest/python/site-packages:${PYTHONPATH:-}"
+vllm-hust serve Qwen/Qwen2.5-1.5B-Instruct \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --enforce-eager \
+  -cc.cudagraph_mode=0 \
+  --enable-auto-tool-choice \
+  --tool-call-parser pythonic \
+  --no-enable-prefix-caching \
+  --no-enable-chunked-prefill
+```
+
+If you are serving a local snapshot, replace the model argument directly:
+
+```bash
+vllm-hust serve /path/to/local/model \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --enforce-eager \
+  -cc.cudagraph_mode=0 \
+  --enable-auto-tool-choice \
+  --tool-call-parser pythonic \
+  --no-enable-prefix-caching \
+  --no-enable-chunked-prefill
+```
 
 Manager integration defaults:
 
