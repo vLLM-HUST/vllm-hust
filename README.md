@@ -124,6 +124,20 @@ bash scripts/bootstrap_ascend.sh Qwen/Qwen2.5-1.5B-Instruct
 If you only want to start the local vllm-hust OpenAI-compatible server on Ascend,
 use the native `vllm-hust serve` command directly instead of going through workstation:
 
+By default, vllm-hust now auto-injects minimal Ascend runtime paths at import
+time (`ASCEND_HOME_PATH`, `LD_LIBRARY_PATH`, `PATH`) so pip-installed users can
+start directly without manually sourcing `set_env.sh` in common single-toolkit
+setups.
+
+If you prefer strict manual environment control, disable this behavior with:
+
+```bash
+export VLLM_ASCEND_AUTO_ENV=0
+```
+
+For multi-toolkit or customized runtime setups, manual sourcing is still
+recommended:
+
 ```bash
 cd /home/shuhao/vllm-hust
 source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
