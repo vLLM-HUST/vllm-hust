@@ -70,14 +70,14 @@ For this multi-root workspace, you can install local `vllm-ascend` as a
 platform plugin for `vllm-hust` with:
 
 ```bash
-cd /home/shuhao/vllm-hust
+cd /home/shuhao/vllm-ascend-hust
 bash scripts/install_local_ascend_plugin.sh
 ```
 
 If your `vllm-ascend` repo is in a different location:
 
 ```bash
-bash scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend
+bash /home/shuhao/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend
 ```
 
 This script installs `vllm-ascend` in editable mode and verifies that entry
@@ -92,7 +92,7 @@ To avoid mixing multiple CANN/Ascend toolkit trees in one shell session,
 always source a single runtime first:
 
 ```bash
-cd /home/shuhao/vllm-hust
+cd /home/shuhao/vllm-ascend-hust
 source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
 ```
 
@@ -104,7 +104,7 @@ Then run the benchmark through the wrapper (it sources the same environment
 script internally):
 
 ```bash
-bash scripts/run_ascend_latency_bench.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
+bash /home/shuhao/vllm-ascend-hust/scripts/run_ascend_latency_bench.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
 ```
 
 If you omit the path, scripts use a default toolkit root suitable for this
@@ -115,7 +115,7 @@ workspace.
 To make local Ascend deployment closer to a one-command flow, use:
 
 ```bash
-cd /home/shuhao/vllm-hust
+cd /home/shuhao/vllm-ascend-hust
 bash scripts/bootstrap_ascend.sh Qwen/Qwen2.5-1.5B-Instruct
 ```
 
@@ -139,7 +139,7 @@ For multi-toolkit or customized runtime setups, manual sourcing is still
 recommended:
 
 ```bash
-cd /home/shuhao/vllm-hust
+cd /home/shuhao/vllm-ascend-hust
 source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
 export PYTHONPATH="/usr/local/Ascend/ascend-toolkit.bak.8.1/latest/python/site-packages:${PYTHONPATH:-}"
 vllm-hust serve Qwen/Qwen2.5-1.5B-Instruct \
