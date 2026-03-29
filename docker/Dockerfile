@@ -23,7 +23,7 @@
 # =============================================================================
 
 ARG CUDA_VERSION=12.9.1
-ARG PYTHON_VERSION=3.12
+ARG PYTHON_VERSION=3.11
 ARG UBUNTU_VERSION=22.04
 
 # By parameterizing the base images, we allow third-party to use their own

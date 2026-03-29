@@ -23,7 +23,7 @@ jobs:
           cache-dependency-glob: |
             requirements/**/*.txt
             pyproject.toml
-          python-version: '3.12'
+          python-version: '3.11'
 
       - name: Create virtual environment
         run: |
