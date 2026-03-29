@@ -4,7 +4,11 @@
 import asyncio
 import dataclasses
 import functools
+import importlib.util
 import os
+import shutil
+import subprocess
+import sys
 from argparse import Namespace
 from http import HTTPStatus
 from logging import Logger
@@ -29,6 +33,9 @@ from vllm.platforms import current_platform
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 logger = init_logger(__name__)
+
+_ASCEND_TORCH_PREFLIGHT_TIMEOUT_S = 20
+_ASCEND_TORCH_PREFLIGHT_CMDS = {"serve", "launch"}
 
 VLLM_SUBCMD_PARSER_EPILOG = (
     "For full list:            vllm {subcmd} --help=all\n"
@@ -169,6 +176,116 @@ def cli_env_setup():
     if "VLLM_WORKER_MULTIPROC_METHOD" not in os.environ:
         logger.debug("Setting VLLM_WORKER_MULTIPROC_METHOD to 'spawn'")
         os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+    _maybe_run_ascend_torch_preflight()
+
+
+def _find_cli_subcommand(argv: list[str] | None = None) -> str | None:
+    argv = argv or sys.argv
+    if len(argv) < 2:
+        return None
+
+    for arg in argv[1:]:
+        if not arg or arg.startswith("-"):
+            continue
+        return arg
+
+    return None
+
+
+def _cli_requests_cpu_backend(argv: list[str] | None = None) -> bool:
+    argv = argv or sys.argv
+    for index, arg in enumerate(argv):
+        if arg in {"--device", "--backend"} and index + 1 < len(argv):
+            if argv[index + 1].strip().lower() == "cpu":
+                return True
+        if arg.startswith("--device=") and arg.split("=", 1)[1].strip().lower() == "cpu":
+            return True
+        if arg.startswith("--backend=") and arg.split("=", 1)[1].strip().lower() == "cpu":
+            return True
+    return False
+
+
+def _has_ascend_runtime_hints() -> bool:
+    if importlib.util.find_spec("torch_npu") is not None:
+        return True
+
+    if os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_TOOLKIT_HOME"):
+        return True
+
+    return shutil.which("npu-smi") is not None
+
+
+def _should_run_ascend_torch_preflight(argv: list[str] | None = None) -> bool:
+    enabled = os.environ.get("VLLM_ASCEND_TORCH_PREFLIGHT", "1").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return False
+
+    subcommand = _find_cli_subcommand(argv)
+    if subcommand not in _ASCEND_TORCH_PREFLIGHT_CMDS:
+        return False
+
+    if _cli_requests_cpu_backend(argv):
+        return False
+
+    return _has_ascend_runtime_hints()
+
+
+def _format_ascend_torch_preflight_failure(result: subprocess.CompletedProcess[str]) -> str:
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    details = "\n".join(part for part in (stdout, stderr) if part)
+    if not details:
+        details = f"preflight exited with code {result.returncode}"
+
+    return (
+        "Ascend torch_npu preflight failed before vLLM engine startup.\n"
+        "The runtime could not complete a basic PyTorch NPU tensor allocation "
+        "(torch.zeros on npu:0), so the failure is below vLLM and usually "
+        "indicates CANN/driver/OPP or torch_npu installation issues.\n"
+        "Fix the PyTorch/NPU runtime first, or bypass this guard with "
+        "VLLM_ASCEND_TORCH_PREFLIGHT=0 if you explicitly want the old behavior.\n"
+        f"\nPreflight output:\n{details}"
+    )
+
+
+def _run_ascend_torch_preflight() -> None:
+    probe = (
+        "import importlib.util, os, sys, traceback\n"
+        "import torch\n"
+        "if importlib.util.find_spec('torch_npu') is None:\n"
+        "    sys.exit(0)\n"
+        "import torch_npu\n"
+        "device = os.environ.get('VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE', 'npu:0')\n"
+        "print(f'preflight device={device}')\n"
+        "print(f'torch_npu import ok={True}')\n"
+        "if not torch.npu.is_available():\n"
+        "    raise RuntimeError('torch.npu.is_available() returned False')\n"
+        "torch.npu.set_device(device)\n"
+        "_ = torch.zeros(1, device=device)\n"
+        "print('torch.zeros preflight ok')\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_ASCEND_TORCH_PREFLIGHT_TIMEOUT_S,
+        check=False,
+        env=os.environ.copy(),
+    )
+    if result.returncode != 0:
+        raise SystemExit(_format_ascend_torch_preflight_failure(result))
+
+
+def _maybe_run_ascend_torch_preflight(argv: list[str] | None = None) -> None:
+    if not _should_run_ascend_torch_preflight(argv):
+        return
+
+    logger.info(
+        "Running Ascend torch_npu preflight before vLLM engine startup"
+    )
+    _run_ascend_torch_preflight()
 
 
 def get_max_tokens(

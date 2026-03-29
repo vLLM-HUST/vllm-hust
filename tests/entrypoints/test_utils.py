@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 
 from vllm.entrypoints.openai.engine.protocol import StreamOptions
 from vllm.entrypoints.utils import (
+    _format_ascend_torch_preflight_failure,
+    _maybe_run_ascend_torch_preflight,
+    _should_run_ascend_torch_preflight,
     get_max_tokens,
     sanitize_message,
     should_include_usage,
@@ -35,6 +41,66 @@ def test_sanitize_message():
 )
 def test_should_include_usage_force_enables_continuous_usage(stream_options, expected):
     assert should_include_usage(stream_options, True) == expected
+
+
+def test_should_run_ascend_torch_preflight_for_serve_on_ascend(monkeypatch):
+    monkeypatch.delenv("VLLM_ASCEND_TORCH_PREFLIGHT", raising=False)
+    monkeypatch.setattr(
+        "vllm.entrypoints.utils._has_ascend_runtime_hints",
+        lambda: True,
+    )
+
+    assert _should_run_ascend_torch_preflight(["vllm-hust", "serve", "foo"])
+
+
+def test_should_skip_ascend_torch_preflight_for_cpu_backend(monkeypatch):
+    monkeypatch.setattr(
+        "vllm.entrypoints.utils._has_ascend_runtime_hints",
+        lambda: True,
+    )
+
+    assert not _should_run_ascend_torch_preflight(
+        ["vllm-hust", "serve", "--backend", "cpu", "foo"]
+    )
+
+
+def test_should_skip_ascend_torch_preflight_when_disabled(monkeypatch):
+    monkeypatch.setenv("VLLM_ASCEND_TORCH_PREFLIGHT", "0")
+    monkeypatch.setattr(
+        "vllm.entrypoints.utils._has_ascend_runtime_hints",
+        lambda: True,
+    )
+
+    assert not _should_run_ascend_torch_preflight(["vllm-hust", "serve", "foo"])
+
+
+def test_format_ascend_torch_preflight_failure_mentions_runtime_layer():
+    result = SimpleNamespace(
+        stdout="torch.npu.set_device ok",
+        stderr="RuntimeError: Parse dynamic kernel config fail",
+        returncode=1,
+    )
+
+    message = _format_ascend_torch_preflight_failure(result)
+
+    assert "before vLLM engine startup" in message
+    assert "below vLLM" in message
+    assert "Parse dynamic kernel config fail" in message
+    assert "VLLM_ASCEND_TORCH_PREFLIGHT=0" in message
+
+
+def test_maybe_run_ascend_torch_preflight_raises_system_exit(monkeypatch):
+    monkeypatch.setattr(
+        "vllm.entrypoints.utils._should_run_ascend_torch_preflight",
+        lambda argv=None: True,
+    )
+    monkeypatch.setattr(
+        "vllm.entrypoints.utils._run_ascend_torch_preflight",
+        lambda: (_ for _ in ()).throw(SystemExit("torch preflight failed")),
+    )
+
+    with pytest.raises(SystemExit, match="torch preflight failed"):
+        _maybe_run_ascend_torch_preflight(["vllm-hust", "serve", "foo"])
 
 
 class TestGetMaxTokens:
