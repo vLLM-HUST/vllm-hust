@@ -5,9 +5,9 @@ import argparse
 import os
 import signal
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, TypeVar
 
-from openai import OpenAI
+from openai import APIConnectionError, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from vllm.entrypoints.cli.types import CLISubcommand
@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 else:
     FlexibleArgumentParser = argparse.ArgumentParser
 
+DEFAULT_OPENAI_API_URL = "http://localhost:8000/v1"
+
+RequestResult = TypeVar("RequestResult")
+
 
 def _register_signal_handlers():
     def signal_handler(sig, frame):
@@ -24,6 +28,77 @@ def _register_signal_handlers():
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTSTP, signal_handler)
+
+
+def _build_api_connection_error_message(
+    args: argparse.Namespace,
+    error: APIConnectionError,
+) -> str:
+    message_lines = [
+        f"Could not connect to the OpenAI-compatible API server at {args.url}.",
+    ]
+
+    if args.url == DEFAULT_OPENAI_API_URL:
+        message_lines.append(
+            "Start a local server first, for example: vllm serve <model>"
+        )
+    else:
+        message_lines.append(
+            "Check that the server is running and that --url points to its /v1 endpoint."
+        )
+
+    if not args.model_name:
+        message_lines.append(
+            "You can also pass --model-name to skip the initial model auto-discovery request."
+        )
+
+    message_lines.append(
+        "If the server is running elsewhere, rerun with --url http://<host>:<port>/v1."
+    )
+
+    error_message = str(error)
+    if error_message and error_message != "Connection error.":
+        message_lines.append(f"Underlying error: {error_message}")
+
+    return "\n".join(message_lines)
+
+
+def _run_openai_request(
+    args: argparse.Namespace,
+    request: Callable[[], RequestResult],
+) -> RequestResult:
+    try:
+        return request()
+    except APIConnectionError as error:
+        raise SystemExit(_build_api_connection_error_message(args, error)) from error
+
+
+def _create_chat_completion_stream(
+    args: argparse.Namespace,
+    client: OpenAI,
+    model_name: str,
+    conversation: list[ChatCompletionMessageParam],
+):
+    return _run_openai_request(
+        args,
+        lambda: client.chat.completions.create(
+            model=model_name,
+            messages=conversation,
+            stream=True,
+        ),
+    )
+
+
+def _create_completion_stream(
+    args: argparse.Namespace,
+    client: OpenAI,
+    prompt: str,
+    **kwargs,
+):
+    return _run_openai_request(
+        args,
+        lambda: client.completions.create(prompt=prompt, **kwargs),
+    )
 
 
 def _interactive_cli(args: argparse.Namespace) -> tuple[str, OpenAI]:
@@ -36,7 +111,7 @@ def _interactive_cli(args: argparse.Namespace) -> tuple[str, OpenAI]:
     if args.model_name:
         model_name = args.model_name
     else:
-        available_models = openai_client.models.list()
+        available_models = _run_openai_request(args, openai_client.models.list)
         model_name = available_models.data[0].id
 
     print(f"Using model: {model_name}")
@@ -79,8 +154,11 @@ def chat(system_prompt: str | None, model_name: str, client: OpenAI) -> None:
             break
         conversation.append({"role": "user", "content": input_message})
 
-        stream = client.chat.completions.create(
-            model=model_name, messages=conversation, stream=True
+        stream = _create_chat_completion_stream(
+            args,
+            client,
+            model_name,
+            conversation,
         )
         output = _print_chat_stream(stream)
         conversation.append({"role": "assistant", "content": output})
@@ -90,7 +168,7 @@ def _add_query_options(parser: FlexibleArgumentParser) -> FlexibleArgumentParser
     parser.add_argument(
         "--url",
         type=str,
-        default="http://localhost:8000/v1",
+        default=DEFAULT_OPENAI_API_URL,
         help="url of the running OpenAI-Compatible RESTful API server",
     )
     parser.add_argument(
@@ -135,8 +213,11 @@ class ChatCommand(CLISubcommand):
         if args.quick:
             conversation.append({"role": "user", "content": args.quick})
 
-            stream = client.chat.completions.create(
-                model=model_name, messages=conversation, stream=True
+            stream = _create_chat_completion_stream(
+                args,
+                client,
+                model_name,
+                conversation,
             )
             output = _print_chat_stream(stream)
             conversation.append({"role": "assistant", "content": output})
@@ -150,8 +231,11 @@ class ChatCommand(CLISubcommand):
                 break
             conversation.append({"role": "user", "content": input_message})
 
-            stream = client.chat.completions.create(
-                model=model_name, messages=conversation, stream=True
+            stream = _create_chat_completion_stream(
+                args,
+                client,
+                model_name,
+                conversation,
             )
             output = _print_chat_stream(stream)
             conversation.append({"role": "assistant", "content": output})
@@ -207,7 +291,7 @@ class CompleteCommand(CLISubcommand):
             kwargs["max_tokens"] = args.max_tokens
 
         if args.quick:
-            stream = client.completions.create(prompt=args.quick, **kwargs)
+            stream = _create_completion_stream(args, client, args.quick, **kwargs)
             _print_completion_stream(stream)
             return
 
@@ -217,7 +301,12 @@ class CompleteCommand(CLISubcommand):
                 input_prompt = input("> ")
             except EOFError:
                 break
-            stream = client.completions.create(prompt=input_prompt, **kwargs)
+            stream = _create_completion_stream(
+                args,
+                client,
+                input_prompt,
+                **kwargs,
+            )
             _print_completion_stream(stream)
 
     @staticmethod
