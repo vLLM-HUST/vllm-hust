@@ -176,6 +176,25 @@ Manager integration defaults:
 - manager system install steps: `HUST_MANAGER_APPLY_SYSTEM=1`
 - manager PyPI override: `HUST_ASCEND_MANAGER_PYPI_SPEC='hust-ascend-manager==0.1.0'`
 
+If the active Python environment cannot import `vllm-hust` cleanly, use
+`ascend-runtime-manager` as the single runtime repair entrypoint instead of
+manually guessing a sequence of `pip install` commands:
+
+```bash
+cd /home/shuhao/vllm-hust-dev-hub/ascend-runtime-manager
+PYTHONPATH=src python -m hust_ascend_manager.cli runtime check --repo /home/shuhao/vllm-hust
+PYTHONPATH=src python -m hust_ascend_manager.cli runtime repair --repo /home/shuhao/vllm-hust
+```
+
+`runtime repair` is responsible for reconciling the Python-side runtime only:
+
+- `torch`, `transformers`, `tokenizers`, `huggingface_hub`
+- `requirements/common.txt` and `requirements/build.txt`
+- local editable rebuild against the currently selected Python / torch env
+
+It does not replace host-level fixes such as drivers, CANN / NNAL / ATB system
+packages, model downloads, or public ingress setup.
+
 If you need strict `npugraph_ex` validation, set `HUST_REQUIRE_NPUGRAPH=1`
 before running the script.
 
