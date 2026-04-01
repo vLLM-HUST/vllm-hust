@@ -154,3 +154,20 @@ class TestResponsesRequestSamplingParams:
         assert "Cannot specify both structured_outputs and text.format" in str(
             exc_info.value
         )
+
+
+class TestStructuredOutputsParams:
+    def test_structural_tag_is_treated_as_constraint(self):
+        structured_outputs = StructuredOutputsParams(
+            structural_tag='{"type": "structural_tag"}'
+        )
+
+        assert not structured_outputs.all_constraints_none()
+        assert structured_outputs.all_non_structural_tag_constraints_none()
+
+    def test_multiple_constraints_still_raise(self):
+        with pytest.raises(ValueError, match="multiple are specified"):
+            StructuredOutputsParams(
+                regex="hello",
+                structural_tag='{"type": "structural_tag"}',
+            )
