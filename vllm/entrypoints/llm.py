@@ -417,6 +417,14 @@ class LLM:
     def get_tokenizer(self) -> TokenizerLike:
         return self.llm_engine.get_tokenizer()
 
+    def shutdown(self, timeout: float | None = None) -> None:
+        if llm_engine := getattr(self, "llm_engine", None):
+            llm_engine.shutdown(timeout=timeout)
+            self.llm_engine = None
+
+    def __del__(self):
+        self.shutdown()
+
     def get_world_size(self, include_dp: bool = True) -> int:
         """Get the world size from the parallel config.
 

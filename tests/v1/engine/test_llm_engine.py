@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import random
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -210,6 +211,51 @@ def test_engine_metrics(vllm_runner, example_prompts):
         assert len(num_accepted_tokens_per_pos) == 1
         assert isinstance(num_accepted_tokens_per_pos[0], Vector)
         assert len(num_accepted_tokens_per_pos[0].values) == 5
+
+
+def test_llm_engine_shutdown_cleans_up_core_and_dp_group(monkeypatch):
+    from vllm.v1.engine.llm_engine import LLMEngine
+
+    destroyed_groups = []
+    monkeypatch.setattr(
+        "vllm.v1.engine.llm_engine.shutdown_prometheus",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "vllm.v1.engine.llm_engine.stateless_destroy_torch_distributed_process_group",
+        lambda group: destroyed_groups.append(group),
+    )
+
+    renderer = SimpleNamespace(shutdown=lambda: destroyed_groups.append("renderer"))
+    engine_core = SimpleNamespace(
+        shutdown=lambda timeout=None: destroyed_groups.append(("engine_core", timeout))
+    )
+
+    engine = object.__new__(LLMEngine)
+    engine.renderer = renderer
+    engine.engine_core = engine_core
+    engine.dp_group = "dp-group"
+    engine.external_launcher_dp = False
+
+    engine.shutdown(timeout=3.0)
+
+    assert engine.renderer is None
+    assert engine.engine_core is None
+    assert engine.dp_group is None
+    assert "renderer" in destroyed_groups
+    assert ("engine_core", 3.0) in destroyed_groups
+    assert "dp-group" in destroyed_groups
+
+
+def test_llm_shutdown_delegates_to_llm_engine():
+    llm = object.__new__(LLM)
+    calls = []
+    llm.llm_engine = SimpleNamespace(shutdown=lambda timeout=None: calls.append(timeout))
+
+    llm.shutdown(timeout=1.5)
+
+    assert calls == [1.5]
+    assert llm.llm_engine is None
 
 
 @pytest.mark.parametrize("model", ["meta-llama/Llama-3.2-1B-Instruct"])
