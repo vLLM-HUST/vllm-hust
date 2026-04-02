@@ -155,6 +155,7 @@ def _maybe_set_ascend_runtime_path() -> None:
         os.path.join(ascend_home, "fwkacllib", "lib64"),
         os.path.join(ascend_home, "atc", "lib64"),
         "/usr/local/Ascend/driver/lib64",
+        "/usr/local/Ascend/driver/lib64/driver",
     ]
     path_candidates = [
         os.path.join(ascend_home, "bin"),

@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.skip_global_cleanup
+
 # Import the functions directly (they're module-level in env_override)
 # We must import them without triggering the module-level side effects,
 # so we import the functions by name after the module is already loaded.

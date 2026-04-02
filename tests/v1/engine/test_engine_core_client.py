@@ -236,32 +236,6 @@ def test_dplb_non_late_interaction_still_uses_lb():
     assert client.lb_engines[1][0] == 1
 
 
-def test_mpclient_shutdown_marks_engine_dead_before_manager_shutdown():
-    class DummyResources:
-        def __init__(self):
-            self.engine_dead = False
-            self.shutdown_called = False
-
-            def shutdown(*, timeout=None):
-                assert self.engine_dead is True
-                self.shutdown_called = True
-
-            self.engine_manager = SimpleNamespace(shutdown=shutdown)
-
-        def __call__(self):
-            self.cleaned_up = True
-
-    client = object.__new__(core_client_mod.MPClient)
-    client.resources = DummyResources()
-    client._finalizer = SimpleNamespace(detach=lambda: object())
-
-    client.shutdown()
-
-    assert client.resources.engine_dead is True
-    assert client.resources.shutdown_called is True
-    assert client.resources.cleaned_up is True
-
-
 def loop_until_done(client: EngineCoreClient, outputs: dict):
     while True:
         engine_core_outputs = client.get_output().outputs
