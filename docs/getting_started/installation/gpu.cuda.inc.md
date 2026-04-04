@@ -93,8 +93,10 @@ If you only need to change Python code, you can build and install vLLM without c
 ```bash
 git clone https://github.com/vllm-project/vllm.git
 cd vllm
-VLLM_USE_PRECOMPILED=1 uv pip install --editable .
+uv pip install --editable .
 ```
+
+This command defaults to the precompiled wheel workflow. Set `VLLM_USE_PRECOMPILED=0` only if you need a local compiled build.
 
 This command will do the following:
 
@@ -110,8 +112,7 @@ This command will do the following:
 In case you see an error about wheel not found when running the above command, it might be because the commit you based on in the main branch was just merged and the wheel is being built. In this case, you can wait for around an hour to try again, or manually assign the previous commit in the installation using the `VLLM_PRECOMPILED_WHEEL_LOCATION` environment variable.
 
 ```bash
-export VLLM_PRECOMPILED_WHEEL_COMMIT=$(git rev-parse HEAD~1) # or earlier commit on main
-export VLLM_USE_PRECOMPILED=1
+export VLLM_PRECOMPILED_WHEEL_COMMIT=22629 22629 22632git rev-parse HEAD~1) # or earlier commit on main
 uv pip install --editable .
 ```
 

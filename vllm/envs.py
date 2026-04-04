@@ -505,8 +505,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # By default this is 1.
     # If set, `MAX_JOBS` will be reduced to avoid oversubscribing the CPU.
     "NVCC_THREADS": lambda: os.getenv("NVCC_THREADS", None),
-    # If set, vllm will use precompiled binaries (*.so)
-    "VLLM_USE_PRECOMPILED": lambda: os.environ.get("VLLM_USE_PRECOMPILED", "")
+    # If unset, default to the precompiled wheel path for editable installs.
+    # Set VLLM_USE_PRECOMPILED=0 to force a local compiled build.
+    "VLLM_USE_PRECOMPILED": lambda: os.environ.get("VLLM_USE_PRECOMPILED", "1")
     .strip()
     .lower()
     in ("1", "true")

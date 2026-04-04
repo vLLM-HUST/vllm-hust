@@ -40,8 +40,10 @@ Then, configure your Python virtual environment.
 If you are only developing vLLM's Python code, install vLLM using:
 
 ```bash
-VLLM_USE_PRECOMPILED=1 uv pip install -e .
+uv pip install -e .
 ```
+
+This path now defaults to the precompiled wheel workflow. Set `VLLM_USE_PRECOMPILED=0` only when you intentionally want a local compiled build.
 
 If you are developing vLLM's Python and CUDA/C++ code, install Pytorch first:
 
