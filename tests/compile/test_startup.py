@@ -76,7 +76,6 @@ def test_moe_startup(monkeypatch, vllm_runner, fresh_vllm_cache, mega_aot_artifa
         "2.10.0"
     )
     if mega_aot_active:
-        
         # MEGA_AOT_ARTIFACT is enabled, so we expect no aot_autograd running on
         # subgraphs.
         assert counters["aot_autograd"]["total"] == 0

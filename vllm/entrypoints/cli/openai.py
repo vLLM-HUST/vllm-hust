@@ -5,7 +5,8 @@ import argparse
 import os
 import signal
 import sys
-from typing import TYPE_CHECKING, Callable, TypeVar
+from collections.abc import Callable
+from typing import TYPE_CHECKING, TypeVar
 
 from openai import APIConnectionError, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -44,12 +45,14 @@ def _build_api_connection_error_message(
         )
     else:
         message_lines.append(
-            "Check that the server is running and that --url points to its /v1 endpoint."
+            "Check that the server is running and that --url points to its "
+            "/v1 endpoint."
         )
 
     if not args.model_name:
         message_lines.append(
-            "You can also pass --model-name to skip the initial model auto-discovery request."
+            "You can also pass --model-name to skip the initial model "
+            "auto-discovery request."
         )
 
     message_lines.append(
@@ -142,6 +145,10 @@ def _print_completion_stream(stream) -> str:
 
 
 def chat(system_prompt: str | None, model_name: str, client: OpenAI) -> None:
+    request_args = argparse.Namespace(
+        url=str(getattr(client, "base_url", DEFAULT_OPENAI_API_URL)),
+        model_name=model_name,
+    )
     conversation: list[ChatCompletionMessageParam] = []
     if system_prompt is not None:
         conversation.append({"role": "system", "content": system_prompt})
@@ -155,7 +162,7 @@ def chat(system_prompt: str | None, model_name: str, client: OpenAI) -> None:
         conversation.append({"role": "user", "content": input_message})
 
         stream = _create_chat_completion_stream(
-            args,
+            request_args,
             client,
             model_name,
             conversation,

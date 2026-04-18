@@ -212,7 +212,11 @@ async def test_resolve_benchmark_base_url_falls_back_to_workstation_gateway(
         fake_get_first_model_from_server,
     )
 
-    base_url, api_url, discovered_model = await benchmark_serve.resolve_benchmark_base_url(
+    (
+        base_url,
+        api_url,
+        discovered_model,
+    ) = await benchmark_serve.resolve_benchmark_base_url(
         args,
         "http://127.0.0.1:8000",
         "http://127.0.0.1:8000/v1/completions",

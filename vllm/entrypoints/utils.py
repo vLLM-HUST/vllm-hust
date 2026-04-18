@@ -196,12 +196,21 @@ def _find_cli_subcommand(argv: list[str] | None = None) -> str | None:
 def _cli_requests_cpu_backend(argv: list[str] | None = None) -> bool:
     argv = argv or sys.argv
     for index, arg in enumerate(argv):
-        if arg in {"--device", "--backend"} and index + 1 < len(argv):
-            if argv[index + 1].strip().lower() == "cpu":
-                return True
-        if arg.startswith("--device=") and arg.split("=", 1)[1].strip().lower() == "cpu":
+        if (
+            arg in {"--device", "--backend"}
+            and index + 1 < len(argv)
+            and argv[index + 1].strip().lower() == "cpu"
+        ):
             return True
-        if arg.startswith("--backend=") and arg.split("=", 1)[1].strip().lower() == "cpu":
+        if (
+            arg.startswith("--device=")
+            and arg.split("=", 1)[1].strip().lower() == "cpu"
+        ):
+            return True
+        if (
+            arg.startswith("--backend=")
+            and arg.split("=", 1)[1].strip().lower() == "cpu"
+        ):
             return True
     return False
 
@@ -231,7 +240,9 @@ def _should_run_ascend_torch_preflight(argv: list[str] | None = None) -> bool:
     return _has_ascend_runtime_hints()
 
 
-def _format_ascend_torch_preflight_failure(result: subprocess.CompletedProcess[str]) -> str:
+def _format_ascend_torch_preflight_failure(
+    result: subprocess.CompletedProcess[str],
+) -> str:
     stdout = (result.stdout or "").strip()
     stderr = (result.stderr or "").strip()
     details = "\n".join(part for part in (stdout, stderr) if part)
@@ -282,9 +293,7 @@ def _maybe_run_ascend_torch_preflight(argv: list[str] | None = None) -> None:
     if not _should_run_ascend_torch_preflight(argv):
         return
 
-    logger.info(
-        "Running Ascend torch_npu preflight before vLLM engine startup"
-    )
+    logger.info("Running Ascend torch_npu preflight before vLLM engine startup")
     _run_ascend_torch_preflight()
 
 

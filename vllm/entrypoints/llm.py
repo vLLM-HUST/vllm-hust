@@ -420,7 +420,7 @@ class LLM:
     def shutdown(self, timeout: float | None = None) -> None:
         if llm_engine := getattr(self, "llm_engine", None):
             llm_engine.shutdown(timeout=timeout)
-            self.llm_engine = None
+            del self.llm_engine
 
     def __del__(self):
         self.shutdown()

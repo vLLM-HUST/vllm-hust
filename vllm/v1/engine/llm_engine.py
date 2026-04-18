@@ -434,7 +434,7 @@ class LLMEngine:
 
         if engine_core := getattr(self, "engine_core", None):
             engine_core.shutdown(timeout=timeout)
-            self.engine_core = None
+            del self.engine_core
 
         dp_group = getattr(self, "dp_group", None)
         if dp_group is not None and not self.external_launcher_dp:

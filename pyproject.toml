@@ -147,6 +147,7 @@ view_seperator = "view_seperator"
 inverse_std_variences = "inverse_std_variences"
 
 [tool.typos.default.extend-words]
+CANN = "CANN"
 iy = "iy"
 indx = "indx"
 # intel cpu features

@@ -41,15 +41,18 @@ class TestAscendRuntimePath:
         monkeypatch.setattr(env_override, "_REEXEC_NEEDED", False)
 
         with (
-            patch("vllm.env_override._detect_ascend_home",
-                  return_value=str(ascend_home)),
+            patch(
+                "vllm.env_override._detect_ascend_home", return_value=str(ascend_home)
+            ),
             patch(
                 "vllm.env_override.os.path.isdir",
-                side_effect=lambda path: path in {
+                side_effect=lambda path: path
+                in {
                     driver_lib64,
                     driver_driver_lib64,
                     driver_tools,
-                } or real_isdir(path),
+                }
+                or real_isdir(path),
             ),
         ):
             env_override._maybe_set_ascend_runtime_path()
@@ -58,5 +61,6 @@ class TestAscendRuntimePath:
         assert driver_lib64 in ld_library_path_parts
         assert driver_driver_lib64 in ld_library_path_parts
         assert ld_library_path_parts.index(driver_lib64) < ld_library_path_parts.index(
-            driver_driver_lib64)
+            driver_driver_lib64
+        )
         assert ld_library_path_parts[-1] == "/usr/lib"

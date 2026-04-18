@@ -30,6 +30,6 @@ def test_structured_output_import_does_not_require_xgrammar(monkeypatch):
         if structured_output_module is not None:
             sys.modules["vllm.v1.structured_output"] = structured_output_module
         if backend_xgrammar_module is not None:
-            sys.modules[
-                "vllm.v1.structured_output.backend_xgrammar"
-            ] = backend_xgrammar_module
+            sys.modules["vllm.v1.structured_output.backend_xgrammar"] = (
+                backend_xgrammar_module
+            )

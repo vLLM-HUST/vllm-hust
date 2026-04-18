@@ -11,15 +11,9 @@ from unittest.mock import patch
 
 import pytest
 
-pytestmark = pytest.mark.skip_global_cleanup
+import vllm.env_override as env_override
 
-# Import the functions directly (they're module-level in env_override)
-# We must import them without triggering the module-level side effects,
-# so we import the functions by name after the module is already loaded.
-from vllm.env_override import (
-    _get_torch_cuda_version,
-    _maybe_set_cuda_compatibility_path,
-)
+pytestmark = pytest.mark.skip_global_cleanup
 
 
 class TestCudaCompatibilityEnvParsing:
@@ -29,7 +23,7 @@ class TestCudaCompatibilityEnvParsing:
         """Compat path is NOT set when env var is absent."""
         monkeypatch.delenv("VLLM_ENABLE_CUDA_COMPATIBILITY", raising=False)
         monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-        _maybe_set_cuda_compatibility_path()
+        env_override._maybe_set_cuda_compatibility_path()
         assert (
             "LD_LIBRARY_PATH" not in os.environ
             or os.environ.get("LD_LIBRARY_PATH", "") == ""
@@ -40,7 +34,7 @@ class TestCudaCompatibilityEnvParsing:
         """Various falsy values should not activate compat path."""
         monkeypatch.setenv("VLLM_ENABLE_CUDA_COMPATIBILITY", value)
         monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-        _maybe_set_cuda_compatibility_path()
+        env_override._maybe_set_cuda_compatibility_path()
         # LD_LIBRARY_PATH should not be set (or remain empty)
         ld_path = os.environ.get("LD_LIBRARY_PATH", "")
         assert "compat" not in ld_path
@@ -53,7 +47,7 @@ class TestCudaCompatibilityEnvParsing:
         monkeypatch.setenv("VLLM_ENABLE_CUDA_COMPATIBILITY", value)
         monkeypatch.setenv("VLLM_CUDA_COMPATIBILITY_PATH", str(compat_dir))
         monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-        _maybe_set_cuda_compatibility_path()
+        env_override._maybe_set_cuda_compatibility_path()
         ld_path = os.environ.get("LD_LIBRARY_PATH", "")
         assert str(compat_dir) in ld_path
 
@@ -68,7 +62,7 @@ class TestCudaCompatibilityPathDetection:
         monkeypatch.setenv("VLLM_ENABLE_CUDA_COMPATIBILITY", "1")
         monkeypatch.setenv("VLLM_CUDA_COMPATIBILITY_PATH", str(custom_dir))
         monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-        _maybe_set_cuda_compatibility_path()
+        env_override._maybe_set_cuda_compatibility_path()
         ld_path = os.environ.get("LD_LIBRARY_PATH", "")
         assert ld_path.startswith(str(custom_dir))
 
@@ -81,7 +75,7 @@ class TestCudaCompatibilityPathDetection:
         monkeypatch.delenv("VLLM_CUDA_COMPATIBILITY_PATH", raising=False)
         monkeypatch.setenv("CONDA_PREFIX", str(conda_dir))
         monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-        _maybe_set_cuda_compatibility_path()
+        env_override._maybe_set_cuda_compatibility_path()
         ld_path = os.environ.get("LD_LIBRARY_PATH", "")
         assert str(compat_dir) in ld_path
 
@@ -92,7 +86,7 @@ class TestCudaCompatibilityPathDetection:
         monkeypatch.delenv("CONDA_PREFIX", raising=False)
         monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
         with patch("vllm.env_override._get_torch_cuda_version", return_value=None):
-            _maybe_set_cuda_compatibility_path()
+            env_override._maybe_set_cuda_compatibility_path()
         assert os.environ.get("LD_LIBRARY_PATH", "") == ""
 
     def test_default_cuda_path_fallback(self, monkeypatch, tmp_path):
@@ -111,7 +105,7 @@ class TestCudaCompatibilityPathDetection:
                 or os.path.isdir(p),
             ),
         ):
-            _maybe_set_cuda_compatibility_path()
+            env_override._maybe_set_cuda_compatibility_path()
         ld_path = os.environ.get("LD_LIBRARY_PATH", "")
         assert "/usr/local/cuda-12.8/compat" in ld_path
 
@@ -126,7 +120,7 @@ class TestCudaCompatibilityLdPathManipulation:
         monkeypatch.setenv("VLLM_ENABLE_CUDA_COMPATIBILITY", "1")
         monkeypatch.setenv("VLLM_CUDA_COMPATIBILITY_PATH", str(compat_dir))
         monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-        _maybe_set_cuda_compatibility_path()
+        env_override._maybe_set_cuda_compatibility_path()
         assert os.environ["LD_LIBRARY_PATH"] == str(compat_dir)
 
     def test_prepends_to_existing_ld_path(self, monkeypatch, tmp_path):
@@ -136,7 +130,7 @@ class TestCudaCompatibilityLdPathManipulation:
         monkeypatch.setenv("VLLM_ENABLE_CUDA_COMPATIBILITY", "1")
         monkeypatch.setenv("VLLM_CUDA_COMPATIBILITY_PATH", str(compat_dir))
         monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib:/other/lib")
-        _maybe_set_cuda_compatibility_path()
+        env_override._maybe_set_cuda_compatibility_path()
         ld_path = os.environ["LD_LIBRARY_PATH"]
         parts = ld_path.split(os.pathsep)
         assert parts[0] == str(compat_dir)
@@ -153,7 +147,7 @@ class TestCudaCompatibilityLdPathManipulation:
             "LD_LIBRARY_PATH",
             f"/usr/lib:{compat_dir}:/other/lib",
         )
-        _maybe_set_cuda_compatibility_path()
+        env_override._maybe_set_cuda_compatibility_path()
         ld_path = os.environ["LD_LIBRARY_PATH"]
         parts = ld_path.split(os.pathsep)
         assert parts[0] == str(compat_dir)
@@ -167,7 +161,7 @@ class TestCudaCompatibilityLdPathManipulation:
         monkeypatch.setenv("VLLM_ENABLE_CUDA_COMPATIBILITY", "1")
         monkeypatch.setenv("VLLM_CUDA_COMPATIBILITY_PATH", str(compat_dir))
         monkeypatch.setenv("LD_LIBRARY_PATH", original)
-        _maybe_set_cuda_compatibility_path()
+        env_override._maybe_set_cuda_compatibility_path()
         assert os.environ["LD_LIBRARY_PATH"] == original
 
 
@@ -176,7 +170,7 @@ class TestGetTorchCudaVersion:
 
     def test_returns_string_when_torch_available(self):
         """Should return a CUDA version string like '12.8'."""
-        version = _get_torch_cuda_version()
+        version = env_override._get_torch_cuda_version()
         # torch is installed in vllm's environment
         assert version is None or isinstance(version, str)
 
@@ -186,4 +180,4 @@ class TestGetTorchCudaVersion:
             "vllm.env_override.importlib.util.find_spec",
             return_value=None,
         ):
-            assert _get_torch_cuda_version() is None
+            assert env_override._get_torch_cuda_version() is None

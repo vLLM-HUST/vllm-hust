@@ -89,8 +89,7 @@ class StructuredOutputsParams:
         Returns True if all structured-output constraint fields are None.
         """
         return all(
-            getattr(self, field_name) is None
-            for field_name in self.CONSTRAINT_FIELDS
+            getattr(self, field_name) is None for field_name in self.CONSTRAINT_FIELDS
         )
 
     def all_non_structural_tag_constraints_none(self) -> bool:

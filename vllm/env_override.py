@@ -95,7 +95,9 @@ def _prepend_env_path(var_name: str, values: list[str]) -> None:
     existing = os.environ.get(var_name, "")
     existing_paths = existing.split(os.pathsep) if existing else []
     norm_value_set = set(norm_values)
-    merged = norm_values + [p for p in existing_paths if os.path.normpath(p) not in norm_value_set]
+    merged = norm_values + [
+        p for p in existing_paths if os.path.normpath(p) not in norm_value_set
+    ]
     # Keep empty path entries unchanged only when they already exist in env.
     if existing and "" in existing_paths:
         merged.append("")
