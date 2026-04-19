@@ -9,6 +9,9 @@ import pytest
 from vllm.envs import get_vllm_port
 
 
+pytestmark = pytest.mark.skip_global_cleanup
+
+
 def test_get_vllm_port_not_set():
     """Test when VLLM_PORT is not set."""
     with patch.dict(os.environ, {}, clear=True):
