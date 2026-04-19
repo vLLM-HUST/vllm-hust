@@ -32,7 +32,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Information Analysis",
 ]
 requires-python = ">=3.10,<3.14"
-dynamic = [ "version", "dependencies", "optional-dependencies"]
+dynamic = [ "version", "dependencies"]
 
 [project.urls]
 Homepage="https://github.com/vllm-project/vllm"
@@ -42,6 +42,37 @@ Slack="https://slack.vllm.ai/"
 [project.scripts]
 vllm = "vllm.entrypoints.cli.main:main"
 vllm-hust = "vllm.entrypoints.cli.main:main"
+
+[project.optional-dependencies]
+zen = ["zentorch"]
+bench = ["pandas", "matplotlib", "seaborn", "datasets", "scipy", "plotly"]
+tensorizer = ["tensorizer==2.10.1"]
+fastsafetensors = ["fastsafetensors >= 0.2.2"]
+instanttensor = ["instanttensor >= 0.1.5"]
+runai = ["runai-model-streamer[s3,gcs,azure] >= 0.15.7"]
+audio = [
+    "av",
+    "resampy",
+    "scipy",
+    "soundfile",
+    "mistral_common[audio]",
+]
+video = []
+flashinfer = []
+petit-kernel = ["petit-kernel"]
+helion = ["helion==0.3.2"]
+grpc = ["smg-grpc-servicer[vllm] >= 0.5.0"]
+otel = [
+    "opentelemetry-sdk>=1.26.0",
+    "opentelemetry-api>=1.26.0",
+    "opentelemetry-exporter-otlp>=1.26.0",
+    "opentelemetry-semantic-conventions-ai>=0.4.1",
+]
+ci-smoke = [
+    "pytest",
+    "pytest-asyncio",
+    "tblib",
+]
 
 [project.entry-points."vllm.general_plugins"]
 lora_filesystem_resolver = "vllm.plugins.lora_resolvers.filesystem_resolver:register_filesystem_resolver"
