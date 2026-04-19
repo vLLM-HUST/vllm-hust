@@ -866,6 +866,49 @@ def get_nvcc_cuda_version() -> Version:
     return nvcc_cuda_version
 
 
+def should_add_runtime_version_suffix() -> bool:
+    """Return whether device-specific local version suffixes should be added.
+
+    Source distributions and metadata-only build steps must keep the canonical
+    SCM version so package filenames and generated metadata stay identical on
+    PyPI. Device-specific local suffixes are only meaningful for binary build
+    outputs such as wheels.
+    """
+
+    metadata_only_commands = {
+        "egg_info",
+        "dist_info",
+        "sdist",
+        "editable_wheel",
+        "prepare_metadata_for_build_wheel",
+        "prepare_metadata_for_build_editable",
+    }
+    return not any(command in metadata_only_commands for command in sys.argv[1:])
+
+
+def should_extract_precompiled_artifacts() -> bool:
+    """Return whether precompiled package artifacts should be materialized.
+
+    Only wheel/build style commands should extract precompiled shared objects
+    into the source tree. Metadata queries and source distributions must leave
+    the tree untouched so they produce clean sdists and do not dirty the repo.
+    """
+
+    binary_build_commands = {
+        "bdist_wheel",
+        "build",
+        "build_ext",
+        "editable_wheel",
+        "install",
+        "develop",
+    }
+    commands = {
+        command for command in sys.argv[1:]
+        if command and not command.startswith("-")
+    }
+    return bool(commands & binary_build_commands)
+
+
 def get_vllm_version() -> str:
     # Allow overriding the version. This is useful to build platform-specific
     # wheels (e.g. CPU, TPU) without modifying the source.
@@ -878,29 +921,38 @@ def get_vllm_version() -> str:
     sep = "+" if "+" not in version else "."  # dev versions might contain +
 
     if _no_device():
-        if envs.VLLM_TARGET_DEVICE == "empty":
+        if envs.VLLM_TARGET_DEVICE == "empty" and should_add_runtime_version_suffix():
             version += f"{sep}empty"
     elif _is_cuda():
-        if envs.VLLM_USE_PRECOMPILED and not envs.VLLM_SKIP_PRECOMPILED_VERSION_SUFFIX:
+        if (
+            envs.VLLM_USE_PRECOMPILED
+            and not envs.VLLM_SKIP_PRECOMPILED_VERSION_SUFFIX
+            and should_add_runtime_version_suffix()
+        ):
             version += f"{sep}precompiled"
         else:
             cuda_version = str(get_nvcc_cuda_version())
-            if cuda_version != envs.VLLM_MAIN_CUDA_VERSION:
+            if (
+                cuda_version != envs.VLLM_MAIN_CUDA_VERSION
+                and should_add_runtime_version_suffix()
+            ):
                 cuda_version_str = cuda_version.replace(".", "")[:3]
-                # skip this for source tarball, required for pypi
-                if "sdist" not in sys.argv:
-                    version += f"{sep}cu{cuda_version_str}"
+                version += f"{sep}cu{cuda_version_str}"
     elif _is_hip():
         # Get the Rocm Version
         rocm_version = get_rocm_version() or torch.version.hip
-        if rocm_version and rocm_version != envs.VLLM_MAIN_CUDA_VERSION:
+        if (
+            rocm_version
+            and rocm_version != envs.VLLM_MAIN_CUDA_VERSION
+            and should_add_runtime_version_suffix()
+        ):
             version += f"{sep}rocm{rocm_version.replace('.', '')[:3]}"
-    elif _is_tpu():
+    elif _is_tpu() and should_add_runtime_version_suffix():
         version += f"{sep}tpu"
     elif _is_cpu():
-        if envs.VLLM_TARGET_DEVICE == "cpu":
+        if envs.VLLM_TARGET_DEVICE == "cpu" and should_add_runtime_version_suffix():
             version += f"{sep}cpu"
-    elif _is_xpu():
+    elif _is_xpu() and should_add_runtime_version_suffix():
         version += f"{sep}xpu"
     else:
         raise RuntimeError("Unknown runtime environment")
@@ -1018,7 +1070,7 @@ package_data = {
 
 
 # If using precompiled, extract and patch package_data (in advance of setup)
-if envs.VLLM_USE_PRECOMPILED:
+if envs.VLLM_USE_PRECOMPILED and should_extract_precompiled_artifacts():
     wheel_url, download_filename = precompiled_wheel_utils.determine_wheel_url()
     patch = precompiled_wheel_utils.extract_precompiled_and_patch_package(
         wheel_url, download_filename
