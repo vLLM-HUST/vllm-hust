@@ -64,9 +64,9 @@ Install vLLM with `pip` or [from source](https://docs.vllm.ai/en/latest/getting_
 pip install vllm
 ```
 
-### Workspace Ascend Plugin (vllm-ascend)
+### Workspace Ascend Plugin (vllm-ascend-hust)
 
-For this multi-root workspace, you can install local `vllm-ascend` as a
+For this multi-root workspace, you can install local `vllm-ascend-hust` as a
 platform plugin for `vllm-hust` with:
 
 ```bash
@@ -74,13 +74,13 @@ cd /home/shuhao/vllm-ascend-hust
 bash scripts/install_local_ascend_plugin.sh
 ```
 
-If your `vllm-ascend` repo is in a different location:
+If your `vllm-ascend-hust` repo is in a different location:
 
 ```bash
-bash /home/shuhao/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend
+bash /home/shuhao/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend-hust
 ```
 
-This script installs `vllm-ascend` in editable mode and verifies that entry
+This script installs `vllm-ascend-hust` in editable mode and verifies that entry
 points under `vllm.platform_plugins` are discoverable.
 It defaults to lightweight mode (`COMPILE_CUSTOM_KERNELS=0`, `--no-deps`) so
 you can wire the plugin in workspace even when Ascend custom-op toolchain is
