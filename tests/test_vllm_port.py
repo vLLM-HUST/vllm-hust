@@ -8,7 +8,6 @@ import pytest
 
 from vllm.envs import get_vllm_port
 
-
 pytestmark = pytest.mark.skip_global_cleanup
 
 

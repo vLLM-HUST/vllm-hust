@@ -71,7 +71,10 @@ jobs:
       run: python -m pip install pre-commit
     - name: Run pre-commit
       env:
-        PRE_COMMIT_HOME: ~/.cache/pre-commit
-        GOCACHE: ~/.cache/go-build
+        PRE_COMMIT_HOME: ${{ runner.temp }}/.cache/pre-commit
+        GOCACHE: ${{ runner.temp }}/.cache/go-build
+        XDG_CACHE_HOME: ${{ runner.temp }}/.cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/.config
+        UV_CACHE_DIR: ${{ runner.temp }}/.cache/uv
         SKIP: actionlint
       run: pre-commit run --all-files --hook-stage manual
