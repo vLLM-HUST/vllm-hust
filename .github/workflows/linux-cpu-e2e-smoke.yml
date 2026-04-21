@@ -1,18 +1,27 @@
-name: macOS Apple Silicon Smoke Test
+name: Linux CPU E2E Smoke Test
 
 on:
-  schedule:
-    # Daily at 2:30 AM UTC
-    - cron: '30 2 * * *'
-  workflow_dispatch:  # Manual trigger
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  macos-m1-smoke-test:
-    runs-on: macos-latest
+  linux-cpu-e2e-smoke:
+    runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      VLLM_TARGET_DEVICE: cpu
+      VLLM_CPU_KVCACHE_SPACE: "8"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "1"
 
     steps:
       - uses: actions/checkout@v6.0.1
@@ -36,8 +45,6 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies and build vLLM
-        env:
-          VLLM_TARGET_DEVICE: cpu
         run: |
           uv pip install -r requirements/cpu.txt --index-strategy unsafe-best-match
           uv pip install -e .
