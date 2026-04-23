@@ -144,7 +144,7 @@ jobs:
           source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
           bash /home/shuhao/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /home/shuhao/vllm-ascend-hust
           python -m pip install -e . --no-build-isolation --no-deps
-          python -m pip install -e "$VLLM_HUST_BENCHMARK_REPO[publish]" jsonschema
+          python -m pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
 
       - name: Verify installation
         run: |
