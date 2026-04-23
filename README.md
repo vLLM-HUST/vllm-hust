@@ -70,14 +70,14 @@ For this multi-root workspace, you can install local `vllm-ascend-hust` as a
 platform plugin for `vllm-hust` with:
 
 ```bash
-cd /home/shuhao/vllm-ascend-hust
+cd /path/to/vllm-ascend-hust
 bash scripts/install_local_ascend_plugin.sh
 ```
 
 If your `vllm-ascend-hust` repo is in a different location:
 
 ```bash
-bash /home/shuhao/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend-hust
+bash /path/to/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend-hust
 ```
 
 This script installs `vllm-ascend-hust` in editable mode and verifies that entry
@@ -92,8 +92,8 @@ To avoid mixing multiple CANN/Ascend toolkit trees in one shell session,
 always source a single runtime first:
 
 ```bash
-cd /home/shuhao/vllm-ascend-hust
-source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
+cd /path/to/vllm-ascend-hust
+source scripts/use_single_ascend_env.sh <ascend-toolkit-root>
 ```
 
 The script now also loads `/usr/local/Ascend/nnal/atb/set_env.sh` to ensure
@@ -104,7 +104,7 @@ Then run the benchmark through the wrapper (it sources the same environment
 script internally):
 
 ```bash
-bash /home/shuhao/vllm-ascend-hust/scripts/run_ascend_latency_bench.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
+bash /path/to/vllm-ascend-hust/scripts/run_ascend_latency_bench.sh <ascend-toolkit-root>
 ```
 
 If you omit the path, scripts use a default toolkit root suitable for this
@@ -115,7 +115,7 @@ workspace.
 To make local Ascend deployment closer to a one-command flow, use:
 
 ```bash
-cd /home/shuhao/vllm-ascend-hust
+cd /path/to/vllm-ascend-hust
 bash scripts/bootstrap_ascend.sh Qwen/Qwen2.5-1.5B-Instruct
 ```
 
@@ -139,9 +139,9 @@ For multi-toolkit or customized runtime setups, manual sourcing is still
 recommended:
 
 ```bash
-cd /home/shuhao/vllm-ascend-hust
-source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit.bak.8.1/latest
-export PYTHONPATH="/usr/local/Ascend/ascend-toolkit.bak.8.1/latest/python/site-packages:${PYTHONPATH:-}"
+cd /path/to/vllm-ascend-hust
+source scripts/use_single_ascend_env.sh <ascend-toolkit-root>
+export PYTHONPATH="<ascend-toolkit-root>/python/site-packages:${PYTHONPATH:-}"
 vllm-hust serve Qwen/Qwen2.5-1.5B-Instruct \
   --host 0.0.0.0 \
   --port 8080 \
@@ -169,7 +169,7 @@ vllm-hust serve /path/to/local/model \
 
 Manager integration defaults:
 
-- manager repo path: `/home/shuhao/vllm-hust-dev-hub/ascend-runtime-manager`
+- manager repo path: `/path/to/vllm-hust-dev-hub/ascend-runtime-manager`
 - manager PyPI package: `hust-ascend-manager`
 - disable manager: `HUST_DISABLE_ASCEND_MANAGER=1`
 - manager strict mode: `HUST_MANAGER_STRICT=1`
@@ -181,9 +181,9 @@ If the active Python environment cannot import `vllm-hust` cleanly, use
 manually guessing a sequence of `pip install` commands:
 
 ```bash
-cd /home/shuhao/vllm-hust-dev-hub/ascend-runtime-manager
-PYTHONPATH=src python -m hust_ascend_manager.cli runtime check --repo /home/shuhao/vllm-hust
-PYTHONPATH=src python -m hust_ascend_manager.cli runtime repair --repo /home/shuhao/vllm-hust
+cd /path/to/vllm-hust-dev-hub/ascend-runtime-manager
+PYTHONPATH=src python -m hust_ascend_manager.cli runtime check --repo /path/to/vllm-hust
+PYTHONPATH=src python -m hust_ascend_manager.cli runtime repair --repo /path/to/vllm-hust
 ```
 
 `runtime repair` is responsible for reconciling the Python-side runtime only:
