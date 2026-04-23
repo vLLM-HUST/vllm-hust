@@ -16,6 +16,8 @@ from ..utils import RemoteOpenAIServer
 
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
 
+pytestmark = pytest.mark.skip_global_cleanup
+
 
 def generate_self_signed_cert(cert_dir: Path) -> tuple[Path, Path]:
     """Generate a self-signed certificate for testing."""
@@ -191,6 +193,7 @@ async def test_resolve_benchmark_base_url_falls_back_to_workstation_gateway(
     monkeypatch.setenv("VLLM_HUST_BASE_URL", "http://127.0.0.1:8080")
 
     args = SimpleNamespace(
+        allow_local_benchmark_fallback=True,
         base_url=None,
         host="127.0.0.1",
         port=8000,
@@ -231,6 +234,34 @@ async def test_resolve_benchmark_base_url_falls_back_to_workstation_gateway(
     )
 
 
+@pytest.mark.asyncio
+async def test_resolve_benchmark_base_url_requires_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("VLLM_HUST_BASE_URL", "http://127.0.0.1:8080")
+
+    args = SimpleNamespace(
+        allow_local_benchmark_fallback=False,
+        base_url=None,
+        host="127.0.0.1",
+        port=8000,
+        endpoint="/v1/completions",
+        backend="openai",
+        insecure=False,
+    )
+
+    base_url, api_url, discovered_model = await benchmark_serve.resolve_benchmark_base_url(
+        args,
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8000/v1/completions",
+        None,
+    )
+
+    assert base_url == "http://127.0.0.1:8000"
+    assert api_url == "http://127.0.0.1:8000/v1/completions"
+    assert discovered_model is None
+
+
 def test_initialize_benchmark_tokenizer_falls_back_to_cached_files(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -269,6 +300,7 @@ def test_resolve_preferred_tokenizer_id_uses_cache_for_local_default_target(
     monkeypatch: pytest.MonkeyPatch,
 ):
     args = SimpleNamespace(
+        allow_local_benchmark_fallback=True,
         tokenizer=None,
         base_url=None,
         host="127.0.0.1",
@@ -290,3 +322,29 @@ def test_resolve_preferred_tokenizer_id_uses_cache_for_local_default_target(
     )
 
     assert tokenizer_id == "/tmp/qwen-tokenizer-snapshot"
+
+
+@pytest.mark.asyncio
+async def test_main_async_rejects_dataset_path_for_builtin_random_dataset():
+    args = SimpleNamespace(
+        seed=0,
+        ramp_up_strategy=None,
+        label=None,
+        base_url="http://127.0.0.1:8000",
+        endpoint="/v1/completions",
+        host="127.0.0.1",
+        port=8000,
+        header=None,
+        allow_local_benchmark_fallback=False,
+        insecure=False,
+        model="Qwen/Qwen2.5-7B-Instruct",
+        served_model_name="Qwen/Qwen2.5-7B-Instruct",
+        skip_tokenizer_init=True,
+        dataset_name="random",
+        dataset_path="/tmp/requests.json",
+        input_len=None,
+        output_len=None,
+    )
+
+    with pytest.raises(ValueError, match="Cannot use 'random' dataset with --dataset-path"):
+        await benchmark_serve.main_async(args)

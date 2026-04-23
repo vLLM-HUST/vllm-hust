@@ -10,6 +10,7 @@ from vllm import envs
 from vllm.plugins import PLATFORM_PLUGINS_GROUP, load_plugins_by_group
 from vllm.utils.import_utils import resolve_obj_by_qualname
 from vllm.utils.torch_utils import supports_xccl
+from vllm.version import __version__ as VLLM_VERSION
 
 from .interface import CpuArchEnum, Platform, PlatformEnum
 
@@ -20,20 +21,7 @@ def vllm_version_matches_substr(substr: str) -> bool:
     """
     Check to see if the vLLM version matches a substring.
     """
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        try:
-            vllm_version = version("vllm")
-        except PackageNotFoundError:
-            vllm_version = version("vllm-hust")
-    except PackageNotFoundError as e:
-        logger.warning(
-            "The vLLM package was not found, so its version could not be "
-            "inspected. This may cause platform detection to fail."
-        )
-        raise e
-    return substr in vllm_version
+    return substr in VLLM_VERSION
 
 
 def tpu_platform_plugin() -> str | None:

@@ -36,6 +36,7 @@ logger = init_logger(__name__)
 
 _ASCEND_TORCH_PREFLIGHT_TIMEOUT_S = 20
 _ASCEND_TORCH_PREFLIGHT_CMDS = {"serve", "launch"}
+_ASCEND_EXPLICIT_BACKENDS = {"ascend", "npu"}
 
 VLLM_SUBCMD_PARSER_EPILOG = (
     "For full list:            vllm {subcmd} --help=all\n"
@@ -193,26 +194,19 @@ def _find_cli_subcommand(argv: list[str] | None = None) -> str | None:
     return None
 
 
-def _cli_requests_cpu_backend(argv: list[str] | None = None) -> bool:
+def _cli_requested_backend(argv: list[str] | None = None) -> str | None:
     argv = argv or sys.argv
     for index, arg in enumerate(argv):
         if (
             arg in {"--device", "--backend"}
             and index + 1 < len(argv)
-            and argv[index + 1].strip().lower() == "cpu"
         ):
-            return True
+            return argv[index + 1].strip().lower()
         if (
-            arg.startswith("--device=")
-            and arg.split("=", 1)[1].strip().lower() == "cpu"
+            arg.startswith("--device=") or arg.startswith("--backend=")
         ):
-            return True
-        if (
-            arg.startswith("--backend=")
-            and arg.split("=", 1)[1].strip().lower() == "cpu"
-        ):
-            return True
-    return False
+            return arg.split("=", 1)[1].strip().lower()
+    return None
 
 
 def _has_ascend_runtime_hints() -> bool:
@@ -234,7 +228,8 @@ def _should_run_ascend_torch_preflight(argv: list[str] | None = None) -> bool:
     if subcommand not in _ASCEND_TORCH_PREFLIGHT_CMDS:
         return False
 
-    if _cli_requests_cpu_backend(argv):
+    requested_backend = _cli_requested_backend(argv)
+    if requested_backend is not None and requested_backend not in _ASCEND_EXPLICIT_BACKENDS:
         return False
 
     return _has_ascend_runtime_hints()

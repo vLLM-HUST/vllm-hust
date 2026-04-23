@@ -64,3 +64,24 @@ class TestAscendRuntimePath:
             driver_driver_lib64
         )
         assert ld_library_path_parts[-1] == "/usr/lib"
+
+
+def test_should_reexec_for_loader_env_only_for_controlled_entrypoints(monkeypatch):
+    monkeypatch.setattr(env_override, "_REEXEC_NEEDED", True)
+    monkeypatch.delenv("_VLLM_INTERNAL_ENV_REEXEC_DONE", raising=False)
+    monkeypatch.delenv("VLLM_ALLOW_ENV_REEXEC", raising=False)
+
+    assert env_override._should_reexec_for_loader_env(["/usr/bin/vllm"])
+    assert env_override._should_reexec_for_loader_env(["/usr/bin/vllm-hust"])
+    assert env_override._should_reexec_for_loader_env(
+        ["/tmp/vllm/entrypoints/cli/main.py"]
+    )
+    assert not env_override._should_reexec_for_loader_env(["pytest"])
+
+
+def test_should_reexec_for_loader_env_honors_explicit_opt_in(monkeypatch):
+    monkeypatch.setattr(env_override, "_REEXEC_NEEDED", True)
+    monkeypatch.delenv("_VLLM_INTERNAL_ENV_REEXEC_DONE", raising=False)
+    monkeypatch.setenv("VLLM_ALLOW_ENV_REEXEC", "1")
+
+    assert env_override._should_reexec_for_loader_env(["python"])

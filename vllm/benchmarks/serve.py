@@ -69,6 +69,18 @@ LOCAL_BENCHMARK_BASE_URL_FALLBACKS = (
 )
 
 
+def _allow_local_benchmark_fallback(args: argparse.Namespace) -> bool:
+    if getattr(args, "allow_local_benchmark_fallback", False):
+        return True
+
+    return os.getenv("VLLM_BENCH_ALLOW_LOCAL_FALLBACK", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 async def get_first_model_from_server(
     base_url: str,
     headers: dict | None = None,
@@ -112,7 +124,8 @@ def get_benchmark_ssl_context(
 
 def should_try_local_benchmark_fallback(args: argparse.Namespace) -> bool:
     return (
-        args.base_url is None
+        _allow_local_benchmark_fallback(args)
+        and args.base_url is None
         and args.host == DEFAULT_BENCHMARK_HOST
         and args.port == DEFAULT_BENCHMARK_PORT
         and args.backend in OPENAI_COMPATIBLE_BACKENDS
@@ -1412,6 +1425,11 @@ def add_cli_args(parser: argparse.ArgumentParser):
         default=None,
         help="Server or API base url if not using http host and port.",
     )
+    parser.add_argument(
+        "--allow-local-benchmark-fallback",
+        action="store_true",
+        help="Allow falling back to VLLM_HUST_BASE_URL or local workstation defaults when the default local benchmark target is unreachable. Disabled by default to avoid silently benchmarking the wrong endpoint.",
+    )
     # Use 127.0.0.1 here instead of localhost to force the use of ipv4
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
@@ -1871,6 +1889,18 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "Please specify '--dataset-name' and the corresponding "
             "'--dataset-path' if required."
+        )
+
+    if (
+        args.dataset_name
+        in ["random", "random-mm", "random-rerank", "prefix_repetition"]
+        and args.dataset_path is not None
+    ):
+        raise ValueError(
+            f"Cannot use '{args.dataset_name}' dataset with --dataset-path. "
+            "Please specify the appropriate --dataset-name (e.g., "
+            "'sharegpt', 'custom', 'sonnet') for your dataset file: "
+            f"{args.dataset_path}"
         )
 
     # Map general --input-len and --output-len to all dataset-specific arguments

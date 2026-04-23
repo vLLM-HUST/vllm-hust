@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import weakref
+from types import SimpleNamespace
 
 import pytest
 
@@ -206,3 +207,44 @@ def test_chat_batch_failure_cleanup(llm_for_failure_test):
     outputs_2 = llm.chat(batch_2, sampling_params=sampling_params)
     assert len(outputs_2) == len(batch_2)
     assert llm.llm_engine.get_num_unfinished_requests() == 0
+
+
+@pytest.mark.skip_global_cleanup
+def test_adjust_params_for_parsing_disables_skip_special_tokens_for_gemma4():
+    llm = LLM.__new__(LLM)
+    llm.model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(architectures=["Gemma4ForCausalLM"])
+    )
+
+    tokenizer = SimpleNamespace(
+        get_vocab=lambda: {
+            "<|channel>": 10,
+            "<channel|>": 11,
+            "<|tool_call>": 12,
+            "<tool_call|>": 13,
+            '<|"|>': 14,
+        },
+        all_special_ids=[10, 11, 12, 13, 14],
+    )
+    llm.renderer = SimpleNamespace(get_tokenizer=lambda: tokenizer)
+
+    sampling_params = SamplingParams(skip_special_tokens=True)
+
+    llm._adjust_params_for_parsing([sampling_params])
+
+    assert sampling_params.skip_special_tokens is False
+
+
+@pytest.mark.skip_global_cleanup
+def test_adjust_params_for_parsing_is_noop_for_non_gemma4():
+    llm = LLM.__new__(LLM)
+    llm.model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(architectures=["Qwen2ForCausalLM"])
+    )
+    llm.renderer = SimpleNamespace(get_tokenizer=lambda: None)
+
+    sampling_params = SamplingParams(skip_special_tokens=True)
+
+    llm._adjust_params_for_parsing([sampling_params])
+
+    assert sampling_params.skip_special_tokens is True

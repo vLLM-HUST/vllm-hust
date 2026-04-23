@@ -5,27 +5,16 @@
 Note that all future modules must be lazily loaded within main
 to avoid certain eager import breakage."""
 
-import importlib.metadata
 import sys
 
 from vllm.logger import init_logger
+from vllm.version import __version__ as VLLM_VERSION
 
 logger = init_logger(__name__)
 
 
 def _resolve_cli_version() -> str:
-    for distribution_name in ("vllm", "vllm-hust"):
-        try:
-            return importlib.metadata.version(distribution_name)
-        except importlib.metadata.PackageNotFoundError:
-            continue
-
-    try:
-        import vllm
-
-        return getattr(vllm, "__version__", "unknown")
-    except Exception:
-        return "unknown"
+    return VLLM_VERSION
 
 
 def main():

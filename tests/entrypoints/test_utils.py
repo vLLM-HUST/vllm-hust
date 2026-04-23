@@ -15,6 +15,8 @@ from vllm.entrypoints.utils import (
     should_include_usage,
 )
 
+pytestmark = pytest.mark.skip_global_cleanup
+
 
 def test_sanitize_message():
     assert (
@@ -60,6 +62,21 @@ def test_should_skip_ascend_torch_preflight_for_cpu_backend(monkeypatch):
 
     assert not _should_run_ascend_torch_preflight(
         ["vllm-hust", "serve", "--backend", "cpu", "foo"]
+    )
+
+
+@pytest.mark.parametrize("explicit_backend", ["cuda", "rocm", "xpu", "tpu"])
+def test_should_skip_ascend_torch_preflight_for_non_ascend_backend(
+    monkeypatch,
+    explicit_backend,
+):
+    monkeypatch.setattr(
+        "vllm.entrypoints.utils._has_ascend_runtime_hints",
+        lambda: True,
+    )
+
+    assert not _should_run_ascend_torch_preflight(
+        ["vllm-hust", "serve", "--device", explicit_backend, "foo"]
     )
 
 

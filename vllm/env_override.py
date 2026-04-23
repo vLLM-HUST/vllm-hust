@@ -179,15 +179,42 @@ def _maybe_reexec_for_loader_env() -> None:
     Re-exec ensures newly injected runtime library paths are effective before
     importing torch and backend extensions.
     """
-    if not _REEXEC_NEEDED:
-        return
-    if os.environ.get("_VLLM_INTERNAL_ENV_REEXEC_DONE", "0") == "1":
-        return
-    if not sys.argv or sys.argv[0] in {"-", "-c"}:
+    if not _should_reexec_for_loader_env():
         return
 
     os.environ["_VLLM_INTERNAL_ENV_REEXEC_DONE"] = "1"
     os.execvpe(sys.executable, [sys.executable, *sys.argv], os.environ)
+
+
+def _should_reexec_for_loader_env(argv: list[str] | None = None) -> bool:
+    if not _REEXEC_NEEDED:
+        return False
+
+    if os.environ.get("_VLLM_INTERNAL_ENV_REEXEC_DONE", "0") == "1":
+        return False
+
+    argv = argv or sys.argv
+    if not argv or argv[0] in {"-", "-c"}:
+        return False
+
+    if os.environ.get("VLLM_ALLOW_ENV_REEXEC", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+
+    argv0 = os.path.normpath(argv[0])
+    if os.path.basename(argv0) in {"vllm", "vllm-hust"}:
+        return True
+
+    return argv0.endswith(
+        (
+            os.path.normpath("vllm/entrypoints/cli/main.py"),
+            os.path.normpath("vllm/entrypoints/openai/api_server.py"),
+        )
+    )
 
 
 _maybe_set_cuda_compatibility_path()

@@ -1,0 +1,67 @@
+name: Linux Ascend Inference Smoke Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  linux-ascend-inference-smoke:
+    runs-on:
+      - self-hosted
+      - linux-aarch64-a2b3-0
+      - docker
+    timeout-minutes: 30
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://hf-mirror.com' }}
+      HF_HOME: ${{ github.workspace }}/../.hf-cache
+      HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/../.hf-cache/hub
+      TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v6.0.1
+
+      - name: Prepare Hugging Face cache directories
+        run: |
+          mkdir -p "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "$TRANSFORMERS_CACHE"
+          chmod 700 "$HF_HOME"
+          echo "HF endpoint: $HF_ENDPOINT"
+          echo "HF home: $HF_HOME"
+          if [[ -n "${HF_TOKEN:-}" ]]; then
+            echo "HF token: configured"
+          else
+            echo "HF token: not configured"
+          fi
+
+      - name: Prepare Ascend runtime and install current checkout
+        run: |
+          source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
+          bash /home/shuhao/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /home/shuhao/vllm-ascend-hust
+          python -m pip install -e . --no-build-isolation --no-deps
+
+      - name: Verify installation
+        run: |
+          source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
+          which python
+          python --version
+          python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+
+      - name: Run real-model serve smoke test
+        env:
+          MODEL_NAME: Qwen/Qwen2.5-0.5B-Instruct
+          DTYPE: bfloat16
+          MAX_MODEL_LEN: "256"
+          MAX_NUM_SEQS: "1"
+        run: |
+          source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
+          bash .github/workflows/scripts/run_e2e_serve_smoke.sh

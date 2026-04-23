@@ -1890,6 +1890,14 @@ class LLM:
         seq_params = self._params_to_seq(params, len(seq_convs))
         seq_lora_requests = self._lora_request_to_seq(lora_request, len(seq_convs))
 
+        # Preserve structured-output delimiter tokens for models that encode
+        # them as special tokens in the offline chat path.
+        needs_parsing = (
+            chat_template_kwargs and chat_template_kwargs.get("enable_thinking")
+        ) or tools
+        if needs_parsing:
+            self._adjust_params_for_parsing(seq_params)
+
         return self._render_and_run_requests(
             prompts=(
                 self._preprocess_chat_one(
@@ -1914,6 +1922,47 @@ class LLM:
             lora_requests=seq_lora_requests,
             use_tqdm=use_tqdm,
         )
+
+    def _adjust_params_for_parsing(
+        self, params: Sequence[SamplingParams | PoolingParams]
+    ) -> None:
+        """Set ``skip_special_tokens=False`` when structured output syntax
+        is encoded as special tokens.
+
+        This is intentionally conservative and only targets Gemma4-style
+        models whose reasoning/tool-call delimiters may be stripped by the
+        default ``skip_special_tokens=True`` behavior in offline chat.
+        """
+        hf_config = getattr(self.model_config, "hf_config", None)
+        architectures = getattr(hf_config, "architectures", [])
+
+        if not any("Gemma4" in arch for arch in architectures):
+            return
+
+        tokenizer = self.renderer.get_tokenizer()
+        vocab = tokenizer.get_vocab()
+        special_ids = set(getattr(tokenizer, "all_special_ids", []))
+        structured_tokens = (
+            "<|channel>",
+            "<channel|>",
+            "<|tool_call>",
+            "<tool_call|>",
+            '<|"|>',
+        )
+        needs_special = any(
+            vocab.get(token) in special_ids
+            for token in structured_tokens
+            if token in vocab
+        )
+        if not needs_special:
+            return
+
+        for sampling_params in params:
+            if (
+                isinstance(sampling_params, SamplingParams)
+                and sampling_params.skip_special_tokens
+            ):
+                sampling_params.skip_special_tokens = False
 
     def _render_and_run_requests(
         self,
