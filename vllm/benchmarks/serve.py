@@ -1428,7 +1428,12 @@ def add_cli_args(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--allow-local-benchmark-fallback",
         action="store_true",
-        help="Allow falling back to VLLM_HUST_BASE_URL or local workstation defaults when the default local benchmark target is unreachable. Disabled by default to avoid silently benchmarking the wrong endpoint.",
+        help=(
+            "Allow falling back to VLLM_HUST_BASE_URL or local workstation "
+            "defaults when the default local benchmark target is unreachable. "
+            "Disabled by default to avoid silently benchmarking the wrong "
+            "endpoint."
+        ),
     )
     # Use 127.0.0.1 here instead of localhost to force the use of ipv4
     parser.add_argument("--host", type=str, default="127.0.0.1")
