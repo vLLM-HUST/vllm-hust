@@ -1,0 +1,292 @@
+name: Ascend Benchmark Leaderboard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      benchmark_scenario:
+        description: Benchmark scenario to run
+        required: false
+        type: choice
+        default: random-online
+        options:
+          - random-online
+          - sharegpt-online
+      publish_to_hf:
+        description: Publish benchmark result to HF and refresh website leaderboard
+        required: false
+        type: boolean
+        default: false
+      model_name:
+        description: Model used for the benchmark run
+        required: false
+        type: string
+        default: Qwen/Qwen2.5-0.5B-Instruct
+      dataset_path:
+        description: Dataset path on the trusted runner for formal workloads such as sharegpt-online
+        required: false
+        type: string
+        default: ""
+      constraints_file:
+        description: Constraints JSON file path on the trusted runner for the selected workload
+        required: false
+        type: string
+        default: ""
+      num_prompts:
+        description: Number of prompts to benchmark
+        required: false
+        type: string
+        default: "8"
+      request_rate:
+        description: Request rate passed to vllm bench serve
+        required: false
+        type: string
+        default: inf
+      max_concurrency:
+        description: Max concurrency passed to vllm bench serve
+        required: false
+        type: string
+        default: "4"
+      input_length:
+        description: Optional logical input length recorded in exported metadata
+        required: false
+        type: string
+        default: ""
+      output_length:
+        description: Optional logical output length recorded in exported metadata
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  fork-pr-security-note:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain fork PR restriction
+        run: |
+          echo "Skipping Ascend benchmark on fork PRs because this workflow requires a self-hosted Ascend runner and trusted execution." >> "$GITHUB_STEP_SUMMARY"
+
+  ascend-benchmark:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on:
+      - self-hosted
+      - linux-aarch64-a2b3-0
+      - docker
+    timeout-minutes: 60
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://hf-mirror.com' }}
+      HF_HOME: ${{ github.workspace }}/../.hf-cache
+      HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/../.hf-cache/hub
+      TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
+      HF_TOKEN: ${{ secrets.DATASET_WRITE_TOKEN }}
+      HF_REPO_ID: intellistream/vllm-hust-benchmark-results
+      MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-0.5B-Instruct' }}
+      BENCH_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online' }}
+      BENCH_DATASET_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_DATASET_PATH) || '' }}
+      BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '' }}
+      MODEL_PARAMETERS: 0.5B
+      MODEL_PRECISION: BF16
+      DTYPE: bfloat16
+      MAX_MODEL_LEN: "256"
+      MAX_NUM_SEQS: "1"
+      BENCH_NUM_PROMPTS: ${{ github.event_name == 'workflow_dispatch' && inputs.num_prompts || '8' }}
+      BENCH_RANDOM_INPUT_LEN: "64"
+      BENCH_RANDOM_OUTPUT_LEN: "16"
+      BENCH_REQUEST_RATE: ${{ github.event_name == 'workflow_dispatch' && inputs.request_rate || 'inf' }}
+      BENCH_MAX_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.max_concurrency || '4' }}
+      BENCH_INPUT_LEN: ${{ github.event_name == 'workflow_dispatch' && inputs.input_length || '' }}
+      BENCH_OUTPUT_LEN: ${{ github.event_name == 'workflow_dispatch' && inputs.output_length || '' }}
+      HARDWARE_VENDOR: Huawei
+      HARDWARE_CHIP_MODEL: Ascend-910B2
+      CHIP_COUNT: "1"
+      NODE_COUNT: "1"
+      ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
+      PUBLISH_TO_HF: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && '1' || '0' }}
+
+    steps:
+      - uses: actions/checkout@v6.0.1
+
+      - name: Checkout benchmark repo
+        uses: actions/checkout@v6.0.1
+        with:
+          repository: vLLM-HUST/vllm-hust-benchmark
+          path: vllm-hust-benchmark
+
+      - name: Checkout website repo
+        uses: actions/checkout@v6.0.1
+        with:
+          repository: vLLM-HUST/vllm-hust-website
+          path: vllm-hust-website
+
+      - name: Prepare Hugging Face cache directories
+        run: |
+          mkdir -p "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "$TRANSFORMERS_CACHE"
+          chmod 700 "$HF_HOME"
+          echo "HF endpoint: $HF_ENDPOINT"
+
+      - name: Prepare Ascend runtime and install repos
+        env:
+          VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
+        run: |
+          source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
+          bash /home/shuhao/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /home/shuhao/vllm-ascend-hust
+          python -m pip install -e . --no-build-isolation --no-deps
+          python -m pip install -e "$VLLM_HUST_BENCHMARK_REPO[publish]" jsonschema
+
+      - name: Verify installation
+        run: |
+          source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
+          python --version
+          python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+
+      - name: Run benchmark CI and optional HF sync
+        env:
+          WORKSPACE_ROOT: ${{ github.workspace }}
+          VLLM_HUST_REPO: ${{ github.workspace }}
+          VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
+          VLLM_HUST_WEBSITE_REPO: ${{ github.workspace }}/vllm-hust-website
+          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+        run: |
+          source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
+          bash .github/workflows/scripts/run_ascend_benchmark_ci.sh
+
+      - name: Build benchmark summary artifacts
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          run_id = f"ci-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}-{os.environ['GITHUB_SHA']}"
+          result_root = Path(os.environ['GITHUB_WORKSPACE']) / '.benchmarks' / 'ci' / run_id
+          raw_result = result_root / 'raw_benchmark.json'
+          leaderboard_entry = result_root / 'submissions' / run_id / 'run_leaderboard.json'
+          summary_path = Path(os.environ['GITHUB_STEP_SUMMARY'])
+          comment_path = result_root / 'benchmark_comment.md'
+          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          bench_scenario = os.environ.get('BENCH_SCENARIO', 'random-online')
+          publish_mode = 'hf-sync' if os.environ.get('PUBLISH_TO_HF') == '1' else 'artifact-preview'
+          model_name = os.environ.get('MODEL_NAME', 'unknown')
+
+          lines = [
+            '## Ascend Benchmark Summary',
+            f'- Run ID: `{run_id}`',
+            f'- Scenario: `{bench_scenario}`',
+            f'- Model: `{model_name}`',
+            f'- Publish mode: `{publish_mode}`',
+            f'- Workflow run: [view run]({run_url})',
+          ]
+          comment_lines = [
+            '<!-- ascend-benchmark-leaderboard-comment -->',
+            '## Ascend Benchmark Result',
+            f'- Scenario: `{bench_scenario}`',
+            f'- Model: `{model_name}`',
+            f'- Publish mode: `{publish_mode}`',
+            f'- Workflow run: [view run]({run_url})',
+          ]
+          if raw_result.is_file():
+            payload = json.loads(raw_result.read_text(encoding='utf-8'))
+            metric_lines = [
+              f"- Request throughput: `{payload.get('request_throughput')}` req/s",
+              f"- Output throughput: `{payload.get('output_throughput')}` tok/s",
+              f"- Mean TTFT: `{payload.get('mean_ttft_ms')}` ms",
+              f"- Failed requests: `{payload.get('failed')}`",
+            ]
+            lines.extend(metric_lines)
+            comment_lines.extend(metric_lines)
+          else:
+            lines.append('- Raw benchmark result: `missing`')
+            comment_lines.append('- Raw benchmark result: `missing`')
+          if leaderboard_entry.is_file():
+            artifact = json.loads(leaderboard_entry.read_text(encoding='utf-8'))
+            lines.append(f"- Leaderboard engine version: `{artifact.get('engine_version')}`")
+            comment_lines.append(f"- Leaderboard engine version: `{artifact.get('engine_version')}`")
+          else:
+            lines.append('- Leaderboard entry: `missing`')
+            comment_lines.append('- Leaderboard entry: `missing`')
+
+          if bench_scenario != 'random-online':
+            dataset_path = os.environ.get('BENCH_DATASET_PATH') or 'unset'
+            constraints_path = os.environ.get('BENCH_CONSTRAINTS_FILE') or 'unset'
+            lines.append(f'- Dataset path: `{dataset_path}`')
+            lines.append(f'- Constraints file: `{constraints_path}`')
+            comment_lines.append(f'- Dataset path: `{dataset_path}`')
+            comment_lines.append(f'- Constraints file: `{constraints_path}`')
+          elif publish_mode == 'artifact-preview':
+            note = '- Note: random-online runs stay as preview artifacts unless random preview publish is explicitly enabled.'
+            lines.append(note)
+            comment_lines.append(note)
+
+          summary_path.write_text("\n".join(lines) + "\n", encoding='utf-8')
+          comment_path.write_text("\n".join(comment_lines) + "\n", encoding='utf-8')
+          PY
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ascend-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/.benchmarks/ci/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Update PR benchmark comment
+        if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const runId = `ci-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}-${process.env.GITHUB_SHA}`;
+            const commentPath = path.join(process.env.GITHUB_WORKSPACE, '.benchmarks', 'ci', runId, 'benchmark_comment.md');
+            const marker = '<!-- ascend-benchmark-leaderboard-comment -->';
+
+            if (!fs.existsSync(commentPath)) {
+              core.info(`Benchmark comment file not found: ${commentPath}`);
+              return;
+            }
+
+            const body = fs.readFileSync(commentPath, 'utf8');
+            const issue_number = context.payload.pull_request.number;
+            const {owner, repo} = context.repo;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => {
+              return comment.user?.type === 'Bot' && comment.body?.includes(marker);
+            });
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`Updated benchmark comment ${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+              core.info('Created benchmark PR comment');
+            }
