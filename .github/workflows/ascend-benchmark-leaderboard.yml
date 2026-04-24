@@ -139,6 +139,9 @@ jobs:
 
       - name: Prepare Ascend runtime and install repos
         env:
+          HOME: /home/shuhao
+          XDG_CACHE_HOME: /home/shuhao/.cache
+          XDG_CONFIG_HOME: /home/shuhao/.config
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
           source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
