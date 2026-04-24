@@ -268,6 +268,24 @@ python -m vllm_hust_benchmark.cli submit \
   --concurrent-requests "$BENCH_MAX_CONCURRENCY" \
   --submissions-dir "$SUBMISSIONS_ROOT"
 
+# Normalize schema-sensitive fields before website aggregation/HF sync.
+# For non-long-context scenarios, benchmark exporters may emit 0 here,
+# but leaderboard schema requires null or an integer >= 1.
+python - "$SUBMISSION_DIR/run_leaderboard.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+constraints_metrics = payload.setdefault("constraints", {}).setdefault("metrics", {})
+
+if constraints_metrics.get("long_context_length") == 0:
+  constraints_metrics["long_context_length"] = None
+
+path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+
 if [[ "$PUBLISH_TO_HF" == "1" ]]; then
   if [[ -z "$HF_REPO_ID" ]]; then
     echo "HF_REPO_ID must be set when PUBLISH_TO_HF=1" >&2
