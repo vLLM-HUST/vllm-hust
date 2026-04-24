@@ -157,6 +157,11 @@ jobs:
 
       - name: Run benchmark CI and optional HF sync
         env:
+          HOME: /home/shuhao
+          XDG_CACHE_HOME: /home/shuhao/.cache
+          XDG_CONFIG_HOME: /home/shuhao/.config
+          VLLM_CACHE_ROOT: /home/shuhao/.cache/vllm
+          VLLM_CONFIG_ROOT: /home/shuhao/.config/vllm
           WORKSPACE_ROOT: ${{ github.workspace }}
           VLLM_HUST_REPO: ${{ github.workspace }}
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark

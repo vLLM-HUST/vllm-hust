@@ -41,6 +41,15 @@ NODE_COUNT=${NODE_COUNT:-1}
 PUBLISH_TO_HF=${PUBLISH_TO_HF:-0}
 HF_REPO_ID=${HF_REPO_ID:-}
 
+# Avoid implicit fallback to /root when Actions runtime injects a root HOME.
+HOME=${HOME:-/home/shuhao}
+XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-$XDG_CACHE_HOME/vllm}
+VLLM_CONFIG_ROOT=${VLLM_CONFIG_ROOT:-$XDG_CONFIG_HOME/vllm}
+
+export HOME XDG_CACHE_HOME XDG_CONFIG_HOME VLLM_CACHE_ROOT VLLM_CONFIG_ROOT
+
 server_pid=""
 
 cleanup() {
@@ -53,6 +62,39 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR"
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT"
+
+select_usable_ascend_device() {
+  # Respect explicit pinning from the caller/runner.
+  if [[ -n "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
+    echo "Using preconfigured ASCEND_RT_VISIBLE_DEVICES=$ASCEND_RT_VISIBLE_DEVICES"
+    return 0
+  fi
+
+  local candidate_csv=${ASCEND_DEVICE_CANDIDATES:-0,1,2,3,4,5,6,7}
+  IFS=',' read -r -a candidates <<< "$candidate_csv"
+
+  for device_id in "${candidates[@]}"; do
+    if python - "$device_id" <<'PY' >/dev/null 2>&1
+import sys
+
+import torch
+
+device_id = int(sys.argv[1])
+torch.npu.set_device(device_id)
+PY
+    then
+      export ASCEND_RT_VISIBLE_DEVICES="$device_id"
+      echo "Selected usable Ascend device: $ASCEND_RT_VISIBLE_DEVICES"
+      return 0
+    fi
+  done
+
+  echo "Failed to find a usable Ascend device among candidates: $candidate_csv" >&2
+  return 1
+}
+
+select_usable_ascend_device
 
 echo "== Ascend benchmark CI =="
 echo "workspace root: $WORKSPACE_ROOT"
@@ -60,6 +102,7 @@ echo "run id: $RUN_ID"
 echo "result root: $RESULT_ROOT"
 echo "benchmark scenario: $BENCH_SCENARIO"
 echo "publish to hf: $PUBLISH_TO_HF"
+echo "ascend visible devices: ${ASCEND_RT_VISIBLE_DEVICES:-<unset>}"
 
 case "$BENCH_SCENARIO" in
   random-online)
