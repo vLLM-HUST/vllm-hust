@@ -9,9 +9,9 @@ VLLM_HUST_WEBSITE_REPO=${VLLM_HUST_WEBSITE_REPO:-$WORKSPACE_ROOT/vllm-hust-websi
 RUN_ID=${RUN_ID:-ci-${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}-$(printf '%s' "${GITHUB_SHA:-local}" | cut -c1-8)}
 RESULT_ROOT=${RESULT_ROOT:-$VLLM_HUST_REPO/.benchmarks/ci/$RUN_ID}
 RAW_RESULT_FILE=${RAW_RESULT_FILE:-$RESULT_ROOT/raw_benchmark.json}
-SUBMISSIONS_ROOT=${SUBMISSIONS_ROOT:-$RESULT_ROOT/submissions}
+SUBMISSIONS_ROOT=${SUBMISSIONS_ROOT:-$VLLM_HUST_BENCHMARK_REPO/.ci-submissions/$RUN_ID}
 SUBMISSION_DIR=${SUBMISSION_DIR:-$SUBMISSIONS_ROOT/$RUN_ID}
-AGGREGATE_OUTPUT_DIR=${AGGREGATE_OUTPUT_DIR:-$RESULT_ROOT/leaderboard-data}
+AGGREGATE_OUTPUT_DIR=${AGGREGATE_OUTPUT_DIR:-$VLLM_HUST_BENCHMARK_REPO/.ci-leaderboard/$RUN_ID}
 SERVER_LOG=${SERVER_LOG:-$RESULT_ROOT/server.log}
 BENCH_SCENARIO=${BENCH_SCENARIO:-random-online}
 BENCH_DATASET_PATH=${BENCH_DATASET_PATH:-}
@@ -60,6 +60,23 @@ cleanup() {
 }
 
 trap cleanup EXIT
+
+mirror_artifacts_to_result_root() {
+  local result_submissions_dir="$RESULT_ROOT/submissions"
+  local result_leaderboard_dir="$RESULT_ROOT/leaderboard-data"
+
+  mkdir -p "$result_submissions_dir" "$result_leaderboard_dir"
+
+  if [[ -d "$SUBMISSION_DIR" ]]; then
+    rm -rf "$result_submissions_dir/$RUN_ID"
+    cp -a "$SUBMISSION_DIR" "$result_submissions_dir/$RUN_ID"
+  fi
+
+  if [[ -d "$AGGREGATE_OUTPUT_DIR" ]]; then
+    rm -rf "$result_leaderboard_dir"
+    cp -a "$AGGREGATE_OUTPUT_DIR" "$result_leaderboard_dir"
+  fi
+}
 
 mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR"
 mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT"
@@ -247,6 +264,8 @@ else
     --output-dir "$AGGREGATE_OUTPUT_DIR" \
     --execute
 fi
+
+  mirror_artifacts_to_result_root
 
 echo "RUN_ID=$RUN_ID"
 echo "RAW_RESULT_FILE=$RAW_RESULT_FILE"
