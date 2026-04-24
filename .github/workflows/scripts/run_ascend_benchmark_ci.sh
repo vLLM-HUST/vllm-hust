@@ -78,6 +78,29 @@ mirror_artifacts_to_result_root() {
   fi
 }
 
+retry_command() {
+  local max_attempts=$1
+  local delay_seconds=$2
+  shift 2
+
+  local attempt=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [[ "$attempt" -ge "$max_attempts" ]]; then
+      echo "Command failed after ${attempt} attempt(s): $*" >&2
+      return 1
+    fi
+
+    echo "Attempt ${attempt}/${max_attempts} failed for: $*" >&2
+    echo "Retrying in ${delay_seconds}s..." >&2
+    sleep "$delay_seconds"
+    attempt=$((attempt + 1))
+  done
+}
+
 mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR"
 mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT"
 
@@ -251,13 +274,14 @@ if [[ "$PUBLISH_TO_HF" == "1" ]]; then
     exit 2
   fi
 
-  python -m vllm_hust_benchmark.cli sync-submission-to-hf \
-    --submission-dir "$SUBMISSION_DIR" \
-    --aggregate-output-dir "$AGGREGATE_OUTPUT_DIR" \
-    --repo-id "$HF_REPO_ID" \
-    --submissions-prefix submissions-auto \
-    --commit-message "chore: sync vllm-hust benchmark $RUN_ID (${GITHUB_REF_NAME:-detached}@$(printf '%s' "${GITHUB_SHA:-local}" | cut -c1-8))" \
-    --execute
+  retry_command 3 20 \
+    python -m vllm_hust_benchmark.cli sync-submission-to-hf \
+      --submission-dir "$SUBMISSION_DIR" \
+      --aggregate-output-dir "$AGGREGATE_OUTPUT_DIR" \
+      --repo-id "$HF_REPO_ID" \
+      --submissions-prefix submissions-auto \
+      --commit-message "chore: sync vllm-hust benchmark $RUN_ID (${GITHUB_REF_NAME:-detached}@$(printf '%s' "${GITHUB_SHA:-local}" | cut -c1-8))" \
+      --execute
 else
   python -m vllm_hust_benchmark.cli publish-website \
     --source-dir "$SUBMISSIONS_ROOT" \
