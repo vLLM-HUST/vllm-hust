@@ -101,6 +101,54 @@ retry_command() {
   done
 }
 
+ensure_hf_commit_api_compat() {
+  python - "$VLLM_HUST_BENCHMARK_REPO/src/vllm_hust_benchmark/integration.py" <<'PY'
+import inspect
+import sys
+from pathlib import Path
+
+from huggingface_hub import HfApi
+
+integration_path = Path(sys.argv[1])
+if not integration_path.is_file():
+  print(f"benchmark integration file not found: {integration_path}", file=sys.stderr)
+  raise SystemExit(1)
+
+signature = inspect.signature(HfApi.create_commit)
+if "branch" in signature.parameters:
+  print("huggingface_hub supports create_commit(branch=...); no compatibility patch needed")
+  raise SystemExit(0)
+
+source = integration_path.read_text(encoding="utf-8")
+needle = """        api.create_commit(
+            repo_id=repo_id,
+            repo_type=\"dataset\",
+            branch=branch,
+            operations=operations,
+            commit_message=commit_message,
+        )
+"""
+replacement = """        api.create_commit(
+            repo_id=repo_id,
+            repo_type=\"dataset\",
+            revision=branch,
+            operations=operations,
+            commit_message=commit_message,
+        )
+"""
+
+if needle not in source:
+  if "revision=branch" in source:
+    print("benchmark integration already uses revision=branch")
+    raise SystemExit(0)
+  print("unable to locate create_commit(branch=...) block for compatibility patch", file=sys.stderr)
+  raise SystemExit(1)
+
+integration_path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
+print("patched benchmark integration to use create_commit(revision=...) for compatibility")
+PY
+}
+
 mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR"
 mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT"
 
@@ -291,6 +339,8 @@ if [[ "$PUBLISH_TO_HF" == "1" ]]; then
     echo "HF_REPO_ID must be set when PUBLISH_TO_HF=1" >&2
     exit 2
   fi
+
+  ensure_hf_commit_api_compat
 
   retry_command 3 20 \
     python -m vllm_hust_benchmark.cli sync-submission-to-hf \
