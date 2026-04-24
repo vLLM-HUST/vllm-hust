@@ -192,6 +192,10 @@ echo "benchmark scenario: $BENCH_SCENARIO"
 echo "publish to hf: $PUBLISH_TO_HF"
 echo "ascend visible devices: ${ASCEND_RT_VISIBLE_DEVICES:-<unset>}"
 
+# CI runners can intermittently spend >20s in torch_npu preflight under load.
+# Disable the vLLM startup preflight guard here to avoid false negatives.
+export VLLM_ASCEND_TORCH_PREFLIGHT=0
+
 case "$BENCH_SCENARIO" in
   random-online)
     EFFECTIVE_DATASET_NAME="random"
