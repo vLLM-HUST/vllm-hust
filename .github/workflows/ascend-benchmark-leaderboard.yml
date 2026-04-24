@@ -120,16 +120,62 @@ jobs:
       - uses: actions/checkout@v6.0.1
 
       - name: Checkout benchmark repo
-        uses: actions/checkout@v6.0.1
-        with:
-          repository: vLLM-HUST/vllm-hust-benchmark
-          path: vllm-hust-benchmark
+        env:
+          BENCH_REPO_DIR: ${{ github.workspace }}/vllm-hust-benchmark
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local attempts=3
+            local delay_seconds=10
+            local try=1
+
+            rm -rf "$target_dir"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$target_dir"; then
+                return 0
+              fi
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "https://github.com/vLLM-HUST/vllm-hust-benchmark.git" "$BENCH_REPO_DIR"
 
       - name: Checkout website repo
-        uses: actions/checkout@v6.0.1
-        with:
-          repository: vLLM-HUST/vllm-hust-website
-          path: vllm-hust-website
+        env:
+          WEBSITE_REPO_DIR: ${{ github.workspace }}/vllm-hust-website
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local attempts=3
+            local delay_seconds=10
+            local try=1
+
+            rm -rf "$target_dir"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$target_dir"; then
+                return 0
+              fi
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "https://github.com/vLLM-HUST/vllm-hust-website.git" "$WEBSITE_REPO_DIR"
 
       - name: Prepare Hugging Face cache directories
         run: |
