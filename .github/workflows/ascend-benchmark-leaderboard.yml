@@ -117,7 +117,43 @@ jobs:
       PUBLISH_TO_HF: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_PR == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && '1' || '0' }}
 
     steps:
-      - uses: actions/checkout@v6.0.1
+      - name: Checkout target repo
+        env:
+          TARGET_REPO_DIR: ${{ github.workspace }}
+          TARGET_REPO_URL: https://github.com/${{ github.repository }}.git
+          TARGET_REPO_SHA: ${{ github.sha }}
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local attempts=3
+            local delay_seconds=10
+            local try=1
+
+            rm -rf "$target_dir"
+            mkdir -p "$(dirname "$target_dir")"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$target_dir"; then
+                return 0
+              fi
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "$TARGET_REPO_URL" "$TARGET_REPO_DIR"
+
+          # Make sure workflow runs against the exact event SHA.
+          if ! git -C "$TARGET_REPO_DIR" rev-parse --verify --quiet "$TARGET_REPO_SHA^{commit}" >/dev/null; then
+            git -C "$TARGET_REPO_DIR" fetch --depth 1 origin "$TARGET_REPO_SHA"
+          fi
+          git -C "$TARGET_REPO_DIR" checkout --force "$TARGET_REPO_SHA"
 
       - name: Checkout benchmark repo
         env:
