@@ -129,14 +129,22 @@ jobs:
             local attempts=3
             local delay_seconds=10
             local try=1
+            local parent_dir
+            local temp_dir
 
-            rm -rf "$target_dir"
-            mkdir -p "$(dirname "$target_dir")"
+            parent_dir=$(dirname "$target_dir")
+            temp_dir="${parent_dir}/.checkout-tmp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+            mkdir -p "$parent_dir"
+            rm -rf "$temp_dir"
             while [[ "$try" -le "$attempts" ]]; do
-              if git clone --depth 1 "$repo_url" "$target_dir"; then
+              if git clone --depth 1 "$repo_url" "$temp_dir"; then
+                rm -rf "$target_dir"
+                mv "$temp_dir" "$target_dir"
                 return 0
               fi
               echo "Clone failed ($try/$attempts): $repo_url" >&2
+              rm -rf "$temp_dir"
               if [[ "$try" -lt "$attempts" ]]; then
                 sleep "$delay_seconds"
               fi
