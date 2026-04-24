@@ -420,10 +420,13 @@ class LLM:
     def shutdown(self, timeout: float | None = None) -> None:
         if llm_engine := getattr(self, "llm_engine", None):
             llm_engine.shutdown(timeout=timeout)
-            del self.llm_engine
+            self.llm_engine = None
 
     def __del__(self):
-        self.shutdown()
+        try:
+            self.shutdown()
+        except Exception:
+            pass
 
     def get_world_size(self, include_dp: bool = True) -> int:
         """Get the world size from the parallel config.

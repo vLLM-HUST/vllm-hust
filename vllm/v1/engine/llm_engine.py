@@ -426,7 +426,8 @@ class LLMEngine:
         return self.collective_rpc("apply_model", args=(func,))
 
     def shutdown(self, timeout: float | None = None) -> None:
-        shutdown_prometheus()
+        if callable(shutdown_prometheus):
+            shutdown_prometheus()
 
         if renderer := getattr(self, "renderer", None):
             renderer.shutdown()
@@ -434,12 +435,16 @@ class LLMEngine:
 
         if engine_core := getattr(self, "engine_core", None):
             engine_core.shutdown(timeout=timeout)
-            del self.engine_core
+            self.engine_core = None
 
         dp_group = getattr(self, "dp_group", None)
         if dp_group is not None and not self.external_launcher_dp:
-            stateless_destroy_torch_distributed_process_group(dp_group)
+            if callable(stateless_destroy_torch_distributed_process_group):
+                stateless_destroy_torch_distributed_process_group(dp_group)
             self.dp_group = None
 
     def __del__(self):
-        self.shutdown()
+        try:
+            self.shutdown()
+        except Exception:
+            pass

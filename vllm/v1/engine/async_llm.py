@@ -262,11 +262,15 @@ class AsyncLLM(EngineClient):
         )
 
     def __del__(self):
-        self.shutdown()
+        try:
+            self.shutdown()
+        except Exception:
+            pass
 
     def shutdown(self, timeout: float | None = None) -> None:
         """Shutdown, cleaning up the background proc and IPC."""
-        shutdown_prometheus()
+        if callable(shutdown_prometheus):
+            shutdown_prometheus()
 
         if renderer := getattr(self, "renderer", None):
             renderer.shutdown()

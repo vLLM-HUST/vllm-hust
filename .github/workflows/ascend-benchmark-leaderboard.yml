@@ -93,9 +93,9 @@ jobs:
       HF_TOKEN: ${{ secrets.DATASET_WRITE_TOKEN }}
       HF_REPO_ID: intellistream/vllm-hust-benchmark-results
       MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-0.5B-Instruct' }}
-      BENCH_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online' }}
-      BENCH_DATASET_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_DATASET_PATH) || '' }}
-      BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '' }}
+      BENCH_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online' }}
+      BENCH_DATASET_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_DATASET_PATH) || '' }}
+      BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '' }}
       MODEL_PARAMETERS: 0.5B
       MODEL_PRECISION: BF16
       DTYPE: bfloat16
@@ -113,7 +113,8 @@ jobs:
       CHIP_COUNT: "1"
       NODE_COUNT: "1"
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
-      PUBLISH_TO_HF: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && '1' || '0' }}
+      WEBSITE_LEADERBOARD_URL: ${{ vars.VLLM_HUST_LEADERBOARD_URL || '' }}
+      PUBLISH_TO_HF: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_PR == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && '1' || '0' }}
 
     steps:
       - uses: actions/checkout@v6.0.1
@@ -180,6 +181,8 @@ jobs:
           bench_scenario = os.environ.get('BENCH_SCENARIO', 'random-online')
           publish_mode = 'hf-sync' if os.environ.get('PUBLISH_TO_HF') == '1' else 'artifact-preview'
           model_name = os.environ.get('MODEL_NAME', 'unknown')
+          hf_repo = os.environ.get('HF_REPO_ID', 'unknown')
+          leaderboard_url = os.environ.get('WEBSITE_LEADERBOARD_URL', '').strip()
 
           lines = [
             '## Ascend Benchmark Summary',
@@ -229,6 +232,15 @@ jobs:
             note = '- Note: random-online runs stay as preview artifacts unless random preview publish is explicitly enabled.'
             lines.append(note)
             comment_lines.append(note)
+
+          if publish_mode == 'hf-sync':
+            hf_note = f'- HF dataset repo: `{hf_repo}`'
+            lines.append(hf_note)
+            comment_lines.append(hf_note)
+            if leaderboard_url:
+              site_note = f'- Website leaderboard: {leaderboard_url}'
+              lines.append(site_note)
+              comment_lines.append(site_note)
 
           summary_path.write_text("\n".join(lines) + "\n", encoding='utf-8')
           comment_path.write_text("\n".join(comment_lines) + "\n", encoding='utf-8')
