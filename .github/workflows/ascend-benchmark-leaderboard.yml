@@ -90,7 +90,7 @@ jobs:
       HF_HOME: ${{ github.workspace }}/../.hf-cache
       HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/../.hf-cache/hub
       TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
-      HF_TOKEN: ${{ secrets.DATASET_WRITE_TOKEN }}
+      HF_TOKEN: ${{ secrets.DATASET_WRITE_TOKEN || secrets.HF_TOKEN }}
       HF_REPO_ID: intellistream/vllm-hust-benchmark-results
       MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-0.5B-Instruct' }}
       BENCH_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online' }}
@@ -117,19 +117,109 @@ jobs:
       PUBLISH_TO_HF: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_PR == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && '1' || '0' }}
 
     steps:
-      - uses: actions/checkout@v6.0.1
+      - name: Checkout target repo
+        env:
+          TARGET_REPO_DIR: ${{ github.workspace }}
+          TARGET_REPO_URL: https://github.com/${{ github.repository }}.git
+          TARGET_REPO_SHA: ${{ github.sha }}
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local attempts=3
+            local delay_seconds=10
+            local try=1
+            local parent_dir
+            local temp_dir
+
+            parent_dir=$(dirname "$target_dir")
+            temp_dir="${parent_dir}/.checkout-tmp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+            mkdir -p "$parent_dir"
+            rm -rf "$temp_dir"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$temp_dir"; then
+                rm -rf "$target_dir"
+                mv "$temp_dir" "$target_dir"
+                return 0
+              fi
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              rm -rf "$temp_dir"
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "$TARGET_REPO_URL" "$TARGET_REPO_DIR"
+
+          # Make sure workflow runs against the exact event SHA.
+          if ! git -C "$TARGET_REPO_DIR" rev-parse --verify --quiet "$TARGET_REPO_SHA^{commit}" >/dev/null; then
+            git -C "$TARGET_REPO_DIR" fetch --depth 1 origin "$TARGET_REPO_SHA"
+          fi
+          git -C "$TARGET_REPO_DIR" checkout --force "$TARGET_REPO_SHA"
 
       - name: Checkout benchmark repo
-        uses: actions/checkout@v6.0.1
-        with:
-          repository: vLLM-HUST/vllm-hust-benchmark
-          path: vllm-hust-benchmark
+        env:
+          BENCH_REPO_DIR: ${{ github.workspace }}/vllm-hust-benchmark
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local attempts=3
+            local delay_seconds=10
+            local try=1
+
+            rm -rf "$target_dir"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$target_dir"; then
+                return 0
+              fi
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "https://github.com/vLLM-HUST/vllm-hust-benchmark.git" "$BENCH_REPO_DIR"
 
       - name: Checkout website repo
-        uses: actions/checkout@v6.0.1
-        with:
-          repository: vLLM-HUST/vllm-hust-website
-          path: vllm-hust-website
+        env:
+          WEBSITE_REPO_DIR: ${{ github.workspace }}/vllm-hust-website
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local attempts=3
+            local delay_seconds=10
+            local try=1
+
+            rm -rf "$target_dir"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$target_dir"; then
+                return 0
+              fi
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "https://github.com/vLLM-HUST/vllm-hust-website.git" "$WEBSITE_REPO_DIR"
 
       - name: Prepare Hugging Face cache directories
         run: |
@@ -139,12 +229,15 @@ jobs:
 
       - name: Prepare Ascend runtime and install repos
         env:
+          HOME: /home/shuhao
+          XDG_CACHE_HOME: /home/shuhao/.cache
+          XDG_CONFIG_HOME: /home/shuhao/.config
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
           source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
           bash /home/shuhao/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /home/shuhao/vllm-ascend-hust
           python -m pip install -e . --no-build-isolation --no-deps
-          python -m pip install -e "$VLLM_HUST_BENCHMARK_REPO[publish]" jsonschema
+          python -m pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
 
       - name: Verify installation
         run: |
@@ -154,6 +247,11 @@ jobs:
 
       - name: Run benchmark CI and optional HF sync
         env:
+          HOME: /home/shuhao
+          XDG_CACHE_HOME: /home/shuhao/.cache
+          XDG_CONFIG_HOME: /home/shuhao/.config
+          VLLM_CACHE_ROOT: /home/shuhao/.cache/vllm
+          VLLM_CONFIG_ROOT: /home/shuhao/.config/vllm
           WORKSPACE_ROOT: ${{ github.workspace }}
           VLLM_HUST_REPO: ${{ github.workspace }}
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark

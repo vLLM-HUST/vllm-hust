@@ -197,14 +197,9 @@ def _find_cli_subcommand(argv: list[str] | None = None) -> str | None:
 def _cli_requested_backend(argv: list[str] | None = None) -> str | None:
     argv = argv or sys.argv
     for index, arg in enumerate(argv):
-        if (
-            arg in {"--device", "--backend"}
-            and index + 1 < len(argv)
-        ):
+        if arg in {"--device", "--backend"} and index + 1 < len(argv):
             return argv[index + 1].strip().lower()
-        if (
-            arg.startswith("--device=") or arg.startswith("--backend=")
-        ):
+        if arg.startswith("--device=") or arg.startswith("--backend="):
             return arg.split("=", 1)[1].strip().lower()
     return None
 
@@ -229,7 +224,10 @@ def _should_run_ascend_torch_preflight(argv: list[str] | None = None) -> bool:
         return False
 
     requested_backend = _cli_requested_backend(argv)
-    if requested_backend is not None and requested_backend not in _ASCEND_EXPLICIT_BACKENDS:
+    if (
+        requested_backend is not None
+        and requested_backend not in _ASCEND_EXPLICIT_BACKENDS
+    ):
         return False
 
     return _has_ascend_runtime_hints()
