@@ -184,6 +184,8 @@ jobs:
           hf_repo = os.environ.get('HF_REPO_ID', 'unknown')
           leaderboard_url = os.environ.get('WEBSITE_LEADERBOARD_URL', '').strip()
 
+          result_root.mkdir(parents=True, exist_ok=True)
+
           lines = [
             '## Ascend Benchmark Summary',
             f'- Run ID: `{run_id}`',
