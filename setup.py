@@ -929,7 +929,7 @@ def get_vllm_version() -> str:
             and should_add_runtime_version_suffix()
         ):
             version += f"{sep}precompiled"
-        else:
+        elif CUDA_HOME is not None:
             cuda_version = str(get_nvcc_cuda_version())
             if (
                 cuda_version != envs.VLLM_MAIN_CUDA_VERSION
