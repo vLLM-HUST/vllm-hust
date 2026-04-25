@@ -27,9 +27,51 @@ jobs:
       HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/../.hf-cache/hub
       TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      TARGET_REPO_URL: https://github.com/${{ github.repository }}.git
+      TARGET_REPO_SHA: ${{ github.sha }}
 
     steps:
-      - uses: actions/checkout@v6.0.1
+      - name: Checkout target repo with retry
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local target_sha=$3
+            local attempts=4
+            local delay_seconds=15
+            local try=1
+            local parent_dir
+            local temp_dir
+
+            parent_dir=$(dirname "$target_dir")
+            temp_dir="${parent_dir}/.checkout-tmp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+            mkdir -p "$parent_dir"
+            rm -rf "$temp_dir"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$temp_dir"; then
+                if ! git -C "$temp_dir" rev-parse --verify --quiet "$target_sha^{commit}" >/dev/null; then
+                  git -C "$temp_dir" fetch --depth 1 origin "$target_sha"
+                fi
+                git -C "$temp_dir" checkout --force "$target_sha"
+                rm -rf "$target_dir"
+                mv "$temp_dir" "$target_dir"
+                return 0
+              fi
+
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              rm -rf "$temp_dir"
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "$TARGET_REPO_URL" "$GITHUB_WORKSPACE" "$TARGET_REPO_SHA"
 
       - name: Prepare Hugging Face cache directories
         run: |
