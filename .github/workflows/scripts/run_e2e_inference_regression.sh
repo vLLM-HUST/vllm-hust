@@ -3,7 +3,7 @@ set -euo pipefail
 
 MODEL_NAME=${MODEL_NAME:-facebook/opt-125m}
 HOST=${HOST:-127.0.0.1}
-PORT=${PORT:-8000}
+PORT=${PORT:-}
 DTYPE=${DTYPE:-float32}
 MAX_MODEL_LEN=${MAX_MODEL_LEN:-512}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-2}
@@ -22,9 +22,31 @@ cleanup() {
   fi
 }
 
+allocate_local_port() {
+  python - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
 trap cleanup EXIT
 
+if [[ -z "$PORT" ]]; then
+  PORT=$(allocate_local_port)
+fi
+
+runtime_root=${VLLM_HUST_CI_RUNTIME_ROOT:-${GITHUB_WORKSPACE:-$PWD}/.ci-runtime}
+export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$runtime_root/cache}
+export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$runtime_root/config}
+export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-$XDG_CACHE_HOME/vllm}
+export VLLM_CONFIG_ROOT=${VLLM_CONFIG_ROOT:-$XDG_CONFIG_HOME/vllm}
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT"
+
 echo "Starting vLLM inference regression test for $MODEL_NAME"
+echo "Using regression test port $PORT"
 
 vllm serve "$MODEL_NAME" \
   --host "$HOST" \
@@ -36,7 +58,7 @@ vllm serve "$MODEL_NAME" \
 server_pid=$!
 
 for attempt in $(seq 1 120); do
-  if curl -fsS "http://$HOST:$PORT/health" >/dev/null; then
+  if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
     break
   fi
 
@@ -55,7 +77,6 @@ for attempt in $(seq 1 120); do
   sleep 2
 done
 
-curl -fsS "http://$HOST:$PORT/health" >/dev/null
 curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null
 
 completion_response=$(mktemp)

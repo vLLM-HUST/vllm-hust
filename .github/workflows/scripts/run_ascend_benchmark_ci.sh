@@ -22,7 +22,7 @@ MODEL_NAME=${MODEL_NAME:-Qwen/Qwen2.5-0.5B-Instruct}
 MODEL_PARAMETERS=${MODEL_PARAMETERS:-0.5B}
 MODEL_PRECISION=${MODEL_PRECISION:-BF16}
 HOST=${HOST:-127.0.0.1}
-PORT=${PORT:-8000}
+PORT=${PORT:-}
 DTYPE=${DTYPE:-bfloat16}
 MAX_MODEL_LEN=${MAX_MODEL_LEN:-256}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
@@ -50,7 +50,28 @@ cleanup() {
   fi
 }
 
+allocate_local_port() {
+  python - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
 trap cleanup EXIT
+
+if [[ -z "$PORT" ]]; then
+  PORT=$(allocate_local_port)
+fi
+
+runtime_root=${VLLM_HUST_CI_RUNTIME_ROOT:-${GITHUB_WORKSPACE:-$PWD}/.ci-runtime}
+export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$runtime_root/cache}
+export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$runtime_root/config}
+export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-$XDG_CACHE_HOME/vllm}
+export VLLM_CONFIG_ROOT=${VLLM_CONFIG_ROOT:-$XDG_CONFIG_HOME/vllm}
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT"
 
 mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR"
 
@@ -58,6 +79,7 @@ echo "== Ascend benchmark CI =="
 echo "workspace root: $WORKSPACE_ROOT"
 echo "run id: $RUN_ID"
 echo "result root: $RESULT_ROOT"
+echo "benchmark port: $PORT"
 echo "benchmark scenario: $BENCH_SCENARIO"
 echo "publish to hf: $PUBLISH_TO_HF"
 
@@ -130,7 +152,7 @@ vllm serve "$MODEL_NAME" \
 server_pid=$!
 
 for attempt in $(seq 1 120); do
-  if curl -fsS "http://$HOST:$PORT/health" >/dev/null; then
+  if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
     break
   fi
 
