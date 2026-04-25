@@ -3,8 +3,9 @@
 
 import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from copy import copy
-from typing import Any
+from typing import Any, cast
 
 import torch.nn as nn
 from typing_extensions import TypeVar
@@ -87,7 +88,7 @@ class LLMEngine:
         ):
             self.dp_group = parallel_config.stateless_init_dp_group()
         else:
-            self.dp_group = None
+            self.dp_group = cast(Any, None)
         self.should_execute_dummy_batch = False
 
         self.renderer = renderer = renderer_from_config(self.vllm_config)
@@ -435,16 +436,14 @@ class LLMEngine:
 
         if engine_core := getattr(self, "engine_core", None):
             engine_core.shutdown(timeout=timeout)
-            self.engine_core = None
+            self.engine_core = cast(Any, None)
 
         dp_group = getattr(self, "dp_group", None)
         if dp_group is not None and not self.external_launcher_dp:
             if callable(stateless_destroy_torch_distributed_process_group):
                 stateless_destroy_torch_distributed_process_group(dp_group)
-            self.dp_group = None
+            self.dp_group = cast(Any, None)
 
     def __del__(self):
-        try:
+        with suppress(Exception):
             self.shutdown()
-        except Exception:
-            pass

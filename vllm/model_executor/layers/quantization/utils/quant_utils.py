@@ -172,8 +172,6 @@ kMxfp8Dynamic = QuantKey(FP8_DTYPE, scale=kMxfp8DynamicGroupScale, symmetric=Tru
 kMxfp4StaticGroupScale = ScaleDesc(MXFP_SCALE_DTYPE, True, GroupShape(1, 32))
 kMxfp4Static = QuantKey(FP4_DTYPE, scale=kMxfp4StaticGroupScale, symmetric=True)
 
-<<<<<<< HEAD
-=======
 # TODO: convert this to use SCALAR_TYPE. This is not right.
 kInt4StaticGroupScale = ScaleDesc(torch.float16, True, GroupShape(1, -1))
 kInt4Static = QuantKey(INT4_DTYPE, scale=kInt4StaticGroupScale, symmetric=True)
@@ -193,7 +191,6 @@ def create_fp8_quant_key(
     scale_desc = ScaleDesc(scale_dtype, static, group_shape)
     return QuantKey(FP8_DTYPE, scale_desc, symmetric=symmetric)
 
->>>>>>> e4ee48da2 ([MoE refactor] refactor GPTQMarlinMoEMethod with MK (#37990))
 
 # Normalize the group_shape to the full extent for any dims that are -1
 def _normalize_quant_group_shape(x: torch.Tensor, group_shape: GroupShape):
