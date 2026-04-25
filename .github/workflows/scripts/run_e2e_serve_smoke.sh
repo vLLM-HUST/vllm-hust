@@ -37,11 +37,13 @@ if [[ -z "$PORT" ]]; then
 fi
 
 runtime_root=${VLLM_HUST_CI_RUNTIME_ROOT:-${GITHUB_WORKSPACE:-$PWD}/.ci-runtime}
-export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$runtime_root/cache}
-export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$runtime_root/config}
-export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-$XDG_CACHE_HOME/vllm}
-export VLLM_CONFIG_ROOT=${VLLM_CONFIG_ROOT:-$XDG_CONFIG_HOME/vllm}
-mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT"
+export HOME="$runtime_root/home"
+export XDG_CACHE_HOME="$runtime_root/cache"
+export XDG_CONFIG_HOME="$runtime_root/config"
+export VLLM_CACHE_ROOT="$XDG_CACHE_HOME/vllm"
+export VLLM_CONFIG_ROOT="$XDG_CONFIG_HOME/vllm"
+export PIP_CACHE_DIR="$XDG_CACHE_HOME/pip"
+mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT" "$PIP_CACHE_DIR"
 
 echo "Starting vLLM serve smoke test for $MODEL_NAME"
 echo "Using smoke test port $PORT"
