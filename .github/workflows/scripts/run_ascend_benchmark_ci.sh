@@ -42,11 +42,58 @@ PUBLISH_TO_HF=${PUBLISH_TO_HF:-0}
 HF_REPO_ID=${HF_REPO_ID:-}
 
 server_pid=""
+server_group_pid=""
+marker_pid_file=""
+marker_pgid_file=""
 
 cleanup() {
-  if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
-    kill "$server_pid" || true
+  if [[ -n "$server_group_pid" ]] && kill -0 "$server_group_pid" 2>/dev/null; then
+    kill -TERM -- "-$server_group_pid" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      if ! kill -0 "$server_group_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    kill -KILL -- "-$server_group_pid" 2>/dev/null || true
+  elif [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+    kill "$server_pid" 2>/dev/null || true
+  fi
+
+  if [[ -n "$server_pid" ]]; then
     wait "$server_pid" || true
+  fi
+
+  if [[ -n "$marker_pid_file" || -n "$marker_pgid_file" ]]; then
+    rm -f "$marker_pid_file" "$marker_pgid_file"
+  fi
+}
+
+start_server() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid vllm serve "$MODEL_NAME" \
+      --host "$HOST" \
+      --port "$PORT" \
+      --dtype "$DTYPE" \
+      --max-model-len "$MAX_MODEL_LEN" \
+      --max-num-seqs "$MAX_NUM_SEQS" \
+      --enforce-eager >"$SERVER_LOG" 2>&1 &
+    server_pid=$!
+    server_group_pid=$server_pid
+  else
+    vllm serve "$MODEL_NAME" \
+      --host "$HOST" \
+      --port "$PORT" \
+      --dtype "$DTYPE" \
+      --max-model-len "$MAX_MODEL_LEN" \
+      --max-num-seqs "$MAX_NUM_SEQS" \
+      --enforce-eager >"$SERVER_LOG" 2>&1 &
+    server_pid=$!
+  fi
+
+  printf '%s\n' "$server_pid" > "$marker_pid_file"
+  if [[ -n "$server_group_pid" ]]; then
+    printf '%s\n' "$server_group_pid" > "$marker_pgid_file"
   fi
 }
 
@@ -74,6 +121,11 @@ export VLLM_CACHE_ROOT="$XDG_CACHE_HOME/vllm"
 export VLLM_CONFIG_ROOT="$XDG_CONFIG_HOME/vllm"
 export PIP_CACHE_DIR="$XDG_CACHE_HOME/pip"
 mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT" "$PIP_CACHE_DIR"
+
+marker_dir="$runtime_root/process-markers"
+marker_pid_file="$marker_dir/vllm-server.pid"
+marker_pgid_file="$marker_dir/vllm-server.pgid"
+mkdir -p "$marker_dir"
 
 mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR"
 
@@ -144,14 +196,7 @@ if [[ ! -f "$EFFECTIVE_CONSTRAINTS_FILE" ]]; then
   exit 2
 fi
 
-vllm serve "$MODEL_NAME" \
-  --host "$HOST" \
-  --port "$PORT" \
-  --dtype "$DTYPE" \
-  --max-model-len "$MAX_MODEL_LEN" \
-  --max-num-seqs "$MAX_NUM_SEQS" \
-  --enforce-eager >"$SERVER_LOG" 2>&1 &
-server_pid=$!
+start_server
 
 for attempt in $(seq 1 120); do
   if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then

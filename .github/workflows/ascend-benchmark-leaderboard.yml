@@ -247,6 +247,12 @@ jobs:
           source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
           bash .github/workflows/scripts/run_ascend_benchmark_ci.sh
 
+      - name: Cleanup leftover Ascend CI processes
+        if: always()
+        run: |
+          source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
+          bash .github/workflows/scripts/cleanup_ascend_ci_processes.sh
+
       - name: Build benchmark summary artifacts
         if: always()
         run: |

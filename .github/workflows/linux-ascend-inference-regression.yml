@@ -111,3 +111,9 @@ jobs:
         run: |
           source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
           bash .github/workflows/scripts/run_e2e_inference_regression.sh
+
+      - name: Cleanup leftover Ascend CI processes
+        if: always()
+        run: |
+          source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
+          bash .github/workflows/scripts/cleanup_ascend_ci_processes.sh
