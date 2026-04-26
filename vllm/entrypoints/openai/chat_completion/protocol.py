@@ -395,8 +395,8 @@ class ChatCompletionRequest(OpenAIBaseModel):
     _cached_tool_dicts_source: tuple[int, tuple[int, ...]] | None = PrivateAttr(
         default=None
     )
-    _cached_resolved_structured_outputs: StructuredOutputsParams | None = (
-        PrivateAttr(default=None)
+    _cached_resolved_structured_outputs: StructuredOutputsParams | None = PrivateAttr(
+        default=None
     )
     _cached_resolved_structured_outputs_source: tuple[int | None, int | None] | None = (
         PrivateAttr(default=None)
@@ -457,9 +457,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
                 ),
             )
             return {
-                "structural_tag": json.dumps(
-                    structural_tag.model_dump(by_alias=True)
-                )
+                "structural_tag": json.dumps(structural_tag.model_dump(by_alias=True))
             }
         return {}
 

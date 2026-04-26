@@ -115,21 +115,105 @@ jobs:
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
       WEBSITE_LEADERBOARD_URL: ${{ vars.VLLM_HUST_LEADERBOARD_URL || '' }}
       PUBLISH_TO_HF: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.VLLM_HUST_PUBLISH_BENCHMARK_ON_PR == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && '1' || '0' }}
+      TARGET_REPO_URL: https://github.com/${{ github.repository }}.git
+      TARGET_REPO_SHA: ${{ github.sha }}
 
     steps:
-      - uses: actions/checkout@v6.0.1
+      - name: Checkout target repo with retry
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local target_sha=$3
+            local attempts=4
+            local delay_seconds=15
+            local try=1
+            local parent_dir
+            local temp_dir
+
+            parent_dir=$(dirname "$target_dir")
+            temp_dir="${parent_dir}/.checkout-tmp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+            mkdir -p "$parent_dir"
+            rm -rf "$temp_dir"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$temp_dir"; then
+                if ! git -C "$temp_dir" rev-parse --verify --quiet "$target_sha^{commit}" >/dev/null; then
+                  git -C "$temp_dir" fetch --depth 1 origin "$target_sha"
+                fi
+                git -C "$temp_dir" checkout --force "$target_sha"
+                rm -rf "$target_dir"
+                mv "$temp_dir" "$target_dir"
+                return 0
+              fi
+
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              rm -rf "$temp_dir"
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "$TARGET_REPO_URL" "$GITHUB_WORKSPACE" "$TARGET_REPO_SHA"
 
       - name: Checkout benchmark repo
-        uses: actions/checkout@v6.0.1
-        with:
-          repository: vLLM-HUST/vllm-hust-benchmark
-          path: vllm-hust-benchmark
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local attempts=4
+            local delay_seconds=15
+            local try=1
+
+            rm -rf "$target_dir"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$target_dir"; then
+                return 0
+              fi
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "https://github.com/vLLM-HUST/vllm-hust-benchmark.git" "$GITHUB_WORKSPACE/vllm-hust-benchmark"
 
       - name: Checkout website repo
-        uses: actions/checkout@v6.0.1
-        with:
-          repository: vLLM-HUST/vllm-hust-website
-          path: vllm-hust-website
+        run: |
+          clone_with_retry() {
+            local repo_url=$1
+            local target_dir=$2
+            local attempts=4
+            local delay_seconds=15
+            local try=1
+
+            rm -rf "$target_dir"
+            while [[ "$try" -le "$attempts" ]]; do
+              if git clone --depth 1 "$repo_url" "$target_dir"; then
+                return 0
+              fi
+              echo "Clone failed ($try/$attempts): $repo_url" >&2
+              if [[ "$try" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+              try=$((try + 1))
+            done
+
+            echo "Failed to clone $repo_url after ${attempts} attempts" >&2
+            return 1
+          }
+
+          clone_with_retry "https://github.com/vLLM-HUST/vllm-hust-website.git" "$GITHUB_WORKSPACE/vllm-hust-website"
 
       - name: Prepare Hugging Face cache directories
         run: |
@@ -144,7 +228,7 @@ jobs:
           source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
           bash /home/shuhao/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /home/shuhao/vllm-ascend-hust
           python -m pip install -e . --no-build-isolation --no-deps
-          python -m pip install -e "$VLLM_HUST_BENCHMARK_REPO[publish]" jsonschema
+          python -m pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
 
       - name: Verify installation
         run: |
@@ -162,6 +246,12 @@ jobs:
         run: |
           source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
           bash .github/workflows/scripts/run_ascend_benchmark_ci.sh
+
+      - name: Cleanup leftover Ascend CI processes
+        if: always()
+        run: |
+          source /home/shuhao/vllm-ascend-hust/scripts/use_single_ascend_env.sh
+          bash .github/workflows/scripts/cleanup_ascend_ci_processes.sh
 
       - name: Build benchmark summary artifacts
         if: always()
@@ -183,6 +273,8 @@ jobs:
           model_name = os.environ.get('MODEL_NAME', 'unknown')
           hf_repo = os.environ.get('HF_REPO_ID', 'unknown')
           leaderboard_url = os.environ.get('WEBSITE_LEADERBOARD_URL', '').strip()
+
+          result_root.mkdir(parents=True, exist_ok=True)
 
           lines = [
             '## Ascend Benchmark Summary',
@@ -248,6 +340,7 @@ jobs:
 
       - name: Upload benchmark artifacts
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ascend-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
@@ -257,6 +350,7 @@ jobs:
 
       - name: Update PR benchmark comment
         if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        continue-on-error: true
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |

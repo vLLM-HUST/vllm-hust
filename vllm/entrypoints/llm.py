@@ -3,8 +3,9 @@
 
 import itertools
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import cloudpickle
 import torch.nn as nn
@@ -420,13 +421,11 @@ class LLM:
     def shutdown(self, timeout: float | None = None) -> None:
         if llm_engine := getattr(self, "llm_engine", None):
             llm_engine.shutdown(timeout=timeout)
-            self.llm_engine = None
+            self.llm_engine = cast(Any, None)
 
     def __del__(self):
-        try:
+        with suppress(Exception):
             self.shutdown()
-        except Exception:
-            pass
 
     def get_world_size(self, include_dp: bool = True) -> int:
         """Get the world size from the parallel config.

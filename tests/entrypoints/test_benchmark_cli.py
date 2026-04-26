@@ -11,11 +11,12 @@ import pytest
 from vllm.entrypoints.cli.benchmark.main import BenchmarkSubcommand
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
-
 pytestmark = pytest.mark.skip_global_cleanup
 
 
-def _find_subparsers_action(parser: FlexibleArgumentParser) -> argparse._SubParsersAction:
+def _find_subparsers_action(
+    parser: FlexibleArgumentParser,
+) -> argparse._SubParsersAction:
     return next(
         action
         for action in parser._actions

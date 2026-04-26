@@ -250,7 +250,11 @@ async def test_resolve_benchmark_base_url_requires_explicit_opt_in(
         insecure=False,
     )
 
-    base_url, api_url, discovered_model = await benchmark_serve.resolve_benchmark_base_url(
+    (
+        base_url,
+        api_url,
+        discovered_model,
+    ) = await benchmark_serve.resolve_benchmark_base_url(
         args,
         "http://127.0.0.1:8000",
         "http://127.0.0.1:8000/v1/completions",
@@ -346,5 +350,7 @@ async def test_main_async_rejects_dataset_path_for_builtin_random_dataset():
         output_len=None,
     )
 
-    with pytest.raises(ValueError, match="Cannot use 'random' dataset with --dataset-path"):
+    with pytest.raises(
+        ValueError, match="Cannot use 'random' dataset with --dataset-path"
+    ):
         await benchmark_serve.main_async(args)

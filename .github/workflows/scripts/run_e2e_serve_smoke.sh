@@ -3,7 +3,7 @@ set -euo pipefail
 
 MODEL_NAME=${MODEL_NAME:-facebook/opt-125m}
 HOST=${HOST:-127.0.0.1}
-PORT=${PORT:-8000}
+PORT=${PORT:-}
 DTYPE=${DTYPE:-float32}
 MAX_MODEL_LEN=${MAX_MODEL_LEN:-512}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-2}
@@ -12,29 +12,98 @@ PROMPT=${PROMPT:-The capital of France is}
 SERVER_LOG=${SERVER_LOG:-/tmp/vllm-e2e-smoke.log}
 
 server_pid=""
+server_group_pid=""
+marker_pid_file=""
+marker_pgid_file=""
 
 cleanup() {
-  if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
-    kill "$server_pid" || true
+  if [[ -n "$server_group_pid" ]] && kill -0 "$server_group_pid" 2>/dev/null; then
+    kill -TERM -- "-$server_group_pid" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      if ! kill -0 "$server_group_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    kill -KILL -- "-$server_group_pid" 2>/dev/null || true
+  elif [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+    kill "$server_pid" 2>/dev/null || true
+  fi
+
+  if [[ -n "$server_pid" ]]; then
     wait "$server_pid" || true
   fi
+
+  if [[ -n "$marker_pid_file" || -n "$marker_pgid_file" ]]; then
+    rm -f "$marker_pid_file" "$marker_pgid_file"
+  fi
+}
+
+start_server() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid vllm serve "$MODEL_NAME" \
+      --host "$HOST" \
+      --port "$PORT" \
+      --dtype "$DTYPE" \
+      --max-model-len "$MAX_MODEL_LEN" \
+      --max-num-seqs "$MAX_NUM_SEQS" \
+      --enforce-eager >"$SERVER_LOG" 2>&1 &
+    server_pid=$!
+    server_group_pid=$server_pid
+  else
+    vllm serve "$MODEL_NAME" \
+      --host "$HOST" \
+      --port "$PORT" \
+      --dtype "$DTYPE" \
+      --max-model-len "$MAX_MODEL_LEN" \
+      --max-num-seqs "$MAX_NUM_SEQS" \
+      --enforce-eager >"$SERVER_LOG" 2>&1 &
+    server_pid=$!
+  fi
+
+  printf '%s\n' "$server_pid" > "$marker_pid_file"
+  if [[ -n "$server_group_pid" ]]; then
+    printf '%s\n' "$server_group_pid" > "$marker_pgid_file"
+  fi
+}
+
+allocate_local_port() {
+  python - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
 }
 
 trap cleanup EXIT
 
-echo "Starting vLLM serve smoke test for $MODEL_NAME"
+if [[ -z "$PORT" ]]; then
+  PORT=$(allocate_local_port)
+fi
 
-vllm serve "$MODEL_NAME" \
-  --host "$HOST" \
-  --port "$PORT" \
-  --dtype "$DTYPE" \
-  --max-model-len "$MAX_MODEL_LEN" \
-  --max-num-seqs "$MAX_NUM_SEQS" \
-  --enforce-eager >"$SERVER_LOG" 2>&1 &
-server_pid=$!
+runtime_root=${VLLM_HUST_CI_RUNTIME_ROOT:-${GITHUB_WORKSPACE:-$PWD}/.ci-runtime}
+export HOME="$runtime_root/home"
+export XDG_CACHE_HOME="$runtime_root/cache"
+export XDG_CONFIG_HOME="$runtime_root/config"
+export VLLM_CACHE_ROOT="$XDG_CACHE_HOME/vllm"
+export VLLM_CONFIG_ROOT="$XDG_CONFIG_HOME/vllm"
+export PIP_CACHE_DIR="$XDG_CACHE_HOME/pip"
+mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT" "$PIP_CACHE_DIR"
+
+marker_dir="$runtime_root/process-markers"
+marker_pid_file="$marker_dir/vllm-server.pid"
+marker_pgid_file="$marker_dir/vllm-server.pgid"
+mkdir -p "$marker_dir"
+
+echo "Starting vLLM serve smoke test for $MODEL_NAME"
+echo "Using smoke test port $PORT"
+
+start_server
 
 for attempt in $(seq 1 120); do
-  if curl -fsS "http://$HOST:$PORT/health" >/dev/null; then
+  if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
     break
   fi
 
@@ -53,7 +122,6 @@ for attempt in $(seq 1 120); do
   sleep 2
 done
 
-curl -fsS "http://$HOST:$PORT/health" >/dev/null
 curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null
 
 completion_response=$(mktemp)

@@ -6,7 +6,6 @@ import pytest
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.sampling_params import StructuredOutputsParams
 
-
 pytestmark = pytest.mark.skip_global_cleanup
 
 
