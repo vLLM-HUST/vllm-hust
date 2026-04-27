@@ -57,6 +57,7 @@ jobs:
       - name: Install dependencies and build vLLM
         env:
           VLLM_TARGET_DEVICE: cpu
+          VLLM_USE_PRECOMPILED: "0"
         run: |
           uv pip install -r requirements/cpu.txt --index-strategy unsafe-best-match
           uv pip install -e .
