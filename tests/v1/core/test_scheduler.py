@@ -3798,7 +3798,6 @@ def _create_encoder_decoder_scheduler(
     CrossAttentionSpec (cross-attention) KV cache groups, then patches it
     to behave as an encoder-decoder model.
     """
-    from vllm.v1.core.encoder_cache_manager import EncoderDecoderCacheManager
     from vllm.v1.kv_cache_interface import CrossAttentionSpec
 
     model_config = ModelConfig(
@@ -3868,7 +3867,7 @@ def _create_encoder_decoder_scheduler(
     # Patch to enable encoder-decoder behavior in the scheduling loop.
     scheduler.is_encoder_decoder = True
     scheduler.max_num_encoder_input_tokens = max_num_batched_tokens
-    scheduler.encoder_cache_manager = EncoderDecoderCacheManager(
+    scheduler.encoder_cache_manager = EncoderCacheManager(
         cache_size=max_num_batched_tokens
     )
 
@@ -4071,6 +4070,42 @@ def test_cross_attn_zero_blocks_without_encoder_inputs():
     assert actual_blocks == 0, (
         f"Text-only request should have 0 cross-attn blocks, got {actual_blocks}"
     )
+
+
+@pytest.mark.skip_global_cleanup
+def test_encoder_decoder_reuses_cached_encoder_inputs_across_requests():
+    scheduler = _create_encoder_decoder_scheduler(max_num_batched_tokens=512)
+
+    first_request = create_requests(
+        num_requests=1,
+        num_tokens=32,
+        mm_hashes_list=[["shared_audio"]],
+        mm_positions=[[PlaceholderRange(offset=0, length=128)]],
+        req_ids=["req_first"],
+    )[0]
+    scheduler.add_request(first_request)
+
+    first_output = scheduler.schedule()
+    assert first_output.scheduled_encoder_inputs == {"req_first": [0]}
+
+    scheduler.encoder_cache_manager.allocate(first_request, 0)
+    scheduler.encoder_cache_manager.free_encoder_input(first_request, 0)
+    scheduler.finish_requests(first_request.request_id, RequestStatus.FINISHED_STOPPED)
+
+    second_request = create_requests(
+        num_requests=1,
+        num_tokens=32,
+        mm_hashes_list=[["shared_audio"]],
+        mm_positions=[[PlaceholderRange(offset=0, length=128)]],
+        req_ids=["req_second"],
+    )[0]
+    scheduler.add_request(second_request)
+
+    second_output = scheduler.schedule()
+    assert second_output.scheduled_encoder_inputs == {}
+    assert "shared_audio" in scheduler.encoder_cache_manager.cached
+    assert scheduler.encoder_cache_manager.cached["shared_audio"] == set()
+    assert "shared_audio" in scheduler.encoder_cache_manager.freeable
 
 
 def test_eagle3_mm_encoder_cache_with_shift():

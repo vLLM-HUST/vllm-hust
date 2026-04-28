@@ -1917,8 +1917,16 @@ def cleanup_dist_env_and_memory(shutdown_ray: bool = False):
     gc.collect()
     from vllm.platforms import current_platform
 
-    if not current_platform.is_cpu():
-        torch.accelerator.empty_cache()
+    if envs.VLLM_TARGET_DEVICE != "cpu" and not current_platform.is_cpu():
+        try:
+            torch.accelerator.empty_cache()
+        except RuntimeError as error:
+            if "is not a DeviceAllocator" not in str(error):
+                raise
+            logger.warning(
+                "Skipping torch.accelerator.empty_cache() during cleanup: %s",
+                error,
+            )
         try:
             torch._C._host_emptyCache()
         except AttributeError:
