@@ -227,11 +227,13 @@ vllm bench serve \
   --result-dir "$RESULT_ROOT" \
   --result-filename "$(basename "$RAW_RESULT_FILE")"
 
-ENGINE_VERSION=$(python - <<'PY'
+CORE_VERSION=$(python - <<'PY'
 import vllm
 print(vllm.__version__)
 PY
 )
+
+DISPLAY_VERSION=$(printf '%s' "${GITHUB_SHA:-local}" | cut -c1-8)
 
 python -m vllm_hust_benchmark.cli submit \
   "$BENCH_SCENARIO" \
@@ -239,7 +241,7 @@ python -m vllm_hust_benchmark.cli submit \
   --constraints-file "$EFFECTIVE_CONSTRAINTS_FILE" \
   --run-id "$RUN_ID" \
   --engine vllm-hust \
-  --engine-version "$ENGINE_VERSION" \
+  --engine-version "$DISPLAY_VERSION" \
   --model-name "$MODEL_NAME" \
   --model-parameters "$MODEL_PARAMETERS" \
   --model-precision "$MODEL_PRECISION" \
@@ -252,6 +254,7 @@ python -m vllm_hust_benchmark.cli submit \
   --input-length "$EFFECTIVE_INPUT_LEN" \
   --output-length "$EFFECTIVE_OUTPUT_LEN" \
   --concurrent-requests "$BENCH_MAX_CONCURRENCY" \
+  --core-version "$CORE_VERSION" \
   --submissions-dir "$SUBMISSIONS_ROOT"
 
 if [[ "$PUBLISH_TO_HF" == "1" ]]; then

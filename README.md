@@ -110,6 +110,29 @@ bash /path/to/vllm-ascend-hust/scripts/run_ascend_latency_bench.sh <ascend-toolk
 If you omit the path, scripts use a default toolkit root suitable for this
 workspace.
 
+### CI Benchmark Leaderboard
+
+This workspace also provides a trusted Ascend benchmark publication workflow in
+`.github/workflows/ascend-benchmark-leaderboard.yml`.
+
+- Trigger: same-repo pull requests, pushes to `main`, and manual dispatch
+- Publish switch variables: `VLLM_HUST_PUBLISH_BENCHMARK_ON_MAIN`,
+  `VLLM_HUST_PUBLISH_BENCHMARK_ON_PR`
+- Scenario variables: `VLLM_HUST_MAIN_BENCHMARK_SCENARIO`,
+  `VLLM_HUST_PR_BENCHMARK_SCENARIO`
+- Preview-publication gate: `VLLM_HUST_ALLOW_RANDOM_HF_PUBLISH=1`
+- Required secret for Hugging Face publication: `HF_TOKEN`
+
+Leaderboard display semantics are intentionally repo-scoped and stable:
+
+- displayed `engine_version`: benchmark target short Git SHA
+- artifact `versions.core`: runtime `vllm.__version__`
+
+For plugin-integrated benchmark runs from `vllm-ascend-hust`, the leaderboard
+displays the plugin repo short SHA, while the exported artifact keeps both the
+underlying `vllm` version (`versions.core`) and plugin package version
+(`versions.backend`).
+
 ### One-Click Ascend Bootstrap
 
 To make local Ascend deployment closer to a one-command flow, use:
