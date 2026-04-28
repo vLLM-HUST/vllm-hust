@@ -206,3 +206,39 @@ def test_structured_output_manager_clear_backend_logs_cache_stats(monkeypatch):
 
     backend.destroy.assert_called_once_with()
     debug_log.assert_called_once()
+
+
+def test_structured_output_manager_logs_periodic_cache_stats(monkeypatch):
+    vllm_config = Mock()
+    vllm_config.parallel_config.distributed_executor_backend = "external_launcher"
+    vllm_config.scheduler_config.max_num_seqs = 8
+    vllm_config.model_config.skip_tokenizer_init = True
+    vllm_config.structured_outputs_config.enable_in_reasoning = False
+
+    manager = StructuredOutputManager(vllm_config)
+    manager._compiled_grammar_cache_log_interval = 2
+    manager._next_compiled_grammar_cache_log_total = 2
+
+    backend = Mock()
+    backend.compile_grammar.return_value = Mock()
+    backend.compiled_grammar_cache_stats.side_effect = [
+        CacheInfo(hits=1, total=1),
+        CacheInfo(hits=1, total=2),
+        CacheInfo(hits=1, total=2),
+    ]
+    manager.backend = backend
+
+    info_log = Mock()
+    monkeypatch.setattr("vllm.v1.structured_output.logger.info", info_log)
+
+    request = Mock()
+    request.structured_output_request.structured_output_key = (
+        StructuredOutputOptions.JSON,
+        '{"type":"object"}',
+    )
+
+    manager._create_grammar(request)
+    info_log.assert_not_called()
+
+    manager._create_grammar(request)
+    info_log.assert_called_once()

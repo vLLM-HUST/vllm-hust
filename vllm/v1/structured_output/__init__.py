@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
 import multiprocessing
+import threading
 from collections.abc import Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -30,6 +31,8 @@ else:
 
 
 logger = init_logger(__name__)
+
+_COMPILED_GRAMMAR_CACHE_LOG_INTERVAL = 128
 
 
 class StructuredOutputManager:
@@ -92,6 +95,13 @@ class StructuredOutputManager:
         self.enable_in_reasoning = (
             self.vllm_config.structured_outputs_config.enable_in_reasoning
         )
+        self._compiled_grammar_cache_log_interval = (
+            _COMPILED_GRAMMAR_CACHE_LOG_INTERVAL
+        )
+        self._next_compiled_grammar_cache_log_total = (
+            self._compiled_grammar_cache_log_interval
+        )
+        self._compiled_grammar_cache_log_lock = threading.Lock()
 
     def grammar_init(self, request: "Request") -> None:
         if request.structured_output_request is None:
@@ -166,7 +176,34 @@ class StructuredOutputManager:
         request_type, grammar_spec = key
 
         assert self.backend is not None
-        return self.backend.compile_grammar(request_type, grammar_spec)
+        grammar = self.backend.compile_grammar(request_type, grammar_spec)
+        self._maybe_log_compiled_grammar_cache_stats()
+        return grammar
+
+    def _maybe_log_compiled_grammar_cache_stats(self) -> None:
+        stats = self.compiled_grammar_cache_stats()
+        if stats is None or stats.total < self._next_compiled_grammar_cache_log_total:
+            return
+
+        with self._compiled_grammar_cache_log_lock:
+            stats = self.compiled_grammar_cache_stats()
+            if (
+                stats is None
+                or stats.total < self._next_compiled_grammar_cache_log_total
+            ):
+                return
+
+            logger.info(
+                "Structured output compiled grammar cache stats: backend=%s hits=%d total=%d hit_ratio=%.4f",
+                type(self.backend).__name__ if self.backend is not None else "None",
+                stats.hits,
+                stats.total,
+                stats.hit_ratio,
+            )
+            while stats.total >= self._next_compiled_grammar_cache_log_total:
+                self._next_compiled_grammar_cache_log_total += (
+                    self._compiled_grammar_cache_log_interval
+                )
 
     def _fill_bitmasks(
         self, batch: Iterable[tuple[StructuredOutputGrammar, int, bool]]
@@ -369,5 +406,9 @@ class StructuredOutputManager:
         clear_fn = getattr(self.backend, "clear_compiled_grammar_cache", None)
         if callable(clear_fn):
             clear_fn()
+            with self._compiled_grammar_cache_log_lock:
+                self._next_compiled_grammar_cache_log_total = (
+                    self._compiled_grammar_cache_log_interval
+                )
             return True
         return False

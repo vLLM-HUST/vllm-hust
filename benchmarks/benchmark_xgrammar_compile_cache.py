@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import statistics
 import time
@@ -69,11 +70,35 @@ def _resolve_spec(args: argparse.Namespace) -> tuple[StructuredOutputOptions, st
     raise ValueError(f"Unsupported request type: {args.request_type}")
 
 
+def _resolve_specs(
+    args: argparse.Namespace,
+) -> tuple[StructuredOutputOptions, list[str]]:
+    request_type, grammar_spec = _resolve_spec(args)
+    if args.scenario == "reused":
+        return request_type, [grammar_spec] * args.iterations
+
+    if request_type != StructuredOutputOptions.JSON:
+        raise ValueError(
+            "The unique scenario is currently supported only for JSON schemas."
+        )
+
+    base_schema = json.loads(grammar_spec)
+    specs: list[str] = []
+    for index in range(args.iterations):
+        schema = copy.deepcopy(base_schema)
+        properties = schema.setdefault("properties", {})
+        properties[f"__unique_optional_field_{index}"] = {
+            "type": "string",
+            "description": "Unique field added for cache-miss benchmarking.",
+        }
+        specs.append(json.dumps(schema))
+    return request_type, specs
+
+
 def _measure_compile_time(
     backend: XgrammarBackend,
     request_type: StructuredOutputOptions,
-    grammar_spec: str,
-    iterations: int,
+    grammar_specs: list[str],
     *,
     use_cache: bool,
 ) -> list[float]:
@@ -81,10 +106,10 @@ def _measure_compile_time(
 
     if use_cache:
         backend.clear_compiled_grammar_cache()
-        backend.compile_grammar(request_type, grammar_spec)
+        backend.compile_grammar(request_type, grammar_specs[0])
         backend.compiled_grammar_cache_stats(delta=True)
 
-    for _ in range(iterations):
+    for grammar_spec in grammar_specs:
         if not use_cache:
             backend.clear_compiled_grammar_cache()
 
@@ -116,6 +141,15 @@ def main() -> None:
         help="Structured-output request type to benchmark.",
     )
     parser.add_argument(
+        "--scenario",
+        choices=("reused", "unique"),
+        default="reused",
+        help=(
+            "Benchmark repeated use of one schema or low-reuse unique schemas. "
+            "The unique scenario is currently supported only for JSON schemas."
+        ),
+    )
+    parser.add_argument(
         "--schema-path",
         default=str(
             Path(__file__).resolve().parent
@@ -138,13 +172,12 @@ def main() -> None:
     args = parser.parse_args()
 
     backend = _build_backend(args.tokenizer, args.trust_remote_code)
-    request_type, grammar_spec = _resolve_spec(args)
+    request_type, grammar_specs = _resolve_specs(args)
 
     cold_times = _measure_compile_time(
         backend,
         request_type,
-        grammar_spec,
-        args.iterations,
+        grammar_specs,
         use_cache=False,
     )
     backend.clear_compiled_grammar_cache()
@@ -152,8 +185,7 @@ def main() -> None:
     hot_times = _measure_compile_time(
         backend,
         request_type,
-        grammar_spec,
-        args.iterations,
+        grammar_specs,
         use_cache=True,
     )
     hot_stats = backend.compiled_grammar_cache_stats(delta=True)
@@ -167,9 +199,10 @@ def main() -> None:
     print("=" * 60)
     print(f"Tokenizer: {args.tokenizer}")
     print(f"Request type: {args.request_type}")
+    print(f"Scenario: {args.scenario}")
     print(f"Iterations per condition: {args.iterations}")
     if request_type == StructuredOutputOptions.JSON:
-        schema = json.loads(grammar_spec)
+        schema = json.loads(grammar_specs[0])
         print(f"JSON schema top-level keys: {sorted(schema.keys())}")
     print("=" * 60)
     print(f"Cold compile : {cold_mean * 1e6:8.2f} ± {cold_std * 1e6:6.2f} us")
