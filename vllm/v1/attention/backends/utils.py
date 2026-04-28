@@ -222,7 +222,7 @@ def make_local_attention_virtual_batches(
     block_size: int = 0,
 ) -> tuple[CommonAttentionMetadata, Callable[[torch.Tensor], torch.Tensor]]:
     query_start_loc_np = common_attn_metadata.query_start_loc_cpu.numpy()
-    seq_lens_np = common_attn_metadata.seq_lens_cpu.numpy()
+    seq_lens_np = common_attn_metadata.get_seq_lens_cpu().numpy()
     block_table = common_attn_metadata.block_table_tensor
     device = common_attn_metadata.query_start_loc.device
 
@@ -443,7 +443,7 @@ def split_decodes_prefills_and_extends(
     num_reqs = common_attn_metadata.num_reqs
     num_tokens = common_attn_metadata.num_actual_tokens
     query_start_loc = common_attn_metadata.query_start_loc_cpu
-    seq_lens = common_attn_metadata.seq_lens_cpu
+    seq_lens = common_attn_metadata.get_seq_lens_cpu()
 
     if max_query_len <= decode_threshold:
         return num_reqs, 0, 0, num_tokens, 0, 0

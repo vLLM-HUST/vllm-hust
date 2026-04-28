@@ -1142,7 +1142,9 @@ class SpecDecodeBaseProposer:
 
         device = common_attn_metadata.query_start_loc.device
         query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu
-        new_seq_lens_cpu = common_attn_metadata.seq_lens_cpu - num_rejected_tokens
+        new_seq_lens_cpu = (
+            common_attn_metadata.get_seq_lens_cpu() - num_rejected_tokens
+        )
 
         # [0, q1, q1 + q2, q1 + q2 + q3] -> [q1, q2, q3]
         new_query_len_per_req = query_start_loc_cpu[1:] - query_start_loc_cpu[:-1]
