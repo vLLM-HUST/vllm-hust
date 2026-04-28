@@ -4,7 +4,8 @@
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from prometheus_client import Counter, Gauge, Histogram
 
@@ -64,6 +65,12 @@ class StatLoggerBase(ABC):
         pass
 
     def record_sleep_state(self, is_awake: int, level: int):  # noqa
+        pass
+
+    def record_runtime_state(
+        self,
+        runtime_metrics_by_engine: Mapping[int, Mapping[str, Any]],
+    ) -> None:
         pass
 
 
@@ -478,6 +485,86 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
 
         # Setting default values
         self.record_sleep_state()
+
+        gauge_free_vram_bytes = self._gauge_cls(
+            name="vllm:free_vram_bytes",
+            documentation="Best-effort free VRAM bytes reported by each engine.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_free_vram_bytes = create_metric_per_engine(
+            gauge_free_vram_bytes, per_engine_labelvalues
+        )
+
+        gauge_reserved_vram_bytes = self._gauge_cls(
+            name="vllm:reserved_vram_bytes",
+            documentation="Best-effort reserved VRAM bytes reported by each engine.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_reserved_vram_bytes = create_metric_per_engine(
+            gauge_reserved_vram_bytes, per_engine_labelvalues
+        )
+
+        gauge_model_weight_bytes = self._gauge_cls(
+            name="vllm:model_weight_bytes",
+            documentation="Best-effort model weight memory footprint in bytes.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_model_weight_bytes = create_metric_per_engine(
+            gauge_model_weight_bytes, per_engine_labelvalues
+        )
+
+        gauge_available_kv_cache_memory_bytes = self._gauge_cls(
+            name="vllm:available_kv_cache_memory_bytes",
+            documentation="Available KV-cache memory budget in bytes after profiling.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_available_kv_cache_memory_bytes = create_metric_per_engine(
+            gauge_available_kv_cache_memory_bytes, per_engine_labelvalues
+        )
+
+        gauge_model_residency_state = self._gauge_cls(
+            name="vllm:model_residency_state",
+            documentation=(
+                "Model residency state; unknown = 1 before runtime state is refreshed; "
+                "resident = 1 when weights are resident; weights_offloaded = 1 "
+                "for sleep level 1; discard_all = 1 for sleep level 2."
+            ),
+            labelnames=labelnames + ["state"],
+            multiprocess_mode="mostrecent",
+        )
+        self.gauge_model_residency_state = {}
+        for state in ["unknown", "resident", "weights_offloaded", "discard_all"]:
+            self.gauge_model_residency_state[state] = {
+                idx: gauge_model_residency_state.labels(
+                    engine=idx, model_name=model_name, state=state
+                )
+                for idx in engine_indexes
+            }
+
+        gauge_model_load_state = self._gauge_cls(
+            name="vllm:model_load_state",
+            documentation=(
+                "Best-effort model load state; unknown = 1 before runtime state is refreshed; "
+                "initializing = 1 while the worker has not reported a ready model; "
+                "ready = 1 when the worker reports a loaded model."
+            ),
+            labelnames=labelnames + ["state"],
+            multiprocess_mode="mostrecent",
+        )
+        self.gauge_model_load_state = {}
+        for state in ["unknown", "initializing", "ready"]:
+            self.gauge_model_load_state[state] = {
+                idx: gauge_model_load_state.labels(
+                    engine=idx, model_name=model_name, state=state
+                )
+                for idx in engine_indexes
+            }
+
+        self.record_runtime_state({})
 
         gauge_kv_cache_usage = self._gauge_cls(
             name="vllm:kv_cache_usage_perc",
@@ -1200,8 +1287,47 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             )
             self.gauge_engine_sleep_state["awake"][engine_idx].set(awake)
 
+    def record_runtime_state(
+        self,
+        runtime_metrics_by_engine: Mapping[int, Mapping[str, Any]],
+    ) -> None:
+        for engine_idx in self.engine_indexes:
+            runtime_metrics = runtime_metrics_by_engine.get(engine_idx, {})
+            self.gauge_free_vram_bytes[engine_idx].set(
+                float(runtime_metrics.get("free_vram_bytes") or 0)
+            )
+            self.gauge_reserved_vram_bytes[engine_idx].set(
+                float(runtime_metrics.get("reserved_vram_bytes") or 0)
+            )
+            self.gauge_model_weight_bytes[engine_idx].set(
+                float(runtime_metrics.get("model_weight_bytes") or 0)
+            )
+            self.gauge_available_kv_cache_memory_bytes[engine_idx].set(
+                float(runtime_metrics.get("available_kv_cache_memory_bytes") or 0)
+            )
+            self._set_state_gauge(
+                self.gauge_model_residency_state,
+                engine_idx,
+                str(runtime_metrics.get("model_residency_state") or "unknown"),
+            )
+            self._set_state_gauge(
+                self.gauge_model_load_state,
+                engine_idx,
+                str(runtime_metrics.get("model_load_state") or "unknown"),
+            )
+
     def log_engine_initialized(self):
         self.log_metrics_info("cache_config", self.vllm_config.cache_config)
+
+    def _set_state_gauge(
+        self,
+        state_gauges: Mapping[str, Mapping[int, Gauge]],
+        engine_idx: int,
+        active_state: str,
+    ) -> None:
+        normalized_state = active_state if active_state in state_gauges else "unknown"
+        for state_name, gauges_by_engine in state_gauges.items():
+            gauges_by_engine[engine_idx].set(1.0 if state_name == normalized_state else 0.0)
 
 
 def build_buckets(mantissa_lst: list[int], max_value: int) -> list[int]:
@@ -1315,6 +1441,13 @@ class StatLoggerManager:
     def record_sleep_state(self, sleep: int = 0, level: int = 0):
         for logger in self.stat_loggers:
             logger.record_sleep_state(sleep, level)
+
+    def record_runtime_state(
+        self,
+        runtime_metrics_by_engine: Mapping[int, Mapping[str, Any]],
+    ) -> None:
+        for logger in self.stat_loggers:
+            logger.record_runtime_state(runtime_metrics_by_engine)
 
     def log(self):
         for logger in self.stat_loggers:

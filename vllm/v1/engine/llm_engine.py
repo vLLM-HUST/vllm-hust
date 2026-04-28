@@ -127,6 +127,7 @@ class LLMEngine:
                 aggregate_engine_logging=aggregate_engine_logging,
             )
             self.logger_manager.log_engine_initialized()
+            self._refresh_runtime_metrics()
 
         if not multiprocess_mode:
             # for v0 compatibility
@@ -363,12 +364,14 @@ class LLMEngine:
 
         if self.logger_manager is not None:
             self.logger_manager.record_sleep_state(1, level)
+            self._refresh_runtime_metrics()
 
     def wake_up(self, tags: list[str] | None = None):
         self.engine_core.wake_up(tags)
 
         if self.logger_manager is not None:
             self.logger_manager.record_sleep_state(0, 0)
+            self._refresh_runtime_metrics()
 
     def is_sleeping(self) -> bool:
         return self.engine_core.is_sleeping()
@@ -376,6 +379,29 @@ class LLMEngine:
     def get_metrics(self) -> list[Metric]:
         assert self.log_stats, "Stat logging disabled"
         return get_metrics_snapshot()
+
+    def _refresh_runtime_metrics(self) -> None:
+        if self.logger_manager is None:
+            return
+        try:
+            runtime_metrics = self.collective_rpc("get_runtime_metrics")
+        except Exception as exc:
+            logger.warning(
+                "Failed to refresh runtime metrics; continuing without updated runtime gauges: %s",
+                exc,
+            )
+            return
+
+        runtime_metrics_by_engine = {
+            engine_idx: dict(engine_metrics)
+            for engine_idx, engine_metrics in zip(
+                self.logger_manager.engine_indexes,
+                runtime_metrics,
+                strict=False,
+            )
+            if isinstance(engine_metrics, dict)
+        }
+        self.logger_manager.record_runtime_state(runtime_metrics_by_engine)
 
     @property
     def tokenizer(self) -> TokenizerLike | None:

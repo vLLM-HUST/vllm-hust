@@ -126,6 +126,15 @@ class WorkerBase:
         """Load model onto target device."""
         raise NotImplementedError
 
+    def get_runtime_metrics(self) -> dict[str, Any]:
+        """Return a best-effort runtime metrics snapshot for observability.
+
+        This hook is intentionally read-only and should avoid touching the
+        execution hot path. Worker implementations may expose a partial view
+        when some metrics are not available on the current platform.
+        """
+        return {}
+
     def execute_model(
         self, scheduler_output: SchedulerOutput
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:

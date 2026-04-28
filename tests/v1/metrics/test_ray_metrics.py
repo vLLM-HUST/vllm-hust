@@ -2,12 +2,13 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import pytest
-import ray
 
 from vllm.config.model import ModelDType
 from vllm.sampling_params import SamplingParams
 from vllm.v1.engine.async_llm import AsyncEngineArgs, AsyncLLM
 from vllm.v1.metrics.ray_wrappers import RayPrometheusMetric, RayPrometheusStatLogger
+
+pytestmark = pytest.mark.skip_global_cleanup
 
 MODELS = [
     "distilbert/distilgpt2",
@@ -25,6 +26,8 @@ def test_engine_log_metrics_ray(
 ) -> None:
     """Simple smoke test, verifying this can be used without exceptions.
     Need to start a Ray cluster in order to verify outputs."""
+
+    ray = pytest.importorskip("ray")
 
     @ray.remote(num_gpus=1)
     class EngineTestActor:

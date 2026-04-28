@@ -134,6 +134,16 @@ class CPUWorker(Worker):
         logger.warning("sleep mode is not supported on CPU, ignore it.")
         pass
 
+    def get_runtime_metrics(self) -> dict[str, Any]:
+        return {
+            "free_vram_bytes": 0,
+            "reserved_vram_bytes": 0,
+            "model_weight_bytes": 0,
+            "available_kv_cache_memory_bytes": int(self.determine_available_memory()),
+            "model_residency_state": "resident",
+            "model_load_state": "ready" if self.model_runner is not None else "initializing",
+        }
+
     def determine_available_memory(self) -> int:
         return self.cache_config.cpu_kvcache_space_bytes or 0
 

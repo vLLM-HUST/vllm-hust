@@ -173,6 +173,8 @@ class AsyncLLM(EngineClient):
                 aggregate_engine_logging=aggregate_engine_logging,
             )
             self.logger_manager.log_engine_initialized()
+            with suppress(RuntimeError):
+                asyncio.get_running_loop().create_task(self._refresh_runtime_metrics())
 
         self._client_count = client_count
 
@@ -910,12 +912,14 @@ class AsyncLLM(EngineClient):
 
         if self.logger_manager is not None:
             self.logger_manager.record_sleep_state(1, level)
+            await self._refresh_runtime_metrics()
 
     async def wake_up(self, tags: list[str] | None = None) -> None:
         await self.engine_core.wake_up_async(tags)
 
         if self.logger_manager is not None:
             self.logger_manager.record_sleep_state(0, 0)
+            await self._refresh_runtime_metrics()
 
     async def is_sleeping(self) -> bool:
         return await self.engine_core.is_sleeping_async()
@@ -949,6 +953,29 @@ class AsyncLLM(EngineClient):
         return await self.engine_core.collective_rpc_async(
             method, timeout, args, kwargs
         )
+
+    async def _refresh_runtime_metrics(self) -> None:
+        if self.logger_manager is None:
+            return
+        try:
+            runtime_metrics = await self.collective_rpc("get_runtime_metrics")
+        except Exception as exc:
+            logger.warning(
+                "Failed to refresh runtime metrics; continuing without updated runtime gauges: %s",
+                exc,
+            )
+            return
+
+        runtime_metrics_by_engine = {
+            engine_idx: dict(engine_metrics)
+            for engine_idx, engine_metrics in zip(
+                self.logger_manager.engine_indexes,
+                runtime_metrics,
+                strict=False,
+            )
+            if isinstance(engine_metrics, dict)
+        }
+        self.logger_manager.record_runtime_state(runtime_metrics_by_engine)
 
     async def wait_for_requests_to_drain(self, drain_timeout: int = 300):
         """Wait for all requests to be drained."""

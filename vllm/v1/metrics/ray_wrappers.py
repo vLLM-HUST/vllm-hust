@@ -2,6 +2,10 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import time
 
+from prometheus_client import Counter as PromCounter
+from prometheus_client import Gauge as PromGauge
+from prometheus_client import Histogram as PromHistogram
+
 from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorProm
 from vllm.v1.metrics.loggers import PrometheusStatLogger
 from vllm.v1.metrics.perf import PerfMetricsProm
@@ -29,9 +33,9 @@ def _get_replica_id() -> str | None:
 
 class RayPrometheusMetric:
     def __init__(self):
-        if ray_metrics is None:
-            raise ImportError("RayPrometheusMetric requires Ray to be installed.")
         self.metric: Metric = None
+        self._label_keys: tuple[str, ...] = ()
+        self._is_fallback_metric = False
 
     @staticmethod
     def _get_tag_keys(labelnames: list[str] | None) -> tuple[str, ...]:
@@ -42,13 +46,13 @@ class RayPrometheusMetric:
     def labels(self, *labels, **labelskwargs):
         if labels:
             # -1 because ReplicaId was added automatically
-            expected = len(self.metric._tag_keys) - 1
+            expected = len(self._label_keys) - 1
             if len(labels) != expected:
                 raise ValueError(
                     "Number of labels must match the number of tag keys. "
                     f"Expected {expected}, got {len(labels)}"
                 )
-            labelskwargs.update(zip(self.metric._tag_keys, labels))
+            labelskwargs.update(zip(self._label_keys, labels))
 
         labelskwargs["ReplicaId"] = _get_replica_id() or ""
 
@@ -56,6 +60,8 @@ class RayPrometheusMetric:
             for k, v in labelskwargs.items():
                 if not isinstance(v, str):
                     labelskwargs[k] = str(v)
+            if self._is_fallback_metric:
+                return self.metric.labels(**labelskwargs)
             self.metric.set_default_tags(labelskwargs)
         return self
 
@@ -92,13 +98,22 @@ class RayGaugeWrapper(RayPrometheusMetric):
         del multiprocess_mode
 
         tag_keys = self._get_tag_keys(labelnames)
+        self._label_keys = tag_keys
         name = self._get_sanitized_opentelemetry_name(name)
 
-        self.metric = ray_metrics.Gauge(
-            name=name,
-            description=documentation,
-            tag_keys=tag_keys,
-        )
+        if ray_metrics is None:
+            self.metric = PromGauge(
+                name=name,
+                documentation=documentation,
+                labelnames=tag_keys,
+            )
+            self._is_fallback_metric = True
+        else:
+            self.metric = ray_metrics.Gauge(
+                name=name,
+                description=documentation,
+                tag_keys=tag_keys,
+            )
 
     def set(self, value: int | float):
         return self.metric.set(value)
@@ -119,12 +134,21 @@ class RayCounterWrapper(RayPrometheusMetric):
         labelnames: list[str] | None = None,
     ):
         tag_keys = self._get_tag_keys(labelnames)
+        self._label_keys = tag_keys
         name = self._get_sanitized_opentelemetry_name(name)
-        self.metric = ray_metrics.Counter(
-            name=name,
-            description=documentation,
-            tag_keys=tag_keys,
-        )
+        if ray_metrics is None:
+            self.metric = PromCounter(
+                name=name,
+                documentation=documentation,
+                labelnames=tag_keys,
+            )
+            self._is_fallback_metric = True
+        else:
+            self.metric = ray_metrics.Counter(
+                name=name,
+                description=documentation,
+                tag_keys=tag_keys,
+            )
 
     def inc(self, value: int | float = 1.0):
         if value == 0:
@@ -144,15 +168,25 @@ class RayHistogramWrapper(RayPrometheusMetric):
         buckets: list[float] | None = None,
     ):
         tag_keys = self._get_tag_keys(labelnames)
+        self._label_keys = tag_keys
         name = self._get_sanitized_opentelemetry_name(name)
 
         boundaries = buckets if buckets else []
-        self.metric = ray_metrics.Histogram(
-            name=name,
-            description=documentation,
-            tag_keys=tag_keys,
-            boundaries=boundaries,
-        )
+        if ray_metrics is None:
+            self.metric = PromHistogram(
+                name=name,
+                documentation=documentation,
+                labelnames=tag_keys,
+                buckets=boundaries,
+            )
+            self._is_fallback_metric = True
+        else:
+            self.metric = ray_metrics.Histogram(
+                name=name,
+                description=documentation,
+                tag_keys=tag_keys,
+                boundaries=boundaries,
+            )
 
     def observe(self, value: int | float):
         return self.metric.observe(value)

@@ -65,6 +65,14 @@ from .utils import request_memory
 
 logger = init_logger(__name__)
 
+
+def _model_residency_state_from_sleep_level(level: int) -> str:
+    if level == 1:
+        return "weights_offloaded"
+    if level == 2:
+        return "discard_all"
+    return "resident"
+
 if TYPE_CHECKING:
     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
     from vllm.v1.worker.gpu_model_runner import GPUModelRunner
@@ -129,6 +137,8 @@ class Worker(WorkerBase):
 
         # Buffers saved before sleep
         self._sleep_saved_buffers: dict[str, torch.Tensor] = {}
+        self._sleep_level = 0
+        self.available_kv_cache_memory_bytes = 0
 
         # Weight transfer engine (initialized on-demand)
         self.weight_transfer_engine = (
@@ -177,6 +187,7 @@ class Worker(WorkerBase):
             format_gib(freed_bytes),
             format_gib(used_bytes),
         )
+        self._sleep_level = level
 
     def wake_up(self, tags: list[str] | None = None) -> None:
         from vllm.device_allocator.cumem import CuMemAllocator
@@ -201,6 +212,28 @@ class Worker(WorkerBase):
             and hasattr(self.model_runner, "init_fp8_kv_scales")
         ):
             self.model_runner.init_fp8_kv_scales()
+
+        self._sleep_level = 0
+
+    def get_runtime_metrics(self) -> dict[str, Any]:
+        free_vram_bytes, _ = torch.cuda.mem_get_info(self.device)
+        model_runner = self.model_runner
+        model_weight_bytes = 0
+        if model_runner is not None:
+            model_weight_bytes = int(getattr(model_runner, "model_memory_usage", 0) or 0)
+
+        return {
+            "free_vram_bytes": int(free_vram_bytes),
+            "reserved_vram_bytes": int(torch.cuda.memory_reserved(self.device)),
+            "model_weight_bytes": model_weight_bytes,
+            "available_kv_cache_memory_bytes": int(
+                getattr(self, "available_kv_cache_memory_bytes", 0) or 0
+            ),
+            "model_residency_state": _model_residency_state_from_sleep_level(
+                self._sleep_level
+            ),
+            "model_load_state": "ready" if model_runner is not None else "initializing",
+        }
 
     def _maybe_get_memory_pool_context(self, tag: str) -> AbstractContextManager:
         if not self.vllm_config.model_config.enable_sleep_mode:
