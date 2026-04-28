@@ -10,6 +10,7 @@ from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.reasoning import ReasoningParserManager
 from vllm.tokenizers import cached_tokenizer_from_config
+from vllm.utils.cache import CacheInfo
 from vllm.utils.import_utils import LazyLoader
 from vllm.v1.structured_output.backend_guidance import GuidanceBackend
 from vllm.v1.structured_output.backend_types import (
@@ -341,4 +342,32 @@ class StructuredOutputManager:
 
     def clear_backend(self) -> None:
         if self.backend is not None:
+            stats = self.compiled_grammar_cache_stats()
+            if stats is not None and stats.total > 0:
+                logger.debug(
+                    "Structured output backend cache stats before destroy: backend=%s hits=%d total=%d hit_ratio=%.4f",
+                    type(self.backend).__name__,
+                    stats.hits,
+                    stats.total,
+                    stats.hit_ratio,
+                )
             self.backend.destroy()
+
+    def compiled_grammar_cache_stats(self, *, delta: bool = False) -> CacheInfo | None:
+        if self.backend is None:
+            return None
+
+        stats_fn = getattr(self.backend, "compiled_grammar_cache_stats", None)
+        if callable(stats_fn):
+            return stats_fn(delta=delta)
+        return None
+
+    def clear_compiled_grammar_cache(self) -> bool:
+        if self.backend is None:
+            return False
+
+        clear_fn = getattr(self.backend, "clear_compiled_grammar_cache", None)
+        if callable(clear_fn):
+            clear_fn()
+            return True
+        return False

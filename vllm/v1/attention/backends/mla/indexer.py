@@ -327,6 +327,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
         num_tokens = common_attn_metadata.num_actual_tokens
 
         query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu
+        seq_lens_cpu = common_attn_metadata.seq_lens_cpu
         num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
             split_decodes_and_prefills(
                 common_attn_metadata,
@@ -341,7 +342,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
         prefill_metadata = None
         if num_prefills > 0:
             chunk_seq_ids = split_prefill_chunks(
-                common_attn_metadata.seq_lens_cpu[num_decodes:],
+                seq_lens_cpu[num_decodes:],
                 self.max_prefill_buffer_size,
                 request_offset=num_decodes,
             )
@@ -350,7 +351,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                     reqs_start,
                     reqs_end,
                     query_start_loc_cpu,
-                    common_attn_metadata.seq_lens_cpu,
+                    seq_lens_cpu,
                     common_attn_metadata.block_table_tensor,
                 )
                 for reqs_start, reqs_end in chunk_seq_ids
@@ -379,7 +380,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             # kernel produces no meaningful output for those rows.
             block_table.clamp_(min=0)
 
-            max_decode_len = int(decode_lens_cpu.max().item())
+            max_decode_len = int(decode_lens_cpu.max())
             next_n = 1 + self.num_speculative_tokens
             use_native = not self.use_flattening and max_decode_len == next_n
 
@@ -401,7 +402,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 # [10-3, 7-1, 12-4, 0-0] = [7, 6, 8, 0].
 
                 # 3 + 1 + 4 + 0 = 8
-                actual_expanded = int(decode_lens_cpu.sum().item())
+                actual_expanded = int(decode_lens_cpu.sum())
 
                 # [7, 6, 8, 0] -> [7, 7, 7, 6, 8, 8, 8, 8]
                 expanded_base = torch.repeat_interleave(

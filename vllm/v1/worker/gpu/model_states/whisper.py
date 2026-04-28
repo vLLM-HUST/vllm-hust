@@ -72,17 +72,35 @@ class WhisperModelState(ModelState):
             req_encoder_inputs = scheduled_encoder_inputs.get(req_id, [])
             if req_encoder_inputs:
                 encoder_inputs[req_id] = req_encoder_inputs
-        _, mm_kwargs = self.encoder_runner.prepare_mm_inputs(encoder_inputs)
+        mm_hashes, mm_kwargs = self.encoder_runner.prepare_mm_inputs(encoder_inputs)
         if mm_kwargs:
-            # Whisper consumes encoder outputs through `encoder_outputs`, not
-            # `inputs_embeds`. Single modality (audio) so execute_mm_encoder
-            # preserves request order; use its return value directly.
-            # No need to store in encoder_cache: cross-attention K/V are written
-            # to the KV cache on the first step; decode steps use the cache.
-            self.encoder_outputs = self.encoder_runner.execute_mm_encoder(mm_kwargs)
-        else:
-            # Decode steps: encoder K/V are in cross-attention KV cache.
-            self.encoder_outputs = []
+            encoder_outputs = self.encoder_runner.execute_mm_encoder(mm_kwargs)
+            self.encoder_cache.encoder_outputs.update(zip(mm_hashes, encoder_outputs))
+
+        prefill_lens = req_states.prefill_len.np[input_batch.idx_mapping_np]
+        computed_prefill_lens = req_states.num_computed_prefill_tokens[
+            input_batch.idx_mapping_np
+        ]
+        encoder_outputs_for_batch: list[torch.Tensor] = []
+        for req_id, computed_prefill_len, prefill_len in zip(
+            input_batch.req_ids, computed_prefill_lens, prefill_lens
+        ):
+            if computed_prefill_len >= prefill_len:
+                # Decode steps: encoder K/V are already in cross-attention KV cache.
+                continue
+
+            mm_features = self.encoder_cache.mm_features[req_id]
+            assert len(mm_features) == 1, (
+                "Encoder-decoder models are expected to have exactly one "
+                "encoder input per request."
+            )
+
+            mm_hash = mm_features[0].identifier
+            encoder_output = self.encoder_cache.encoder_outputs.get(mm_hash)
+            assert encoder_output is not None, f"Encoder cache miss for {mm_hash}."
+            encoder_outputs_for_batch.append(encoder_output)
+
+        self.encoder_outputs = encoder_outputs_for_batch
         return None
 
     def prepare_inputs(
