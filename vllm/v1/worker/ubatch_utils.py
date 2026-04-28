@@ -177,7 +177,7 @@ def _make_metadata_with_slice(
         query_start_loc[1:] -= tokens_skipped
         query_start_loc_cpu[1:] -= tokens_skipped
     seq_lens = attn_metadata.seq_lens[request_slice]
-    seq_lens_cpu = attn_metadata.get_seq_lens_cpu()[request_slice]
+    seq_lens_cpu = attn_metadata.seq_lens_cpu[request_slice]
 
     if splits_last_request:
         # NOTE: We use start_locs (the original query_start_loc_cpu) to calculate
@@ -195,7 +195,7 @@ def _make_metadata_with_slice(
         seq_lens_cpu[-1] -= tokens_skipped
 
     max_seq_len = int(seq_lens_cpu.max())
-    num_computed_tokens_cpu = attn_metadata.get_num_computed_tokens_cpu()[request_slice]
+    num_computed_tokens_cpu = attn_metadata.num_computed_tokens_cpu[request_slice]
 
     num_requests = request_slice.stop - request_slice.start
     num_actual_tokens = token_slice.stop - token_slice.start
