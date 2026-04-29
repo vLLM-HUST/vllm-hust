@@ -31,7 +31,7 @@ jobs:
       TARGET_REPO_URL: git@github.com:${{ github.repository }}.git
       TARGET_REPO_SHA: ${{ github.sha }}
       VLLM_ASCEND_HUST_REPO_URL: git@github.com:vLLM-HUST/vllm-ascend-hust.git
-      VLLM_ASCEND_HUST_REPO_REF: f2cfbc8dd90a7ab313d77ef90bfe4267edd808b0
+      VLLM_ASCEND_HUST_REPO_REF: f5f0bcbfb43e904b66195f4322fbc7dc58e07327
       VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}/vllm-ascend-hust
 
     steps:
