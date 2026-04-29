@@ -250,6 +250,7 @@ jobs:
 
       - name: Prepare Ascend runtime and install repos
         env:
+          COMPILE_CUSTOM_KERNELS: "1"
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}/vllm-ascend-hust
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
@@ -260,14 +261,35 @@ jobs:
 
       - name: Verify installation
         env:
+          COMPILE_CUSTOM_KERNELS: "1"
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}/vllm-ascend-hust
         run: |
           source "${VLLM_ASCEND_HUST_REPO}/scripts/use_single_ascend_env.sh"
           python --version
-          python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          import vllm
+          import vllm_ascend
+
+          expected_repo = Path(os.environ["VLLM_ASCEND_HUST_REPO"]).resolve()
+          vllm_ascend_path = Path(vllm_ascend.__file__).resolve()
+
+          print(f"vLLM version: {vllm.__version__}")
+          print(f"vLLM module path: {Path(vllm.__file__).resolve()}")
+          print(f"vllm_ascend module path: {vllm_ascend_path}")
+
+          if expected_repo not in vllm_ascend_path.parents:
+              raise SystemExit(
+                  "vllm_ascend was not imported from the checked-out workspace: "
+                  f"{vllm_ascend_path} (expected under {expected_repo})"
+              )
+          PY
 
       - name: Run benchmark CI and optional HF sync
         env:
+          COMPILE_CUSTOM_KERNELS: "1"
           WORKSPACE_ROOT: ${{ github.workspace }}
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}/vllm-ascend-hust
           VLLM_HUST_REPO: ${{ github.workspace }}

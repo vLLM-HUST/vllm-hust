@@ -13,6 +13,7 @@ SUBMISSIONS_ROOT=${SUBMISSIONS_ROOT:-$RESULT_ROOT/submissions}
 SUBMISSION_DIR=${SUBMISSION_DIR:-$SUBMISSIONS_ROOT/$RUN_ID}
 AGGREGATE_OUTPUT_DIR=${AGGREGATE_OUTPUT_DIR:-$RESULT_ROOT/leaderboard-data}
 SERVER_LOG=${SERVER_LOG:-$RESULT_ROOT/server.log}
+PREFLIGHT_LOG=${PREFLIGHT_LOG:-$RESULT_ROOT/preflight.log}
 BENCH_SCENARIO=${BENCH_SCENARIO:-random-online}
 BENCH_DATASET_PATH=${BENCH_DATASET_PATH:-}
 BENCH_CONSTRAINTS_FILE=${BENCH_CONSTRAINTS_FILE:-}
@@ -46,6 +47,91 @@ server_group_pid=""
 marker_pid_file=""
 marker_pgid_file=""
 
+print_file_if_present() {
+  local title=$1
+  local file_path=$2
+  local max_lines=${3:-120}
+
+  if [[ ! -f "$file_path" ]]; then
+    return
+  fi
+
+  echo "== ${title} =="
+  tail -n "$max_lines" "$file_path"
+}
+
+dump_startup_diagnostics() {
+  echo "== Benchmark startup diagnostics =="
+  echo "HOST=$HOST"
+  echo "PORT=$PORT"
+  echo "MODEL_NAME=$MODEL_NAME"
+  echo "COMPILE_CUSTOM_KERNELS=${COMPILE_CUSTOM_KERNELS:-<unset>}"
+  echo "ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-<unset>}"
+  echo "SERVER_LOG=$SERVER_LOG"
+  echo "PREFLIGHT_LOG=$PREFLIGHT_LOG"
+  print_file_if_present "Preflight log" "$PREFLIGHT_LOG"
+  print_file_if_present "Server log" "$SERVER_LOG"
+}
+
+run_preflight() {
+  {
+    echo "== Ascend benchmark preflight =="
+    echo "timestamp=$(date -Iseconds)"
+    echo "pwd=$PWD"
+    echo "HOST=$HOST"
+    echo "PORT=$PORT"
+    echo "MODEL_NAME=$MODEL_NAME"
+    echo "COMPILE_CUSTOM_KERNELS=${COMPILE_CUSTOM_KERNELS:-<unset>}"
+    echo "ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-<unset>}"
+
+    if command -v npu-smi >/dev/null 2>&1; then
+      echo "-- npu-smi info -m --"
+      npu-smi info -m || true
+      echo "-- npu-smi info --"
+      npu-smi info || true
+    else
+      echo "npu-smi not found on PATH"
+    fi
+
+    echo "-- python preflight --"
+    python - <<'PY'
+import os
+from pathlib import Path
+
+print(f"python={Path(os.sys.executable).resolve()}")
+print(f"ASCEND_RT_VISIBLE_DEVICES={os.environ.get('ASCEND_RT_VISIBLE_DEVICES', '<unset>')}")
+print(f"COMPILE_CUSTOM_KERNELS={os.environ.get('COMPILE_CUSTOM_KERNELS', '<unset>')}")
+
+try:
+    import vllm
+    print(f"vllm={Path(vllm.__file__).resolve()}")
+except Exception as exc:
+    print(f"vllm import failed: {exc!r}")
+
+try:
+    import vllm_ascend
+    print(f"vllm_ascend={Path(vllm_ascend.__file__).resolve()}")
+except Exception as exc:
+    print(f"vllm_ascend import failed: {exc!r}")
+
+try:
+    import torch
+    print(f"torch={Path(torch.__file__).resolve()}")
+    has_npu = hasattr(torch, 'npu')
+    print(f"torch_has_npu={has_npu}")
+    if has_npu:
+      print(f"torch.npu.is_available={torch.npu.is_available()}")
+      device_count = torch.npu.device_count()
+      print(f"torch.npu.device_count={device_count}")
+      if device_count > 0:
+          torch.npu.set_device(0)
+          print(f"torch.npu.current_device={torch.npu.current_device()}")
+except Exception as exc:
+    print(f"torch_npu_probe_failed={exc!r}")
+PY
+  } >"$PREFLIGHT_LOG" 2>&1
+}
+
 cleanup() {
   if [[ -n "$server_group_pid" ]] && kill -0 "$server_group_pid" 2>/dev/null; then
     kill -TERM -- "-$server_group_pid" 2>/dev/null || true
@@ -70,8 +156,17 @@ cleanup() {
 }
 
 start_server() {
+  local -a serve_env=(
+    env
+    -u WORKSPACE_ROOT
+    -u VLLM_HUST_REPO
+    -u VLLM_HUST_BENCHMARK_REPO
+    -u VLLM_HUST_WEBSITE_REPO
+    -u VLLM_ASCEND_HUST_REPO
+  )
+
   if command -v setsid >/dev/null 2>&1; then
-    setsid vllm serve "$MODEL_NAME" \
+    setsid "${serve_env[@]}" vllm serve "$MODEL_NAME" \
       --host "$HOST" \
       --port "$PORT" \
       --dtype "$DTYPE" \
@@ -81,7 +176,7 @@ start_server() {
     server_pid=$!
     server_group_pid=$server_pid
   else
-    vllm serve "$MODEL_NAME" \
+    "${serve_env[@]}" vllm serve "$MODEL_NAME" \
       --host "$HOST" \
       --port "$PORT" \
       --dtype "$DTYPE" \
@@ -137,10 +232,11 @@ echo "benchmark port: $PORT"
 echo "benchmark scenario: $BENCH_SCENARIO"
 echo "publish to hf: $PUBLISH_TO_HF"
 
+run_preflight
+print_file_if_present "Preflight log" "$PREFLIGHT_LOG" 80
+
 case "$BENCH_SCENARIO" in
   random-online)
-    EFFECTIVE_DATASET_NAME="random"
-    EFFECTIVE_DATASET_PATH=""
     EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-$BENCH_RANDOM_INPUT_LEN}
     EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-$BENCH_RANDOM_OUTPUT_LEN}
     EFFECTIVE_CONSTRAINTS_FILE=${BENCH_CONSTRAINTS_FILE:-$VLLM_HUST_REPO/.github/workflows/data/random-online-ci-constraints.json}
@@ -165,8 +261,6 @@ case "$BENCH_SCENARIO" in
       echo "BENCH_CONSTRAINTS_FILE is required for sharegpt-online" >&2
       exit 2
     fi
-    EFFECTIVE_DATASET_NAME="sharegpt"
-    EFFECTIVE_DATASET_PATH="$BENCH_DATASET_PATH"
     EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-1024}
     EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-256}
     EFFECTIVE_CONSTRAINTS_FILE="$BENCH_CONSTRAINTS_FILE"
@@ -205,13 +299,13 @@ for attempt in $(seq 1 120); do
 
   if ! kill -0 "$server_pid" 2>/dev/null; then
     echo "vLLM server exited before becoming ready"
-    cat "$SERVER_LOG"
+    dump_startup_diagnostics
     exit 1
   fi
 
   if [[ "$attempt" -eq 120 ]]; then
     echo "Timed out waiting for vLLM server to become ready"
-    cat "$SERVER_LOG"
+    dump_startup_diagnostics
     exit 1
   fi
 
@@ -282,5 +376,6 @@ echo "RAW_RESULT_FILE=$RAW_RESULT_FILE"
 echo "SUBMISSION_DIR=$SUBMISSION_DIR"
 echo "AGGREGATE_OUTPUT_DIR=$AGGREGATE_OUTPUT_DIR"
 echo "SERVER_LOG=$SERVER_LOG"
+echo "PREFLIGHT_LOG=$PREFLIGHT_LOG"
 echo "BENCH_SCENARIO=$BENCH_SCENARIO"
 echo "EFFECTIVE_CONSTRAINTS_FILE=$EFFECTIVE_CONSTRAINTS_FILE"
