@@ -59,9 +59,9 @@ on:
         required: false
         type: string
         default: ""
-
+ 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ascend-benchmark-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -83,6 +83,7 @@ jobs:
       - self-hosted
       - linux-aarch64-a2b3-0
       - docker
+      - ascend-benchmark
     timeout-minutes: 60
     env:
       HF_HUB_DISABLE_TELEMETRY: "1"
