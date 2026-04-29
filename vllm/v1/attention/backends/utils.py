@@ -603,7 +603,9 @@ def split_prefill_chunks(
 
     while start < n:
         end = int(
-            torch.searchsorted(cumulative_seq_lens, current_chunk_limit, right=True).item()
+            torch.searchsorted(
+                cumulative_seq_lens, current_chunk_limit, right=True
+            ).item()
         )
         end = max(end, start + 1)
         chunk_bounds.append((start + request_offset, end + request_offset))
