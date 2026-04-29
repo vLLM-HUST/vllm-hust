@@ -31,6 +31,7 @@ from vllm.tokenizers import TokenizerLike
 from vllm.utils import length_from_prompt_token_ids_or_embeds, random_uuid
 from vllm.utils.jsontree import json_iter_leaves
 from vllm.v1.engine import EngineCoreRequest
+from vllm.v1.shared_execution import extract_shared_execution_metadata
 
 logger = init_logger(__name__)
 
@@ -282,6 +283,11 @@ class InputProcessor:
         else:
             pooling_params = params.clone()
 
+        shared_execution = extract_shared_execution_metadata(
+            sampling_params,
+            pooling_params,
+        )
+
         # Multimodal related.
         mm_features: list[MultiModalFeatureSpec] | None = None
 
@@ -334,6 +340,7 @@ class InputProcessor:
             data_parallel_rank=data_parallel_rank,
             trace_headers=trace_headers,
             resumable=resumable,
+            shared_execution=shared_execution,
         )
 
     def _validate_prompt_len(

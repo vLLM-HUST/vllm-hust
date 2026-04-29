@@ -20,6 +20,7 @@ from vllm.v1.engine import (
     EngineCoreRequest,
     FinishReason,
 )
+from vllm.v1.shared_execution import SharedExecutionMetadata
 from vllm.v1.structured_output.request import StructuredOutputRequest
 from vllm.v1.utils import ConstantList
 
@@ -73,6 +74,7 @@ class Request:
         block_hasher: Callable[["Request"], list["BlockHash"]] | None = None,
         resumable: bool = False,
         reasoning_ended: bool | None = None,
+        shared_execution: SharedExecutionMetadata | None = None,
     ) -> None:
         self.request_id = request_id
         self.client_index = client_index
@@ -145,6 +147,7 @@ class Request:
         self.all_token_ids = ConstantList(self._all_token_ids)
         # trace_headers
         self.trace_headers = trace_headers
+        self.shared_execution = shared_execution
         # State
         # The number of tokens with prefix cache hits.
         self.num_cached_tokens = -1
@@ -198,6 +201,7 @@ class Request:
             block_hasher=block_hasher,
             resumable=request.resumable,
             reasoning_ended=request.reasoning_ended,
+            shared_execution=request.shared_execution,
         )
 
     def append_output_token_ids(
@@ -254,6 +258,21 @@ class Request:
         ):
             return self.pooling_params.skip_reading_prefix_cache
         return False
+
+    @property
+    def canonical_prefix_key(self) -> str | None:
+        if self.shared_execution is None:
+            return None
+        return self.shared_execution.canonical_prefix_key
+
+    def shares_canonical_prefix_with(self, other: "Request | None") -> bool:
+        return (
+            other is not None
+            and self.shared_execution is not None
+            and self.shared_execution.shares_canonical_prefix_with(
+                other.shared_execution,
+            )
+        )
 
     def is_finished(self) -> bool:
         return RequestStatus.is_finished(self.status)

@@ -16,6 +16,7 @@ from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 from vllm.v1.metrics.stats import SchedulerStats
 from vllm.v1.outputs import LogprobsLists, LogprobsTensors
+from vllm.v1.shared_execution import SharedExecutionMetadata
 from vllm.v1.serial_utils import UtilityResult
 
 # Type for pause_generation mode parameter.
@@ -92,6 +93,7 @@ class EngineCoreRequest(
 
     trace_headers: Mapping[str, str] | None = None
     resumable: bool = False
+    shared_execution: SharedExecutionMetadata | None = None
 
     # The user-provided request ID. This field is set internally,
     # copied from the provided request_id that's originally assigned

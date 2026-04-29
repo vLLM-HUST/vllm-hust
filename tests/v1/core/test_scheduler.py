@@ -33,6 +33,7 @@ from vllm.v1.kv_cache_interface import (
 )
 from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
+from vllm.v1.shared_execution import SharedExecutionMetadata
 from vllm.v1.structured_output import StructuredOutputManager
 
 from .utils import EOS_TOKEN_ID, create_requests, create_scheduler, mock_kv
@@ -125,6 +126,30 @@ def test_schedule_multimodal_requests():
     assert len(output.scheduled_encoder_inputs) == 10
     for req_id, encoder_input in output.scheduled_encoder_inputs.items():
         assert len(encoder_input) == 1
+
+
+@pytest.mark.skip_global_cleanup
+def test_schedule_groups_requests_with_same_canonical_prefix():
+    scheduler = create_scheduler(max_num_seqs=3)
+    requests = create_requests(num_requests=3, num_tokens=8)
+    requests[0].shared_execution = SharedExecutionMetadata(
+        tenant="tenant-a",
+        canonical_prefix_key="prefix-a",
+    )
+    requests[1].shared_execution = SharedExecutionMetadata(
+        tenant="tenant-a",
+        canonical_prefix_key="prefix-b",
+    )
+    requests[2].shared_execution = SharedExecutionMetadata(
+        tenant="tenant-a",
+        canonical_prefix_key="prefix-a",
+    )
+
+    for request in requests:
+        scheduler.add_request(request)
+
+    output = scheduler.schedule()
+    assert [req.req_id for req in output.scheduled_new_reqs] == ["0", "2", "1"]
 
 
 def test_async_scheduling_pp_allows_rescheduling_with_output_placeholders():

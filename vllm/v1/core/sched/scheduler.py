@@ -46,6 +46,7 @@ from vllm.v1.core.sched.output import (
     SchedulerOutput,
 )
 from vllm.v1.core.sched.request_queue import (
+    FCFSRequestQueue,
     RequestQueue,
     SchedulingPolicy,
     create_request_queue,
@@ -62,6 +63,9 @@ from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
 
 logger = init_logger(__name__)
+
+
+SHARED_EXECUTION_REORDER_WINDOW = 8
 
 
 class Scheduler(SchedulerInterface):
@@ -287,6 +291,31 @@ class Scheduler(SchedulerInterface):
             )
 
         self._pause_state: PauseState = PauseState.UNPAUSED
+
+    def _maybe_reorder_waiting_queue_for_prefix_grouping(
+        self,
+        request_queue: RequestQueue,
+    ) -> None:
+        if not isinstance(request_queue, FCFSRequestQueue):
+            return
+        if len(request_queue) < 2 or not self.running:
+            return
+
+        anchor = self.running[-1]
+        anchor_prefix_key = anchor.canonical_prefix_key
+        if anchor_prefix_key is None:
+            return
+
+        for request in itertools.islice(
+            request_queue,
+            1,
+            SHARED_EXECUTION_REORDER_WINDOW,
+        ):
+            if request.canonical_prefix_key != anchor_prefix_key:
+                continue
+            request_queue.remove_request(request)
+            request_queue.prepend_request(request)
+            return
 
     def _mamba_block_aligned_split(
         self,
@@ -563,6 +592,10 @@ class Scheduler(SchedulerInterface):
 
                 request_queue = self._select_waiting_queue_for_scheduling()
                 assert request_queue is not None
+
+                self._maybe_reorder_waiting_queue_for_prefix_grouping(
+                    request_queue,
+                )
 
                 request = request_queue.peek_request()
                 request_id = request.request_id
