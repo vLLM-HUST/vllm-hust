@@ -344,7 +344,7 @@ jobs:
 
       - name: Prepare Ascend runtime and install repos
         env:
-          COMPILE_CUSTOM_KERNELS: "1"
+          COMPILE_CUSTOM_KERNELS: "0"
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}/vllm-ascend-hust
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
@@ -355,7 +355,7 @@ jobs:
 
       - name: Verify installation
         env:
-          COMPILE_CUSTOM_KERNELS: "1"
+          COMPILE_CUSTOM_KERNELS: "0"
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}/vllm-ascend-hust
         run: |
           source "${VLLM_ASCEND_HUST_REPO}/scripts/use_single_ascend_env.sh"
@@ -383,7 +383,7 @@ jobs:
 
       - name: Run benchmark CI and optional HF sync
         env:
-          COMPILE_CUSTOM_KERNELS: "1"
+          COMPILE_CUSTOM_KERNELS: "0"
           WORKSPACE_ROOT: ${{ github.workspace }}
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}/vllm-ascend-hust
           VLLM_HUST_REPO: ${{ github.workspace }}

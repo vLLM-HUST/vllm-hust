@@ -181,7 +181,7 @@ jobs:
 
       - name: Prepare Ascend runtime and install current checkout
         env:
-          COMPILE_CUSTOM_KERNELS: "1"
+          COMPILE_CUSTOM_KERNELS: "0"
         run: |
           source "${VLLM_ASCEND_HUST_REPO}/scripts/use_single_ascend_env.sh"
           bash "${VLLM_ASCEND_HUST_REPO}/scripts/install_local_ascend_plugin.sh" "$VLLM_ASCEND_HUST_REPO"
@@ -214,7 +214,7 @@ jobs:
 
       - name: Run real inference regression checks
         env:
-          COMPILE_CUSTOM_KERNELS: "1"
+          COMPILE_CUSTOM_KERNELS: "0"
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}/vllm-ascend-hust
           MODEL_NAME: Qwen/Qwen2.5-0.5B-Instruct
           DTYPE: bfloat16
