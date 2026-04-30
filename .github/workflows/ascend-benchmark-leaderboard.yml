@@ -223,13 +223,19 @@ jobs:
           clone_with_retry() {
             local repo_url=$1
             local target_dir=$2
+            local branch_name=${3:-}
             local attempts=4
             local delay_seconds=15
             local try=1
 
             rm -rf "$target_dir"
             while [[ "$try" -le "$attempts" ]]; do
-              if git clone --depth 1 "$repo_url" "$target_dir"; then
+              if [[ -n "$branch_name" ]] && git ls-remote --exit-code --heads "$repo_url" "$branch_name" >/dev/null 2>&1; then
+                echo "Cloning $repo_url at branch $branch_name"
+                if git clone --depth 1 --branch "$branch_name" "$repo_url" "$target_dir"; then
+                  return 0
+                fi
+              elif git clone --depth 1 "$repo_url" "$target_dir"; then
                 return 0
               fi
               echo "Clone failed ($try/$attempts): $repo_url" >&2
@@ -243,7 +249,8 @@ jobs:
             return 1
           }
 
-          clone_with_retry "git@github.com:vLLM-HUST/vllm-ascend-hust.git" "$GITHUB_WORKSPACE/vllm-ascend-hust"
+          ascend_ref="${VLLM_ASCEND_HUST_REPO_REF:-${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}}"
+          clone_with_retry "git@github.com:vLLM-HUST/vllm-ascend-hust.git" "$GITHUB_WORKSPACE/vllm-ascend-hust" "$ascend_ref"
 
       - name: Checkout ascend-runtime-manager repo
         run: |
