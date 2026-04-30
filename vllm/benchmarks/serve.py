@@ -61,6 +61,25 @@ TERM_PLOTLIB_AVAILABLE = (importlib.util.find_spec("termplotlib") is not None) a
     shutil.which("gnuplot") is not None
 )
 
+DEFAULT_BENCHMARK_HOST = "127.0.0.1"
+DEFAULT_BENCHMARK_PORT = 8000
+LOCAL_BENCHMARK_BASE_URL_FALLBACKS = (
+    "http://127.0.0.1:8080",
+    "http://localhost:8080",
+)
+
+
+def _allow_local_benchmark_fallback(args: argparse.Namespace) -> bool:
+    if getattr(args, "allow_local_benchmark_fallback", False):
+        return True
+
+    return os.getenv("VLLM_BENCH_ALLOW_LOCAL_FALLBACK", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
 
 async def get_first_model_from_server(
     base_url: str,
@@ -90,6 +109,151 @@ async def get_first_model_from_server(
                 "2. The server URL is correct\n"
                 f"Error: {e}"
             ) from e
+
+
+def get_benchmark_ssl_context(
+    base_url: str,
+    insecure: bool,
+) -> ssl.SSLContext | bool | None:
+    if insecure:
+        return False
+    if base_url.startswith("https://"):
+        return True
+    return None
+
+
+def should_try_local_benchmark_fallback(args: argparse.Namespace) -> bool:
+    return (
+        _allow_local_benchmark_fallback(args)
+        and args.base_url is None
+        and args.host == DEFAULT_BENCHMARK_HOST
+        and args.port == DEFAULT_BENCHMARK_PORT
+        and args.backend in OPENAI_COMPATIBLE_BACKENDS
+    )
+
+
+def get_local_benchmark_base_url_candidates(current_base_url: str) -> list[str]:
+    candidates: list[str] = []
+
+    env_base_url = os.getenv("VLLM_HUST_BASE_URL", "").strip().rstrip("/")
+    if env_base_url and env_base_url != current_base_url:
+        candidates.append(env_base_url)
+
+    for candidate in LOCAL_BENCHMARK_BASE_URL_FALLBACKS:
+        if candidate != current_base_url and candidate not in candidates:
+            candidates.append(candidate)
+
+    return candidates
+
+
+async def resolve_benchmark_base_url(
+    args: argparse.Namespace,
+    base_url: str,
+    api_url: str,
+    headers: dict[str, str] | None,
+) -> tuple[str, str, tuple[str, str] | None]:
+    discovered_model: tuple[str, str] | None = None
+
+    if not should_try_local_benchmark_fallback(args):
+        return base_url, api_url, discovered_model
+
+    ssl_context = get_benchmark_ssl_context(base_url, args.insecure)
+    try:
+        discovered_model = await get_first_model_from_server(
+            base_url,
+            headers,
+            ssl_context,
+        )
+        return base_url, api_url, discovered_model
+    except RuntimeError as original_error:
+        for candidate_base_url in get_local_benchmark_base_url_candidates(base_url):
+            candidate_ssl_context = get_benchmark_ssl_context(
+                candidate_base_url,
+                args.insecure,
+            )
+            try:
+                discovered_model = await get_first_model_from_server(
+                    candidate_base_url,
+                    headers,
+                    candidate_ssl_context,
+                )
+            except RuntimeError:
+                continue
+
+            print(
+                "Default benchmark target "
+                f"{base_url} is unreachable; falling back to "
+                f"{candidate_base_url}."
+            )
+            return (
+                candidate_base_url,
+                f"{candidate_base_url}{args.endpoint}",
+                discovered_model,
+            )
+
+        raise original_error
+
+
+def try_get_cached_tokenizer_dir(tokenizer_id: str) -> str | None:
+    if Path(tokenizer_id).exists():
+        return None
+
+    try:
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(repo_id=tokenizer_id, local_files_only=True)
+    except Exception:
+        return None
+
+
+def resolve_preferred_tokenizer_id(
+    args: argparse.Namespace,
+    tokenizer_id: str,
+) -> str:
+    if args.tokenizer is not None:
+        return tokenizer_id
+    if not should_try_local_benchmark_fallback(args):
+        return tokenizer_id
+
+    cached_tokenizer_dir = try_get_cached_tokenizer_dir(tokenizer_id)
+    if cached_tokenizer_dir is None:
+        return tokenizer_id
+
+    print(
+        "Using cached tokenizer files for local benchmark target: "
+        f"{cached_tokenizer_dir}."
+    )
+    return cached_tokenizer_dir
+
+
+def initialize_benchmark_tokenizer(
+    tokenizer_id: str,
+    tokenizer_mode: str,
+    trust_remote_code: bool,
+) -> tuple[str, TokenizerLike]:
+    try:
+        tokenizer = get_tokenizer(
+            tokenizer_id,
+            tokenizer_mode=tokenizer_mode,
+            trust_remote_code=trust_remote_code,
+        )
+        return tokenizer_id, tokenizer
+    except Exception:
+        cached_tokenizer_dir = try_get_cached_tokenizer_dir(tokenizer_id)
+        if cached_tokenizer_dir is None:
+            raise
+
+        print(
+            "Tokenizer initialization failed for "
+            f"{tokenizer_id}; falling back to cached files at "
+            f"{cached_tokenizer_dir}."
+        )
+        tokenizer = get_tokenizer(
+            cached_tokenizer_dir,
+            tokenizer_mode=tokenizer_mode,
+            trust_remote_code=trust_remote_code,
+        )
+        return cached_tokenizer_dir, tokenizer
 
 
 @dataclass
@@ -1261,6 +1425,16 @@ def add_cli_args(parser: argparse.ArgumentParser):
         default=None,
         help="Server or API base url if not using http host and port.",
     )
+    parser.add_argument(
+        "--allow-local-benchmark-fallback",
+        action="store_true",
+        help=(
+            "Allow falling back to VLLM_HUST_BASE_URL or local workstation "
+            "defaults when the default local benchmark target is unreachable. "
+            "Disabled by default to avoid silently benchmarking the wrong "
+            "endpoint."
+        ),
+    )
     # Use 127.0.0.1 here instead of localhost to force the use of ipv4
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
@@ -1689,21 +1863,25 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 raise ValueError("Invalid header format. Please use KEY=VALUE format.")
 
+    base_url, api_url, discovered_model = await resolve_benchmark_base_url(
+        args,
+        base_url,
+        api_url,
+        headers,
+    )
+
     # SSL context configuration
-    ssl_context: ssl.SSLContext | bool | None = None
-    if args.insecure:
-        # Disable SSL certificate verification
-        ssl_context = False
-    elif "https://" in base_url:
-        # Use default SSL context for HTTPS
-        ssl_context = True
+    ssl_context = get_benchmark_ssl_context(base_url, args.insecure)
 
     # Fetch model from server if not specified
     if args.model is None:
         print("Model not specified, fetching first model from server...")
-        model_name, model_id = await get_first_model_from_server(
-            base_url, headers, ssl_context
-        )
+        if discovered_model is not None:
+            model_name, model_id = discovered_model
+        else:
+            model_name, model_id = await get_first_model_from_server(
+                base_url, headers, ssl_context
+            )
         print(f"First model name: {model_name}, first model id: {model_id}")
     else:
         model_name = args.served_model_name
@@ -1715,11 +1893,12 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         tokenizer = None
     else:
         tokenizer_id = args.tokenizer if args.tokenizer is not None else model_id
+        tokenizer_id = resolve_preferred_tokenizer_id(args, tokenizer_id)
         tokenizer_mode = args.tokenizer_mode
-        tokenizer = get_tokenizer(
+        tokenizer_id, tokenizer = initialize_benchmark_tokenizer(
             tokenizer_id,
-            tokenizer_mode=tokenizer_mode,
-            trust_remote_code=args.trust_remote_code,
+            tokenizer_mode,
+            args.trust_remote_code,
         )
 
     # Validate dataset name/path

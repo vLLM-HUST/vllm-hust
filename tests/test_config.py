@@ -39,9 +39,9 @@ DEVICE_TYPE = current_platform.device_type
 
 def test_compile_config_repr_succeeds():
     # setup: VllmBackend mutates the config object
+    # Note: VllmBackend.__init__ already calls configure_post_pass()
     config = VllmConfig()
-    backend = VllmBackend(config)
-    backend.configure_post_pass()
+    _ = VllmBackend(config)
 
     # test that repr(config) succeeds
     val = repr(config)

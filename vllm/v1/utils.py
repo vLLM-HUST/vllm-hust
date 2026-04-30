@@ -130,6 +130,15 @@ class CpuGpuBuffer:
                 )
             self.np = self.cpu.numpy()
 
+    def __getitem__(self, key):
+        return self.gpu[key]
+
+    def __setitem__(self, key, value) -> None:
+        self.gpu[key] = value
+
+    def __len__(self) -> int:
+        return len(self.gpu)
+
     def copy_to_gpu(self, n: int | None = None) -> torch.Tensor:
         if n is None:
             return self.gpu.copy_(self.cpu, non_blocking=True)

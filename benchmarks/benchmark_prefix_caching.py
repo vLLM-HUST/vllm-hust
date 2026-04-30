@@ -195,7 +195,6 @@ def main(args):
     print(f"Max Prompt Length: {max(prompt_lens)}")
 
     engine_args = EngineArgs.from_cli_args(args)
-
     llm = LLM.from_engine_args(engine_args)
 
     sampling_params = SamplingParams(

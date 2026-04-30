@@ -23,9 +23,12 @@ from vllm.entrypoints.openai.responses.utils import (
     _maybe_combine_reasoning_and_tool_call,
     construct_chat_messages_with_tool_call,
     construct_input_messages,
+    construct_tool_dicts,
     convert_tool_responses_to_completions_format,
     should_continue_final_message,
 )
+
+pytestmark = pytest.mark.skip_global_cleanup
 
 
 class TestResponsesUtils:
@@ -50,6 +53,9 @@ class TestResponsesUtils:
         result = convert_tool_responses_to_completions_format(input_tool)
 
         assert result == {"type": "function", "function": input_tool}
+
+    def test_construct_tool_dicts_returns_none_for_empty_tools(self):
+        assert construct_tool_dicts([], "auto") is None
 
     def test_construct_chat_messages_with_tool_call(self):
         """Test construction of chat messages with tool calls."""
@@ -421,6 +427,61 @@ class TestShouldContinueFinalMessage:
             type="message",
         )
         assert should_continue_final_message([output_item]) is True
+
+
+class TestConstructInputMessagesInstructionsLeak:
+    def test_old_instructions_stripped_from_prev_msg(self):
+        prev = [
+            {"role": "system", "content": "old instructions"},
+            {"role": "user", "content": "What is 2+2?"},
+            {"role": "assistant", "content": "4"},
+        ]
+
+        messages = construct_input_messages(
+            request_instructions="new instructions",
+            request_input="What is 3+3?",
+            prev_msg=prev,
+        )
+
+        system_messages = [m for m in messages if m.get("role") == "system"]
+        assert len(system_messages) == 1
+        assert system_messages[0]["content"] == "new instructions"
+
+    def test_no_instructions_in_new_request(self):
+        prev = [
+            {"role": "system", "content": "old instructions"},
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello"},
+        ]
+
+        messages = construct_input_messages(
+            request_instructions=None,
+            request_input="What is 3+3?",
+            prev_msg=prev,
+        )
+
+        system_messages = [m for m in messages if m.get("role") == "system"]
+        assert len(system_messages) == 0
+
+    def test_non_system_messages_preserved(self):
+        prev = [
+            {"role": "system", "content": "old instructions"},
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello"},
+        ]
+
+        messages = construct_input_messages(
+            request_instructions="new instructions",
+            request_input="Follow up",
+            prev_msg=prev,
+        )
+
+        roles = [message["role"] for message in messages]
+        assert roles == ["system", "user", "assistant", "user"]
+        assert messages[0]["content"] == "new instructions"
+        assert messages[1]["content"] == "Hi"
+        assert messages[2]["content"] == "Hello"
+        assert messages[3]["content"] == "Follow up"
 
     def test_in_progress_reasoning_returns_true(self):
         """In-progress reasoning should be continued."""

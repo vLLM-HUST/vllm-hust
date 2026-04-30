@@ -3,6 +3,10 @@
 # ruff: noqa: E402
 import importlib.util
 import os
+import sys
+from glob import glob
+
+_REEXEC_NEEDED = False
 
 
 def _get_torch_cuda_version():
@@ -82,7 +86,140 @@ def _maybe_set_cuda_compatibility_path():
     os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(new_paths)
 
 
+def _prepend_env_path(var_name: str, values: list[str]) -> None:
+    global _REEXEC_NEEDED
+    norm_values = [os.path.normpath(v) for v in values if v and os.path.isdir(v)]
+    if not norm_values:
+        return
+
+    existing = os.environ.get(var_name, "")
+    existing_paths = existing.split(os.pathsep) if existing else []
+    norm_value_set = set(norm_values)
+    merged = norm_values + [
+        p for p in existing_paths if os.path.normpath(p) not in norm_value_set
+    ]
+    # Keep empty path entries unchanged only when they already exist in env.
+    if existing and "" in existing_paths:
+        merged.append("")
+    new_value = os.pathsep.join(merged)
+    if new_value == existing:
+        return
+    os.environ[var_name] = new_value
+    if var_name == "LD_LIBRARY_PATH":
+        _REEXEC_NEEDED = True
+
+
+def _detect_ascend_home() -> str | None:
+    configured = os.environ.get("ASCEND_HOME_PATH", "").strip()
+    if configured and os.path.isdir(configured):
+        return os.path.normpath(configured)
+
+    candidates = [
+        "/usr/local/Ascend/ascend-toolkit/latest",
+        "/usr/local/Ascend/latest",
+    ]
+    candidates.extend(sorted(glob("/usr/local/Ascend/ascend-toolkit*.*/latest")))
+    candidates.extend(sorted(glob("/usr/local/Ascend/ascend-toolkit*/latest")))
+
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return os.path.normpath(candidate)
+    return None
+
+
+def _maybe_set_ascend_runtime_path() -> None:
+    """Set essential Ascend runtime env vars for pip-installed vLLM usage.
+
+    This runs before importing torch so dynamic linker can resolve torch_npu
+    and HCCL shared libraries without requiring an external `source set_env.sh`.
+    """
+    enable = os.environ.get("VLLM_ASCEND_AUTO_ENV", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not enable:
+        return
+
+    ascend_home = _detect_ascend_home()
+    if not ascend_home:
+        return
+
+    os.environ.setdefault("ASCEND_HOME_PATH", ascend_home)
+
+    # Common Ascend toolkit layout. Keep this list minimal and additive.
+    ld_candidates = [
+        os.path.join(ascend_home, "lib64"),
+        os.path.join(ascend_home, "runtime", "lib64"),
+        os.path.join(ascend_home, "compiler", "lib64"),
+        os.path.join(ascend_home, "aarch64-linux", "lib64"),
+        os.path.join(ascend_home, "hccl", "lib64"),
+        os.path.join(ascend_home, "fwkacllib", "lib64"),
+        os.path.join(ascend_home, "atc", "lib64"),
+        "/usr/local/Ascend/driver/lib64",
+        "/usr/local/Ascend/driver/lib64/driver",
+    ]
+    path_candidates = [
+        os.path.join(ascend_home, "bin"),
+        "/usr/local/Ascend/driver/tools",
+    ]
+
+    _prepend_env_path("LD_LIBRARY_PATH", ld_candidates)
+    _prepend_env_path("PATH", path_candidates)
+
+    # Some toolchains read these aliases; set if absent to avoid overriding.
+    os.environ.setdefault("ASCEND_TOOLKIT_HOME", ascend_home)
+    os.environ.setdefault("ASCEND_OPP_PATH", os.path.join(ascend_home, "opp"))
+
+
+def _maybe_reexec_for_loader_env() -> None:
+    """Re-exec once when loader-sensitive env vars were updated.
+
+    Some environments only honor LD_LIBRARY_PATH during process startup.
+    Re-exec ensures newly injected runtime library paths are effective before
+    importing torch and backend extensions.
+    """
+    if not _should_reexec_for_loader_env():
+        return
+
+    os.environ["_VLLM_INTERNAL_ENV_REEXEC_DONE"] = "1"
+    os.execvpe(sys.executable, [sys.executable, *sys.argv], os.environ)
+
+
+def _should_reexec_for_loader_env(argv: list[str] | None = None) -> bool:
+    if not _REEXEC_NEEDED:
+        return False
+
+    if os.environ.get("_VLLM_INTERNAL_ENV_REEXEC_DONE", "0") == "1":
+        return False
+
+    argv = argv or sys.argv
+    if not argv or argv[0] in {"-", "-c"}:
+        return False
+
+    if os.environ.get("VLLM_ALLOW_ENV_REEXEC", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+
+    argv0 = os.path.normpath(argv[0])
+    if os.path.basename(argv0) in {"vllm", "vllm-hust"}:
+        return True
+
+    return argv0.endswith(
+        (
+            os.path.normpath("vllm/entrypoints/cli/main.py"),
+            os.path.normpath("vllm/entrypoints/openai/api_server.py"),
+        )
+    )
+
+
 _maybe_set_cuda_compatibility_path()
+_maybe_set_ascend_runtime_path()
+_maybe_reexec_for_loader_env()
 
 import torch
 

@@ -94,9 +94,7 @@ def construct_input_messages(
 
     # Prepend the conversation history.
     if prev_msg is not None:
-        # Filter out system messages from previous conversation -- per the
-        # OpenAI spec, instructions should NOT carry over across responses.
-        # The current request's instructions (if any) were already added above.
+        # Instructions should not carry over across responses.
         messages.extend(m for m in prev_msg if m.get("role") != "system")
     if prev_response_output is not None:
         # Add the previous output.

@@ -6,6 +6,7 @@ import socket
 import time
 import warnings
 from collections.abc import AsyncGenerator, Iterable, Mapping
+from contextlib import suppress
 from copy import copy
 from typing import Any
 
@@ -254,11 +255,13 @@ class AsyncLLM(EngineClient):
         )
 
     def __del__(self):
-        self.shutdown()
+        with suppress(Exception):
+            self.shutdown()
 
     def shutdown(self, timeout: float | None = None) -> None:
         """Shutdown, cleaning up the background proc and IPC."""
-        shutdown_prometheus()
+        if callable(shutdown_prometheus):
+            shutdown_prometheus()
 
         if renderer := getattr(self, "renderer", None):
             renderer.shutdown()

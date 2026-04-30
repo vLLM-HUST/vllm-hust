@@ -429,6 +429,96 @@ class ChatCompletionRequest(OpenAIBaseModel):
 
     _grammar_from_tool_parser: bool = PrivateAttr(default=False)
     """CAUTION: Should only be set by ``ToolParser.adjust_request``."""
+    _cached_tool_dicts: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _cached_tool_dicts_source: tuple[int, tuple[int, ...]] | None = PrivateAttr(
+        default=None
+    )
+    _cached_resolved_structured_outputs: StructuredOutputsParams | None = PrivateAttr(
+        default=None
+    )
+    _cached_resolved_structured_outputs_source: tuple[int | None, int | None] | None = (
+        PrivateAttr(default=None)
+    )
+
+    def invalidate_cached_normalization(self) -> None:
+        self._cached_tool_dicts = None
+        self._cached_tool_dicts_source = None
+        self._cached_resolved_structured_outputs = None
+        self._cached_resolved_structured_outputs_source = None
+
+    def _tool_dicts_source(self) -> tuple[int, tuple[int, ...]] | None:
+        if self.tools is None:
+            return None
+        return id(self.tools), tuple(id(tool) for tool in self.tools)
+
+    def get_tool_dicts(
+        self,
+        *,
+        exclude_tools_when_tool_choice_none: bool = False,
+    ) -> list[dict[str, Any]] | None:
+        if self.tools is None or (
+            self.tool_choice == "none" and exclude_tools_when_tool_choice_none
+        ):
+            return None
+
+        source = self._tool_dicts_source()
+        if source is None:
+            return None
+
+        if self._cached_tool_dicts_source != source:
+            self._cached_tool_dicts = [tool.model_dump() for tool in self.tools]
+            self._cached_tool_dicts_source = source
+
+        return self._cached_tool_dicts
+
+    def _resolved_structured_outputs_source(self) -> tuple[int | None, int | None]:
+        return id(self.structured_outputs), id(self.response_format)
+
+    def _response_format_structured_outputs_kwargs(self) -> dict[str, Any]:
+        response_format = self.response_format
+        if response_format is None:
+            return {}
+
+        if response_format.type == "json_object":
+            return {"json_object": True}
+        if response_format.type == "json_schema":
+            json_schema = response_format.json_schema
+            assert json_schema is not None
+            return {"json": json_schema.json_schema}
+        if response_format.type == "structural_tag":
+            structural_tag = response_format
+            assert isinstance(
+                structural_tag,
+                (
+                    LegacyStructuralTagResponseFormat,
+                    StructuralTagResponseFormat,
+                ),
+            )
+            return {
+                "structural_tag": json.dumps(structural_tag.model_dump(by_alias=True))
+            }
+        return {}
+
+    def resolve_structured_outputs(self) -> StructuredOutputsParams | None:
+        source = self._resolved_structured_outputs_source()
+        if self._cached_resolved_structured_outputs_source == source:
+            return self._cached_resolved_structured_outputs
+
+        structured_outputs = self.structured_outputs
+        structured_outputs_kwargs = self._response_format_structured_outputs_kwargs()
+
+        if structured_outputs_kwargs:
+            structured_outputs = (
+                StructuredOutputsParams(**structured_outputs_kwargs)
+                if structured_outputs is None
+                else replace(structured_outputs, **structured_outputs_kwargs)
+            )
+            self.structured_outputs = structured_outputs
+            source = self._resolved_structured_outputs_source()
+
+        self._cached_resolved_structured_outputs = structured_outputs
+        self._cached_resolved_structured_outputs_source = source
+        return structured_outputs
 
     def build_chat_params(
         self,
@@ -527,38 +617,6 @@ class ChatCompletionRequest(OpenAIBaseModel):
         if prompt_logprobs is None and self.echo:
             prompt_logprobs = self.top_logprobs
 
-        response_format = self.response_format
-        if response_format is not None:
-            structured_outputs_kwargs = dict[str, Any]()
-
-            # Set structured output params for response format
-            if response_format.type == "json_object":
-                structured_outputs_kwargs["json_object"] = True
-            elif response_format.type == "json_schema":
-                json_schema = response_format.json_schema
-                assert json_schema is not None
-                structured_outputs_kwargs["json"] = json_schema.json_schema
-            elif response_format.type == "structural_tag":
-                structural_tag = response_format
-                assert structural_tag is not None and isinstance(
-                    structural_tag,
-                    (
-                        LegacyStructuralTagResponseFormat,
-                        StructuralTagResponseFormat,
-                    ),
-                )
-                s_tag_obj = structural_tag.model_dump(by_alias=True)
-                structured_outputs_kwargs["structural_tag"] = json.dumps(s_tag_obj)
-
-            # If structured outputs wasn't already enabled,
-            # we must enable it for these features to work
-            if len(structured_outputs_kwargs) > 0:
-                self.structured_outputs = (
-                    StructuredOutputsParams(**structured_outputs_kwargs)
-                    if self.structured_outputs is None
-                    else replace(self.structured_outputs, **structured_outputs_kwargs)
-                )
-
         extra_args: dict[str, Any] = self.vllm_xargs if self.vllm_xargs else {}
         if self.kv_transfer_params:
             # Pass in kv_transfer_params via extra_args
@@ -586,7 +644,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             output_kind=RequestOutputKind.DELTA
             if self.stream
             else RequestOutputKind.FINAL_ONLY,
-            structured_outputs=self.structured_outputs,
+            structured_outputs=self.resolve_structured_outputs(),
             logit_bias=self.logit_bias,
             bad_words=self.bad_words,
             thinking_token_budget=self.thinking_token_budget,

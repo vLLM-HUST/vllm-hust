@@ -397,7 +397,10 @@ def _has_module(module_name: str) -> bool:
     The result is cached so that subsequent queries for the same module incur
     no additional overhead.
     """
-    return importlib.util.find_spec(module_name) is not None
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def has_deep_ep() -> bool:
@@ -425,9 +428,26 @@ def has_triton_kernels() -> bool:
     is_available = _has_module("triton_kernels") or _has_module(
         "vllm.third_party.triton_kernels"
     )
-    if is_available:
+    if not is_available:
+        return False
+
+    if not _has_module("triton.language.target_info"):
+        logger.info_once(
+            "Disabling triton_kernels because `triton.language.target_info` "
+            "is unavailable in this Triton build."
+        )
+        return False
+
+    try:
         import_triton_kernels()
-    return is_available
+    except Exception as exc:
+        logger.info_once(
+            "Disabling triton_kernels because they could not be imported: %s",
+            exc,
+        )
+        return False
+
+    return True
 
 
 def has_tilelang() -> bool:

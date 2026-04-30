@@ -14,7 +14,7 @@ Easy, fast, and cheap LLM serving for everyone
 | <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://blog.vllm.ai/"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
 </p>
 
-🔥 We have built a vLLM website to help you get started with vLLM. Please visit [vllm.ai](https://vllm.ai) to learn more.
+🔥 We have built a vllm website to help you get started with vllm. Please visit [vllm.ai](https://vllm.ai) to learn more.
 For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
 
 ---
@@ -23,53 +23,203 @@ For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
 
 vLLM is a fast and easy-to-use library for LLM inference and serving.
 
-Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has grown into one of the most active open-source AI projects built and maintained by a diverse community of many dozens of academic institutions and companies from over 2000 contributors.
+Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has evolved into a community-driven project with contributions from both academia and industry.
 
 vLLM is fast with:
 
 - State-of-the-art serving throughput
 - Efficient management of attention key and value memory with [**PagedAttention**](https://blog.vllm.ai/2023/06/20/vllm.html)
-- Continuous batching of incoming requests, chunked prefill, prefix caching
-- Fast and flexible model execution with piecewise and full CUDA/HIP graphs
-- Quantization: FP8, MXFP8/MXFP4, NVFP4, INT8, INT4, GPTQ/AWQ, GGUF, compressed-tensors, ModelOpt, TorchAO, and [more](https://docs.vllm.ai/en/latest/features/quantization/index.html)
-- Optimized attention kernels including FlashAttention, FlashInfer, TRTLLM-GEN, FlashMLA, and Triton
-- Optimized GEMM/MoE kernels for various precisions using CUTLASS, TRTLLM-GEN, CuTeDSL
-- Speculative decoding including n-gram, suffix, EAGLE, DFlash
-- Automatic kernel generation and graph-level transformations using torch.compile
-- Disaggregated prefill, decode, and encode
+- Continuous batching of incoming requests
+- Fast model execution with CUDA/HIP graph
+- Quantizations: [GPTQ](https://arxiv.org/abs/2210.17323), [AWQ](https://arxiv.org/abs/2306.00978), [AutoRound](https://arxiv.org/abs/2309.05516), INT4, INT8, and FP8
+- Optimized CUDA kernels, including integration with FlashAttention and FlashInfer
+- Speculative decoding
+- Chunked prefill
 
 vLLM is flexible and easy to use with:
 
 - Seamless integration with popular Hugging Face models
 - High-throughput serving with various decoding algorithms, including *parallel sampling*, *beam search*, and more
-- Tensor, pipeline, data, expert, and context parallelism for distributed inference
+- Tensor, pipeline, data and expert parallelism support for distributed inference
 - Streaming outputs
-- Generation of structured outputs using xgrammar or guidance
-- Tool calling and reasoning parsers
-- OpenAI-compatible API server, plus Anthropic Messages API and gRPC support
-- Efficient multi-LoRA support for dense and MoE layers
-- Support for NVIDIA GPUs, AMD GPUs, and x86/ARM/PowerPC CPUs. Additionally, diverse hardware plugins such as Google TPUs, Intel Gaudi, IBM Spyre, Huawei Ascend, Rebellions NPU, Apple Silicon, MetaX GPU, and more.
+- OpenAI-compatible API server
+- Support for NVIDIA GPUs, AMD CPUs and GPUs, Intel CPUs and GPUs, PowerPC CPUs, Arm CPUs, and TPU. Additionally, support for diverse hardware plugins such as Intel Gaudi, IBM Spyre and Huawei Ascend.
+- Prefix caching support
+- Multi-LoRA support
 
-vLLM seamlessly supports 200+ model architectures on Hugging Face, including:
+vLLM seamlessly supports most popular open-source models on HuggingFace, including:
 
-- Decoder-only LLMs (e.g., Llama, Qwen, Gemma)
-- Mixture-of-Expert LLMs (e.g., Mixtral, DeepSeek-V3, Qwen-MoE, GPT-OSS)
-- Hybrid attention and state-space models (e.g., Mamba, Qwen3.5)
-- Multi-modal models (e.g., LLaVA, Qwen-VL, Pixtral)
-- Embedding and retrieval models (e.g., E5-Mistral, GTE, ColBERT)
-- Reward and classification models (e.g., Qwen-Math)
+- Transformer-like LLMs (e.g., Llama)
+- Mixture-of-Expert LLMs (e.g., Mixtral, Deepseek-V2 and V3)
+- Embedding Models (e.g., E5-Mistral)
+- Multi-modal LLMs (e.g., LLaVA)
 
 Find the full list of supported models [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
 
 ## Getting Started
 
-Install vLLM with [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`:
+Install vLLM with `pip` or [from source](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/index.html#build-wheel-from-source):
 
 ```bash
-uv pip install vllm
+pip install vllm
 ```
 
-Or [build from source](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/index.html#build-wheel-from-source) for development.
+### Workspace Ascend Plugin (vllm-ascend-hust)
+
+For this multi-root workspace, you can install local `vllm-ascend-hust` as a
+platform plugin for `vllm-hust` with:
+
+```bash
+cd /path/to/vllm-ascend-hust
+bash scripts/install_local_ascend_plugin.sh
+```
+
+If your `vllm-ascend-hust` repo is in a different location:
+
+```bash
+bash /path/to/vllm-ascend-hust/scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend-hust
+```
+
+This script installs `vllm-ascend-hust` in editable mode and verifies that entry
+points under `vllm.platform_plugins` are discoverable.
+It defaults to lightweight mode (`COMPILE_CUSTOM_KERNELS=0`, `--no-deps`) so
+you can wire the plugin in workspace even when Ascend custom-op toolchain is
+not fully configured.
+
+### Avoid Mixed Ascend Runtime (Recommended)
+
+To avoid mixing multiple CANN/Ascend toolkit trees in one shell session,
+always source a single runtime first:
+
+```bash
+cd /path/to/vllm-ascend-hust
+source scripts/use_single_ascend_env.sh <ascend-toolkit-root>
+```
+
+The script now also loads `/usr/local/Ascend/nnal/atb/set_env.sh` to ensure
+ATB operator runtime variables are configured. If this file is missing, install
+NNAL/ATB package first.
+
+Then run the benchmark through the wrapper (it sources the same environment
+script internally):
+
+```bash
+bash /path/to/vllm-ascend-hust/scripts/run_ascend_latency_bench.sh <ascend-toolkit-root>
+```
+
+If you omit the path, scripts use a default toolkit root suitable for this
+workspace.
+
+### CI Benchmark Leaderboard
+
+This workspace also provides a trusted Ascend benchmark publication workflow in
+`.github/workflows/ascend-benchmark-leaderboard.yml`.
+
+- Trigger: same-repo pull requests, pushes to `main`, and manual dispatch
+- Publish switch variables: `VLLM_HUST_PUBLISH_BENCHMARK_ON_MAIN`,
+  `VLLM_HUST_PUBLISH_BENCHMARK_ON_PR`
+- Scenario variables: `VLLM_HUST_MAIN_BENCHMARK_SCENARIO`,
+  `VLLM_HUST_PR_BENCHMARK_SCENARIO`
+- Preview-publication gate: `VLLM_HUST_ALLOW_RANDOM_HF_PUBLISH=1`
+- Required secret for Hugging Face publication: `HF_TOKEN`
+
+Leaderboard display semantics are intentionally repo-scoped and stable:
+
+- displayed `engine_version`: benchmark target short Git SHA
+- artifact `versions.core`: runtime `vllm.__version__`
+
+For plugin-integrated benchmark runs from `vllm-ascend-hust`, the leaderboard
+displays the plugin repo short SHA, while the exported artifact keeps both the
+underlying `vllm` version (`versions.core`) and plugin package version
+(`versions.backend`).
+
+### One-Click Ascend Bootstrap
+
+To make local Ascend deployment closer to a one-command flow, use:
+
+```bash
+cd /path/to/vllm-ascend-hust
+bash scripts/bootstrap_ascend.sh Qwen/Qwen2.5-1.5B-Instruct
+```
+
+### Separate Local OpenAI Server Command
+
+If you only want to start the local vllm-hust OpenAI-compatible server on Ascend,
+use the native `vllm-hust serve` command directly instead of going through workstation:
+
+By default, vllm-hust now auto-injects minimal Ascend runtime paths at import
+time (`ASCEND_HOME_PATH`, `LD_LIBRARY_PATH`, `PATH`) so pip-installed users can
+start directly without manually sourcing `set_env.sh` in common single-toolkit
+setups.
+
+If you prefer strict manual environment control, disable this behavior with:
+
+```bash
+export VLLM_ASCEND_AUTO_ENV=0
+```
+
+For multi-toolkit or customized runtime setups, manual sourcing is still
+recommended:
+
+```bash
+cd /path/to/vllm-ascend-hust
+source scripts/use_single_ascend_env.sh <ascend-toolkit-root>
+export PYTHONPATH="<ascend-toolkit-root>/python/site-packages:${PYTHONPATH:-}"
+vllm-hust serve Qwen/Qwen2.5-1.5B-Instruct \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --enforce-eager \
+  -cc.cudagraph_mode=0 \
+  --enable-auto-tool-choice \
+  --tool-call-parser pythonic \
+  --no-enable-prefix-caching \
+  --no-enable-chunked-prefill
+```
+
+If you are serving a local snapshot, replace the model argument directly:
+
+```bash
+vllm-hust serve /path/to/local/model \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --enforce-eager \
+  -cc.cudagraph_mode=0 \
+  --enable-auto-tool-choice \
+  --tool-call-parser pythonic \
+  --no-enable-prefix-caching \
+  --no-enable-chunked-prefill
+```
+
+Manager integration defaults:
+
+- manager repo path: `/path/to/vllm-hust-dev-hub/ascend-runtime-manager`
+- manager PyPI package: `hust-ascend-manager`
+- disable manager: `HUST_DISABLE_ASCEND_MANAGER=1`
+- manager strict mode: `HUST_MANAGER_STRICT=1`
+- manager system install steps: `HUST_MANAGER_APPLY_SYSTEM=1`
+- manager PyPI override: `HUST_ASCEND_MANAGER_PYPI_SPEC='hust-ascend-manager==0.1.0'`
+
+If the active Python environment cannot import `vllm-hust` cleanly, use
+`ascend-runtime-manager` as the single runtime repair entrypoint instead of
+manually guessing a sequence of `pip install` commands:
+
+```bash
+cd /path/to/vllm-hust-dev-hub/ascend-runtime-manager
+PYTHONPATH=src python -m hust_ascend_manager.cli runtime check --repo /path/to/vllm-hust
+PYTHONPATH=src python -m hust_ascend_manager.cli runtime repair --repo /path/to/vllm-hust
+```
+
+`runtime repair` is responsible for reconciling the Python-side runtime only:
+
+- `torch`, `transformers`, `tokenizers`, `huggingface_hub`
+- `requirements/common.txt` and `requirements/build.txt`
+- local editable rebuild against the currently selected Python / torch env
+
+It does not replace host-level fixes such as drivers, CANN / NNAL / ATB system
+packages, model downloads, or public ingress setup.
+
+If you need strict `npugraph_ex` validation, set `HUST_REQUIRE_NPUGRAPH=1`
+before running the script.
 
 Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
 

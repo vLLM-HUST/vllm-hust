@@ -229,7 +229,11 @@ class OpenAIServingRender:
                     "--tool-call-parser to be set"
                 )
 
-        if request.tools is None or (
+        if isinstance(request, ChatCompletionRequest):
+            tool_dicts = request.get_tool_dicts(
+                exclude_tools_when_tool_choice_none=self.exclude_tools_when_tool_choice_none
+            )
+        elif request.tools is None or (
             request.tool_choice == "none" and self.exclude_tools_when_tool_choice_none
         ):
             tool_dicts = None

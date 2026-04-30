@@ -442,6 +442,34 @@ def test_rmsnorm_gated_forward_native_dtype(
     torch.testing.assert_close(out, ref_out, atol=1e-2, rtol=1e-2)
 
 
+@torch.inference_mode()
+@pytest.mark.skip_global_cleanup
+def test_rmsnorm_gated_forward_native_uses_configured_activation(
+    default_vllm_config,
+):
+    from vllm.model_executor.layers.layernorm import RMSNormGated
+
+    layer = RMSNormGated(
+        4,
+        eps=1e-5,
+        norm_before_gate=False,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        activation="sigmoid",
+    )
+
+    x = torch.tensor([[1.0, -2.0, 3.0, -4.0]], dtype=torch.float32)
+    z = torch.tensor([[0.5, -1.0, 0.0, 2.0]], dtype=torch.float32)
+
+    out = layer.forward_native(x, z)
+
+    gated = x * torch.sigmoid(z)
+    variance = gated.pow(2).mean(dim=-1, keepdim=True)
+    expected = gated * torch.rsqrt(variance + layer.eps)
+
+    torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
+
+
 if __name__ == "__main__":
     # Run a quick smoke test
     test_layer_norm_fwd_basic(128, 1024, torch.float16, 42, False)

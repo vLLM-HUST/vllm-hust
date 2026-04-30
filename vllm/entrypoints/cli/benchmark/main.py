@@ -51,10 +51,8 @@ class BenchmarkSubcommand(CLISubcommand):
         bench_subparsers = bench_parser.add_subparsers(required=True, dest="bench_type")
 
         # Only build the nested bench subparsers when the user is actually
-        # invoking `bench`; otherwise we'd drag in imports
-        # unnecessarily on every `vllm --help` and `vllm serve`.
-        # Scan for the first positional arg so global flags (e.g. `-v`)
-        # before the subcommand don't break detection.
+        # invoking `bench`; otherwise we'd drag in imports unnecessarily on
+        # every `vllm --help` and `vllm serve`.
         first_positional = next(
             (arg for arg in sys.argv[1:] if not arg.startswith("-")), None
         )

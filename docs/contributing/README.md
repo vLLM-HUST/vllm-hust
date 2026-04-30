@@ -40,8 +40,10 @@ Then, configure your Python virtual environment.
 If you are only developing vLLM's Python code, install vLLM using:
 
 ```bash
-VLLM_USE_PRECOMPILED=1 uv pip install -e .
+uv pip install -e .
 ```
+
+This path now defaults to the precompiled wheel workflow. Set `VLLM_USE_PRECOMPILED=0` only when you intentionally want a local compiled build.
 
 If you are developing vLLM's Python and CUDA/C++ code, install Pytorch first:
 
@@ -66,9 +68,9 @@ For more details about installing from source and installing for other hardware,
 For an optimized workflow when iterating on C++/CUDA kernels, see the [Incremental Compilation Workflow](./incremental_build.md) for recommendations.
 
 !!! tip
-    vLLM is compatible with Python versions 3.10 to 3.13. However, vLLM's default [Dockerfile](../../docker/Dockerfile) ships with Python 3.12 and tests in CI (except `mypy`) are run with Python 3.12.
+    vLLM is compatible with Python versions 3.10 to 3.13. However, vLLM's default [Dockerfile](../../docker/Dockerfile) ships with Python 3.11 and tests in CI (except `mypy`) are run with Python 3.11.
 
-    Therefore, we recommend developing with Python 3.12 to minimise the chance of your local environment clashing with our CI environment.
+    Therefore, we recommend developing with Python 3.11 to minimise the chance of your local environment clashing with our CI environment.
 
 ### Linting
 

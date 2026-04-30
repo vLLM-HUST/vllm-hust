@@ -594,6 +594,54 @@ def _build_serving_chat(engine: AsyncLLM) -> OpenAIServingChat:
     return serving_chat
 
 
+@pytest.mark.asyncio
+@pytest.mark.skip_global_cleanup
+async def test_render_chat_reuses_cached_tool_dicts():
+    engine = MockEngine(renderer=MagicMock(tokenizer=object()))
+    models = OpenAIServingModels(engine, BASE_MODEL_PATHS)
+    serving_render = _build_serving_render(engine, models.registry)
+    serving_render.use_harmony = False
+    serving_render.validate_chat_template = MagicMock(return_value=None)
+    serving_render.preprocess_chat = AsyncMock(
+        return_value=([], [TokensPrompt(prompt_token_ids=[1, 2, 3])])
+    )
+
+    request = ChatCompletionRequest(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": "what is 1+1?"}],
+        tool_choice="none",
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": "string"},
+                        },
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+    )
+
+    await serving_render.render_chat(request)
+    first_tool_dicts = serving_render.preprocess_chat.call_args_list[0].kwargs[
+        "tool_dicts"
+    ]
+
+    await serving_render.render_chat(request)
+    second_tool_dicts = serving_render.preprocess_chat.call_args_list[1].kwargs[
+        "tool_dicts"
+    ]
+
+    assert first_tool_dicts is not None
+    assert first_tool_dicts is second_tool_dicts
+
+
 @dataclass
 class MockEngine:
     model_config: MockModelConfig = field(default_factory=MockModelConfig)

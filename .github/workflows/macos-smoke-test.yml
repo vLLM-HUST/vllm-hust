@@ -13,6 +13,13 @@ jobs:
   macos-m1-smoke-test:
     runs-on: macos-latest
     timeout-minutes: 30
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://hf-mirror.com' }}
+      HF_HOME: ${{ github.workspace }}/../.hf-cache
+      HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/../.hf-cache/hub
+      TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
     steps:
       - uses: actions/checkout@v6.0.1
@@ -23,7 +30,24 @@ jobs:
           cache-dependency-glob: |
             requirements/**/*.txt
             pyproject.toml
-          python-version: '3.12'
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/../.hf-cache
+          key: ${{ runner.os }}-hf-facebook-opt-125m
+
+      - name: Prepare Hugging Face cache directories
+        run: |
+          mkdir -p "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "$TRANSFORMERS_CACHE"
+          chmod 700 "$HF_HOME"
+          echo "HF endpoint: $HF_ENDPOINT"
+          echo "HF home: $HF_HOME"
+          if [[ -n "${HF_TOKEN:-}" ]]; then
+            echo "HF token: configured"
+          else
+            echo "HF token: not configured"
+          fi
 
       - name: Create virtual environment
         run: |
@@ -31,55 +55,18 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies and build vLLM
-        run: |
-          uv pip install -r requirements/build/cpu.txt --index-strategy unsafe-best-match
-          uv pip install -r requirements/cpu.txt --index-strategy unsafe-best-match
-          uv pip install -e . --no-build-isolation
         env:
-          CMAKE_BUILD_PARALLEL_LEVEL: 4
+          VLLM_TARGET_DEVICE: cpu
+          VLLM_USE_PRECOMPILED: "0"
+        run: |
+          uv pip install -r requirements/cpu.txt --index-strategy unsafe-best-match
+          uv pip install -e .
 
       - name: Verify installation
         run: |
           python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
 
-      - name: Smoke test vllm serve
-        run: |
-          # Start server in background
-          VLLM_CPU_KVCACHE_SPACE=1 \
-          vllm serve Qwen/Qwen3-0.6B \
-            --max-model-len=2K \
-            --load-format=dummy \
-            --hf-overrides '{"num_hidden_layers": 2}' \
-            --enforce-eager \
-            --port 8000 &
-
-          SERVER_PID=$!
-
-          # Wait for server to start
-          for i in {1..30}; do
-            if curl -s http://localhost:8000/health > /dev/null; then
-              echo "Server started successfully"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "Server failed to start"
-              kill "$SERVER_PID"
-              exit 1
-            fi
-            sleep 2
-          done
-
-          # Test health endpoint
-          curl -f http://localhost:8000/health
-
-          # Test completion
-          curl -f http://localhost:8000/v1/completions \
-            -H "Content-Type: application/json" \
-            -d '{
-              "model": "Qwen/Qwen3-0.6B",
-              "prompt": "Hello",
-              "max_tokens": 5
-            }'
-
-          # Cleanup
-          kill "$SERVER_PID"
+      - name: Run real-model serve smoke test
+        env:
+          MODEL_NAME: facebook/opt-125m
+        run: bash .github/workflows/scripts/run_e2e_serve_smoke.sh

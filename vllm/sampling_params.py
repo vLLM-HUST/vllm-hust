@@ -7,7 +7,7 @@ import json as json_mod
 from dataclasses import field
 from enum import Enum, IntEnum
 from functools import cached_property
-from typing import Any
+from typing import Any, ClassVar
 
 import msgspec
 from pydantic.dataclasses import dataclass
@@ -35,6 +35,22 @@ class SamplingType(IntEnum):
 # maybe make msgspec?
 @dataclass
 class StructuredOutputsParams:
+    CONSTRAINT_FIELDS: ClassVar[tuple[str, ...]] = (
+        "json",
+        "regex",
+        "choice",
+        "grammar",
+        "json_object",
+        "structural_tag",
+    )
+    NON_STRUCTURAL_TAG_CONSTRAINT_FIELDS: ClassVar[tuple[str, ...]] = (
+        "json",
+        "regex",
+        "choice",
+        "grammar",
+        "json_object",
+    )
+
     # One of these fields will be used to build a logit processor.
     json: str | dict | None = None
     regex: str | None = None
@@ -55,14 +71,8 @@ class StructuredOutputsParams:
     def __post_init__(self):
         """Validate that some fields are mutually exclusive."""
         count = sum(
-            [
-                self.json is not None,
-                self.regex is not None,
-                self.choice is not None,
-                self.grammar is not None,
-                self.json_object is not None,
-                self.structural_tag is not None,
-            ]
+            getattr(self, field_name) is not None
+            for field_name in self.CONSTRAINT_FIELDS
         )
         if count > 1:
             raise ValueError(
@@ -80,30 +90,17 @@ class StructuredOutputsParams:
         Returns True if all structured-output constraint fields are None.
         """
         return all(
-            getattr(self, field) is None
-            for field in (
-                "json",
-                "regex",
-                "choice",
-                "grammar",
-                "json_object",
-                "structural_tag",
-            )
+            getattr(self, field_name) is None for field_name in self.CONSTRAINT_FIELDS
         )
 
     def all_non_structural_tag_constraints_none(self) -> bool:
         """
-        Returns True if all structured-output constraint fields are None.
+        Returns True if all structured-output constraints except
+        ``structural_tag`` are None.
         """
         return all(
-            getattr(self, field) is None
-            for field in (
-                "json",
-                "regex",
-                "choice",
-                "grammar",
-                "json_object",
-            )
+            getattr(self, field_name) is None
+            for field_name in self.NON_STRUCTURAL_TAG_CONSTRAINT_FIELDS
         )
 
 

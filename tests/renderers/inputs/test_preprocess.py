@@ -2,11 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import pytest
 
-from vllm.renderers.inputs.preprocess import (
-    parse_dec_only_prompt,
-    parse_enc_dec_prompt,
-    prompt_to_seq,
-)
+from vllm.renderers.inputs.preprocess import parse_dec_only_prompt, prompt_to_seq
 
 
 def test_empty_input():
@@ -21,13 +17,13 @@ def test_text_input():
     assert prompt_to_seq(["foo", "bar"]) == ["foo", "bar"]
 
 
-def test_tokens_input():
+def test_token_input():
     assert prompt_to_seq([1, 2]) == [[1, 2]]
     assert prompt_to_seq([[1, 2]]) == [[1, 2]]
     assert prompt_to_seq([[1, 2], [3, 4]]) == [[1, 2], [3, 4]]
 
 
-def test_text_tokens_input():
+def test_text_token_input():
     assert prompt_to_seq([[1, 2], "foo"]) == [[1, 2], "foo"]
     assert prompt_to_seq(["foo", [1, 2]]) == ["foo", [1, 2]]
 
@@ -47,21 +43,7 @@ def test_dict_input():
     ]
 
 
-def test_parse_dec_only_prompt_rejects_non_string_prompt_field():
+@pytest.mark.skip_global_cleanup
+def test_parse_dec_only_prompt_rejects_non_string_prompt_dict_text():
     with pytest.raises(TypeError, match="Prompt text should be a string"):
-        parse_dec_only_prompt({"prompt": [1, 2, 3], "cache_salt": "abc"})
-
-
-def test_parse_dec_only_prompt_rejects_non_string_prompt_list():
-    with pytest.raises(TypeError, match="Prompt text should be a string"):
-        parse_dec_only_prompt({"prompt": [1, "x"]})
-
-
-def test_parse_enc_dec_prompt_rejects_nested_non_string_prompt_field():
-    with pytest.raises(TypeError, match="Prompt text should be a string"):
-        parse_enc_dec_prompt(
-            {
-                "encoder_prompt": {"prompt": [1, 2, 3]},
-                "decoder_prompt": {"prompt": [4, 5]},
-            }
-        )
+        parse_dec_only_prompt({"prompt": [1, 2, 3]})

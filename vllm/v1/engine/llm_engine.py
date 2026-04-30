@@ -3,8 +3,9 @@
 
 import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from copy import copy
-from typing import Any
+from typing import Any, cast
 
 import torch.nn as nn
 from typing_extensions import TypeVar
@@ -34,6 +35,7 @@ from vllm.v1.engine.output_processor import OutputProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.executor import Executor
 from vllm.v1.metrics.loggers import StatLoggerFactory, StatLoggerManager
+from vllm.v1.metrics.prometheus import shutdown_prometheus
 from vllm.v1.metrics.reader import Metric, get_metrics_snapshot
 from vllm.v1.metrics.stats import IterationStats
 from vllm.v1.utils import record_function_or_nullcontext
@@ -84,7 +86,7 @@ class LLMEngine:
         ):
             self.dp_group = parallel_config.stateless_init_dp_group()
         else:
-            self.dp_group = None
+            self.dp_group = cast(Any, None)
         self.should_execute_dummy_batch = False
 
         self.renderer = renderer = renderer_from_config(self.vllm_config)
@@ -417,7 +419,24 @@ class LLMEngine:
     def apply_model(self, func: Callable[[nn.Module], _R]) -> list[_R]:
         return self.collective_rpc("apply_model", args=(func,))
 
-    def __del__(self):
+    def shutdown(self, timeout: float | None = None) -> None:
+        if callable(shutdown_prometheus):
+            shutdown_prometheus()
+
+        if renderer := getattr(self, "renderer", None):
+            renderer.shutdown()
+            self.renderer = None
+
+        if engine_core := getattr(self, "engine_core", None):
+            engine_core.shutdown(timeout=timeout)
+            self.engine_core = cast(Any, None)
+
         dp_group = getattr(self, "dp_group", None)
         if dp_group is not None and not self.external_launcher_dp:
-            stateless_destroy_torch_distributed_process_group(dp_group)
+            if callable(stateless_destroy_torch_distributed_process_group):
+                stateless_destroy_torch_distributed_process_group(dp_group)
+            self.dp_group = cast(Any, None)
+
+    def __del__(self):
+        with suppress(Exception):
+            self.shutdown()

@@ -102,6 +102,7 @@ class ToolParser:
                     json=json_schema_from_tool  # type: ignore[call-arg]
                 )
                 request.response_format = None
+                request.invalidate_cached_normalization()
             if isinstance(request, ResponsesRequest):
                 # Single-shot construction so Pydantic v2 tracks `format`
                 # in __fields_set__ — assigning to `.format` after the bare

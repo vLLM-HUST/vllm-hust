@@ -379,20 +379,6 @@ class cmake_build_ext(build_ext):
                 dirs_exist_ok=True,
             )
 
-        if _is_cuda():
-            # copy vendored deep_gemm package from build_lib to source tree
-            # for editable installs
-            deep_gemm_build = os.path.join(
-                self.build_lib, "vllm", "third_party", "deep_gemm"
-            )
-            if os.path.exists(deep_gemm_build):
-                print(f"Copying {deep_gemm_build} to vllm/third_party/deep_gemm")
-                shutil.copytree(
-                    deep_gemm_build,
-                    "vllm/third_party/deep_gemm",
-                    dirs_exist_ok=True,
-                )
-
 
 class precompiled_build_ext(build_ext):
     """Disables extension building when using precompiled binaries."""
@@ -693,29 +679,17 @@ class precompiled_wheel_utils:
                 flash_attn_regex = re.compile(
                     r"vllm/vllm_flash_attn/(?:[^/.][^/]*/)*(?!\.)[^/]*\.py"
                 )
-                # __init__.py and flash_attn_interface.py are source-controlled
-                # in vllm and should not be overwritten (matches cmake exclusions)
-                flash_attn_files_to_skip = {
-                    "vllm/vllm_flash_attn/__init__.py",
-                    "vllm/vllm_flash_attn/flash_attn_interface.py",
-                }
                 triton_kernels_regex = re.compile(
                     r"vllm/third_party/triton_kernels/(?:[^/.][^/]*/)*(?!\.)[^/]*\.py"
                 )
                 flashmla_regex = re.compile(
                     r"vllm/third_party/flashmla/(?:[^/.][^/]*/)*(?!\.)[^/]*\.py"
                 )
-                # DeepGEMM: extract all files (.py, .so, .cuh, .h, .hpp, etc.)
-                deep_gemm_regex = re.compile(r"vllm/third_party/deep_gemm/.*")
                 file_members = list(
                     filter(lambda x: x.filename in files_to_copy, wheel.filelist)
                 )
                 file_members += list(
-                    filter(
-                        lambda x: flash_attn_regex.match(x.filename)
-                        and x.filename not in flash_attn_files_to_skip,
-                        wheel.filelist,
-                    )
+                    filter(lambda x: flash_attn_regex.match(x.filename), wheel.filelist)
                 )
                 file_members += list(
                     filter(
@@ -724,9 +698,6 @@ class precompiled_wheel_utils:
                 )
                 file_members += list(
                     filter(lambda x: flashmla_regex.match(x.filename), wheel.filelist)
-                )
-                file_members += list(
-                    filter(lambda x: deep_gemm_regex.match(x.filename), wheel.filelist)
                 )
 
                 for file in file_members:
@@ -895,6 +866,48 @@ def get_nvcc_cuda_version() -> Version:
     return nvcc_cuda_version
 
 
+def should_add_runtime_version_suffix() -> bool:
+    """Return whether device-specific local version suffixes should be added.
+
+    Source distributions and metadata-only build steps must keep the canonical
+    SCM version so package filenames and generated metadata stay identical on
+    PyPI. Device-specific local suffixes are only meaningful for binary build
+    outputs such as wheels.
+    """
+
+    metadata_only_commands = {
+        "egg_info",
+        "dist_info",
+        "sdist",
+        "editable_wheel",
+        "prepare_metadata_for_build_wheel",
+        "prepare_metadata_for_build_editable",
+    }
+    return not any(command in metadata_only_commands for command in sys.argv[1:])
+
+
+def should_extract_precompiled_artifacts() -> bool:
+    """Return whether precompiled package artifacts should be materialized.
+
+    Only wheel/build style commands should extract precompiled shared objects
+    into the source tree. Metadata queries and source distributions must leave
+    the tree untouched so they produce clean sdists and do not dirty the repo.
+    """
+
+    binary_build_commands = {
+        "bdist_wheel",
+        "build",
+        "build_ext",
+        "editable_wheel",
+        "install",
+        "develop",
+    }
+    commands = {
+        command for command in sys.argv[1:] if command and not command.startswith("-")
+    }
+    return bool(commands & binary_build_commands)
+
+
 def get_vllm_version() -> str:
     # Allow overriding the version. This is useful to build platform-specific
     # wheels (e.g. CPU, TPU) without modifying the source.
@@ -907,31 +920,38 @@ def get_vllm_version() -> str:
     sep = "+" if "+" not in version else "."  # dev versions might contain +
 
     if _no_device():
-        if envs.VLLM_TARGET_DEVICE == "empty":
+        if envs.VLLM_TARGET_DEVICE == "empty" and should_add_runtime_version_suffix():
             version += f"{sep}empty"
     elif _is_cuda():
-        if envs.VLLM_USE_PRECOMPILED and not envs.VLLM_SKIP_PRECOMPILED_VERSION_SUFFIX:
+        if (
+            envs.VLLM_USE_PRECOMPILED
+            and not envs.VLLM_SKIP_PRECOMPILED_VERSION_SUFFIX
+            and should_add_runtime_version_suffix()
+        ):
             version += f"{sep}precompiled"
-        else:
+        elif not envs.VLLM_USE_PRECOMPILED and CUDA_HOME is not None:
             cuda_version = str(get_nvcc_cuda_version())
-            if cuda_version != envs.VLLM_MAIN_CUDA_VERSION:
+            if (
+                cuda_version != envs.VLLM_MAIN_CUDA_VERSION
+                and should_add_runtime_version_suffix()
+            ):
                 cuda_version_str = cuda_version.replace(".", "")[:3]
-                # skip this for source tarball, required for pypi
-                if "sdist" not in sys.argv:
-                    version += f"{sep}cu{cuda_version_str}"
+                version += f"{sep}cu{cuda_version_str}"
     elif _is_hip():
         # Get the Rocm Version
         rocm_version = get_rocm_version() or torch.version.hip
-        if rocm_version and rocm_version != envs.VLLM_MAIN_CUDA_VERSION:
+        if (
+            rocm_version
+            and rocm_version != envs.VLLM_MAIN_CUDA_VERSION
+            and should_add_runtime_version_suffix()
+        ):
             version += f"{sep}rocm{rocm_version.replace('.', '')[:3]}"
-    elif _is_tpu():
+    elif _is_tpu() and should_add_runtime_version_suffix():
         version += f"{sep}tpu"
     elif _is_cpu():
-        # Check the local VLLM_TARGET_DEVICE (may be set by auto-detect above),
-        # not envs.VLLM_TARGET_DEVICE, so CPU-only hosts still get `+cpu`.
-        if VLLM_TARGET_DEVICE == "cpu":
+        if envs.VLLM_TARGET_DEVICE == "cpu" and should_add_runtime_version_suffix():
             version += f"{sep}cpu"
-    elif _is_xpu():
+    elif _is_xpu() and should_add_runtime_version_suffix():
         version += f"{sep}xpu"
     else:
         raise RuntimeError("Unknown runtime environment")
@@ -1018,12 +1038,6 @@ if _is_cuda():
         ext_modules.append(
             CMakeExtension(name="vllm._flashmla_extension_C", optional=True)
         )
-    if envs.VLLM_USE_PRECOMPILED or (
-        CUDA_HOME and get_nvcc_cuda_version() >= Version("12.3")
-    ):
-        # DeepGEMM requires CUDA 12.3+ (SM90/SM100)
-        # Optional since it won't build on unsupported architectures
-        ext_modules.append(CMakeExtension(name="vllm._deep_gemm_C", optional=True))
 
 if _is_cpu():
     import platform
@@ -1050,17 +1064,12 @@ package_data = {
         "model_executor/layers/quantization/utils/configs/*.json",
         "entrypoints/serve/instrumentator/static/*.js",
         "entrypoints/serve/instrumentator/static/*.css",
-        "distributed/kv_transfer/kv_connector/v1/hf3fs/utils/*.cpp",
-        # DeepGEMM JIT include headers (vendored via cmake)
-        "third_party/deep_gemm/include/**/*.cuh",
-        "third_party/deep_gemm/include/**/*.h",
-        "third_party/deep_gemm/include/**/*.hpp",
     ]
 }
 
 
 # If using precompiled, extract and patch package_data (in advance of setup)
-if envs.VLLM_USE_PRECOMPILED:
+if envs.VLLM_USE_PRECOMPILED and should_extract_precompiled_artifacts():
     wheel_url, download_filename = precompiled_wheel_utils.determine_wheel_url()
     patch = precompiled_wheel_utils.extract_precompiled_and_patch_package(
         wheel_url, download_filename
@@ -1085,39 +1094,6 @@ setup(
     version=get_vllm_version(),
     ext_modules=ext_modules,
     install_requires=get_requirements(),
-    extras_require={
-        # AMD Zen CPU optimizations via zentorch
-        "zen": [
-            "zentorch-weekly==5.2.1.dev20260408"
-        ],  # Zentorch has weekly releases. This pulls the known-good version.
-        "bench": ["pandas", "matplotlib", "seaborn", "datasets", "scipy", "plotly"],
-        "tensorizer": ["tensorizer==2.10.1"],
-        "fastsafetensors": ["fastsafetensors >= 0.2.2"],
-        "instanttensor": ["instanttensor >= 0.1.5"],
-        "runai": ["runai-model-streamer[s3,gcs,azure] >= 0.15.7"],
-        "audio": [
-            "av",
-            "scipy",
-            "soundfile",
-            "mistral_common[audio]",
-        ],  # Required for audio processing
-        "video": [],  # Kept for backwards compatibility
-        "flashinfer": [],  # Kept for backwards compatibility
-        # Optional deps for Helion kernel development
-        # NOTE: When updating helion version, also update CI files:
-        #   - .buildkite/test_areas/kernels.yaml
-        #   - .buildkite/test-amd.yaml
-        "helion": ["helion==1.0.0"],
-        # Optional deps for gRPC server (vllm serve --grpc)
-        "grpc": ["smg-grpc-servicer[vllm] >= 0.5.2"],
-        # Optional deps for OpenTelemetry tracing
-        "otel": [
-            "opentelemetry-sdk>=1.26.0",
-            "opentelemetry-api>=1.26.0",
-            "opentelemetry-exporter-otlp>=1.26.0",
-            "opentelemetry-semantic-conventions-ai>=0.4.1",
-        ],
-    },
     cmdclass=cmdclass,
     package_data=package_data,
 )

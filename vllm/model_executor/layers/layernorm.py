@@ -12,6 +12,7 @@ from vllm import _oink_ops, envs, ir
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp
+from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.batch_invariant import (
     rms_norm_batch_invariant,
 )
@@ -409,7 +410,7 @@ class RMSNormGated(CustomOp):
     This is a native PyTorch implementation that supports:
     - Standard RMS normalization
     - Group RMS normalization
-    - Optional gating with SiLU activation
+    - Optional gating with configurable activation
     """
 
     # --8<-- [end:rms_norm_gated]
@@ -433,8 +434,8 @@ class RMSNormGated(CustomOp):
                         having group_size elements.
                         group_size=None is equivalent to group_size=hidden_size
                         (i.e. there's only 1 group).
-            norm_before_gate: If True and z is provided: out = norm(x) * silu(z)
-                              If False and z is provided: out = norm(x * silu(z))
+            norm_before_gate: If True and z is provided: out = norm(x) * act(z)
+                              If False and z is provided: out = norm(x * act(z))
             device: Device to create parameters on
             dtype: Data type for parameters
             activation: Activation function name for gating
@@ -466,13 +467,14 @@ class RMSNormGated(CustomOp):
             Normalized (and optionally gated) tensor
 
         If z is not None:
-            - norm_before_gate=True: out = norm(x) * silu(z)
-            - norm_before_gate=False: out = norm(x * silu(z))
+            - norm_before_gate=True: out = norm(x) * act(z)
+            - norm_before_gate=False: out = norm(x * act(z))
         """
         orig_dtype = x.dtype
         x = x.float()
         weight = self.weight.float()
         z = z.float() if z is not None else None
+        act_fn = get_act_fn(self.activation)
 
         assert self.activation in ["silu", "sigmoid", "swish"]
         act_fn = F.sigmoid if self.activation == "sigmoid" else F.silu
