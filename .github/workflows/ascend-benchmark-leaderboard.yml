@@ -111,6 +111,7 @@ jobs:
       BENCH_OUTPUT_LEN: ${{ github.event_name == 'workflow_dispatch' && inputs.output_length || '' }}
       HARDWARE_VENDOR: Huawei
       HARDWARE_CHIP_MODEL: 910B3
+      SOC_VERSION: ascend910b3
       CHIP_COUNT: "1"
       NODE_COUNT: "1"
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
