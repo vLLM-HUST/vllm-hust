@@ -84,17 +84,10 @@ run_preflight() {
     echo "COMPILE_CUSTOM_KERNELS=${COMPILE_CUSTOM_KERNELS:-<unset>}"
     echo "ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-<unset>}"
 
-    if command -v npu-smi >/dev/null 2>&1; then
-      echo "-- npu-smi info -m --"
-      npu-smi info -m || true
-      echo "-- npu-smi info --"
-      npu-smi info || true
-    else
-      echo "npu-smi not found on PATH"
-    fi
-
-    echo "-- python preflight --"
+    echo "-- python package preflight --"
     python - <<'PY'
+import importlib.metadata as metadata
+import importlib.util
 import os
 from pathlib import Path
 
@@ -102,32 +95,34 @@ print(f"python={Path(os.sys.executable).resolve()}")
 print(f"ASCEND_RT_VISIBLE_DEVICES={os.environ.get('ASCEND_RT_VISIBLE_DEVICES', '<unset>')}")
 print(f"COMPILE_CUSTOM_KERNELS={os.environ.get('COMPILE_CUSTOM_KERNELS', '<unset>')}")
 
-try:
-    import vllm
-    print(f"vllm={Path(vllm.__file__).resolve()}")
-except Exception as exc:
-    print(f"vllm import failed: {exc!r}")
 
-try:
-    import vllm_ascend
-    print(f"vllm_ascend={Path(vllm_ascend.__file__).resolve()}")
-except Exception as exc:
-    print(f"vllm_ascend import failed: {exc!r}")
+def module_path(module_name: str) -> Path:
+    spec = importlib.util.find_spec(module_name)
+    if spec is None or spec.origin is None:
+        raise SystemExit(f"{module_name} is not importable")
+    return Path(spec.origin).resolve()
 
-try:
-    import torch
-    print(f"torch={Path(torch.__file__).resolve()}")
-    has_npu = hasattr(torch, 'npu')
-    print(f"torch_has_npu={has_npu}")
-    if has_npu:
-      print(f"torch.npu.is_available={torch.npu.is_available()}")
-      device_count = torch.npu.device_count()
-      print(f"torch.npu.device_count={device_count}")
-      if device_count > 0:
-          torch.npu.set_device(0)
-          print(f"torch.npu.current_device={torch.npu.current_device()}")
-except Exception as exc:
-    print(f"torch_npu_probe_failed={exc!r}")
+
+def dist_version(*dist_names: str) -> str:
+    for dist_name in dist_names:
+        try:
+            return metadata.version(dist_name)
+        except metadata.PackageNotFoundError:
+            continue
+    return "<unknown>"
+
+
+platform_plugins = metadata.entry_points(group="vllm.platform_plugins")
+ascend_plugin = [ep for ep in platform_plugins if ep.name == "ascend"]
+
+print(f"vllm_version={dist_version('vllm-hust', 'vllm')}")
+print(f"vllm_ascend_version={dist_version('vllm-ascend-hust', 'vllm-ascend')}")
+print(f"vllm={module_path('vllm')}")
+print(f"vllm_ascend={module_path('vllm_ascend')}")
+print(f"vllm.platform_plugins.ascend={ascend_plugin[0].value if ascend_plugin else '<missing>'}")
+
+if not ascend_plugin:
+    raise SystemExit("ascend platform plugin entry point is not installed")
 PY
   } >"$PREFLIGHT_LOG" 2>&1
 }
