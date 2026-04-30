@@ -145,7 +145,7 @@ bash scripts/bootstrap_ascend.sh Qwen/Qwen2.5-1.5B-Instruct
 ### Separate Local OpenAI Server Command
 
 If you only want to start the local vllm-hust OpenAI-compatible server on Ascend,
-use the native `vllm-hust serve` command directly instead of going through workstation:
+use the native `vllm serve` command directly instead of going through workstation:
 
 By default, vllm-hust now auto-injects minimal Ascend runtime paths at import
 time (`ASCEND_HOME_PATH`, `LD_LIBRARY_PATH`, `PATH`) so pip-installed users can
@@ -165,7 +165,7 @@ recommended:
 cd /path/to/vllm-ascend-hust
 source scripts/use_single_ascend_env.sh <ascend-toolkit-root>
 export PYTHONPATH="<ascend-toolkit-root>/python/site-packages:${PYTHONPATH:-}"
-vllm-hust serve Qwen/Qwen2.5-1.5B-Instruct \
+vllm serve Qwen/Qwen2.5-1.5B-Instruct \
   --host 0.0.0.0 \
   --port 8080 \
   --enforce-eager \
@@ -179,7 +179,7 @@ vllm-hust serve Qwen/Qwen2.5-1.5B-Instruct \
 If you are serving a local snapshot, replace the model argument directly:
 
 ```bash
-vllm-hust serve /path/to/local/model \
+vllm serve /path/to/local/model \
   --host 0.0.0.0 \
   --port 8080 \
   --enforce-eager \
