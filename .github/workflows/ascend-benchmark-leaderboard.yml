@@ -351,6 +351,8 @@ jobs:
           source "${VLLM_ASCEND_HUST_REPO}/scripts/use_single_ascend_env.sh"
           bash "${VLLM_ASCEND_HUST_REPO}/scripts/install_local_ascend_plugin.sh" "$VLLM_ASCEND_HUST_REPO"
           python -m pip install --upgrade --retries 8 --timeout 120 "numpy<2.0.0"
+          grep -v '^torch==' requirements/build.txt > /tmp/vllm-hust-build-requirements.txt
+          python -m pip install --upgrade --retries 8 --timeout 120 -r /tmp/vllm-hust-build-requirements.txt
           TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -m pip install -e . --no-build-isolation --no-deps
           python -m pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
 
