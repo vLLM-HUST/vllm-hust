@@ -342,6 +342,9 @@ jobs:
           command -v hust-ascend-manager
           hust-ascend-manager --help >/dev/null
 
+      - name: Acquire Ascend hardware lock
+        run: bash .github/workflows/scripts/acquire_ascend_hardware_lock.sh
+
       - name: Prepare Ascend runtime and install repos
         env:
           COMPILE_CUSTOM_KERNELS: "0"
@@ -405,6 +408,10 @@ jobs:
         run: |
           source "${VLLM_ASCEND_HUST_REPO}/scripts/use_single_ascend_env.sh"
           bash .github/workflows/scripts/cleanup_ascend_ci_processes.sh
+
+      - name: Release Ascend hardware lock
+        if: always()
+        run: bash .github/workflows/scripts/release_ascend_hardware_lock.sh
 
       - name: Build benchmark summary artifacts
         if: always()
