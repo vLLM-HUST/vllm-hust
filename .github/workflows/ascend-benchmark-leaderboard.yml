@@ -249,6 +249,24 @@ jobs:
           chmod 700 "$HF_HOME"
           echo "HF endpoint: $HF_ENDPOINT"
 
+      - name: Ensure Ascend runtime manager is available
+        run: |
+          manager_scripts_dir="$(python - <<'PY'
+          import sysconfig
+
+          print(sysconfig.get_path("scripts"))
+          PY
+          )"
+          echo "$manager_scripts_dir" >> "$GITHUB_PATH"
+          export PATH="$manager_scripts_dir:$PATH"
+
+          if ! command -v hust-ascend-manager >/dev/null 2>&1; then
+            python -m pip install --upgrade "hust-ascend-manager>=0.1.0"
+          fi
+
+          command -v hust-ascend-manager
+          hust-ascend-manager --help >/dev/null
+
       - name: Prepare Ascend runtime and install repos
         env:
           COMPILE_CUSTOM_KERNELS: "1"
