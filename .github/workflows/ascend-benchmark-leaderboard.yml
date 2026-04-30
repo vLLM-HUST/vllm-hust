@@ -280,13 +280,9 @@ jobs:
 
       - name: Ensure Ascend runtime manager is available
         run: |
-          manager_prefix="$GITHUB_WORKSPACE/.ci-tools/ascend-manager"
-          manager_bin_dir="$manager_prefix/bin"
-          mkdir -p "$manager_prefix"
-          python -m pip install --upgrade --no-deps --prefix "$manager_prefix" "$ASCEND_RUNTIME_MANAGER_REPO"
-          echo "$manager_bin_dir" >> "$GITHUB_PATH"
-          export PATH="$manager_bin_dir:$PATH"
+          python -m pip install --upgrade --no-deps "$ASCEND_RUNTIME_MANAGER_REPO"
 
+          python -c 'import hust_ascend_manager; print(hust_ascend_manager.__file__)'
           command -v hust-ascend-manager
           hust-ascend-manager --help >/dev/null
 
