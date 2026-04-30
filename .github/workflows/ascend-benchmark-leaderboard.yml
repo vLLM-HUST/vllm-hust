@@ -61,8 +61,8 @@ on:
         default: ""
  
 concurrency:
-  group: ascend-benchmark-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ascend-a2b3-0-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
