@@ -24,6 +24,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
+    KVConnectorWorkerMetadata,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.example_connector import (  # noqa
     ExampleConnector,
@@ -100,6 +101,8 @@ def create_vllm_config(
     hf_overrides: dict[str, Any] | None = None,
     attention_backend: str | None = None,
     kv_load_failure_policy: Literal["recompute", "fail"] = "fail",
+    kv_connector: str = "NixlConnector",
+    kv_role: str = "kv_both",
 ) -> VllmConfig:
     """Initialize VllmConfig For Testing."""
     model_config = ModelConfig(
@@ -124,8 +127,8 @@ def create_vllm_config(
         enable_prefix_caching=True,
     )
     kv_transfer_config = KVTransferConfig(
-        kv_connector="NixlConnector",
-        kv_role="kv_both",
+        kv_connector=kv_connector,
+        kv_role=kv_role,
         enable_permute_local_kv=enable_permute_local_kv,
         kv_connector_extra_config=kv_connector_extra_config or {},
         kv_load_failure_policy=kv_load_failure_policy,
@@ -247,6 +250,7 @@ def create_model_runner_output(
     invalid_block_ids: set[int] | None = None,
     use_eos: bool = False,
     token_id: int = 0,
+    kv_connector_worker_meta: KVConnectorWorkerMetadata | None = None,
 ) -> ModelRunnerOutput:
     """Make dummy model runner output for testing."""
 
@@ -264,11 +268,13 @@ def create_model_runner_output(
             finished_sending is None
             and finished_recving is None
             and invalid_block_ids is None
+            and kv_connector_worker_meta is None
         )
         else KVConnectorOutput(
             finished_sending=finished_sending,
             finished_recving=finished_recving,
             invalid_block_ids=invalid_block_ids or set(),
+            kv_connector_worker_meta=kv_connector_worker_meta,
         )
     )
 
@@ -474,7 +480,7 @@ def make_nixl_scheduler(has_mamba: bool = False, is_hma_required: bool = False):
 
     Only sets the two flags needed by the N-1 prefill logic.
     """
-    from vllm.distributed.kv_transfer.kv_connector.v1.nixl_connector import (
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl.scheduler import (
         NixlConnectorScheduler,
     )
 
