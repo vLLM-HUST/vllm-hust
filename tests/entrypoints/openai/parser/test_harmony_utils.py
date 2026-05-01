@@ -4,6 +4,7 @@
 import pytest
 from openai_harmony import Message, Role
 
+from tests.conftest import has_harmony_gpt_oss_encoding
 from tests.entrypoints.openai.utils import verify_harmony_messages
 from vllm.entrypoints.openai.parser.harmony_utils import (
     auto_drop_analysis_messages,
@@ -16,6 +17,11 @@ from vllm.entrypoints.openai.parser.harmony_utils import (
 from vllm.entrypoints.openai.responses.harmony import (
     response_input_to_harmony,
     response_previous_input_to_harmony,
+)
+
+pytestmark = pytest.mark.skipif(
+    not has_harmony_gpt_oss_encoding(),
+    reason="Harmony GPT-OSS vocab is unavailable in this environment.",
 )
 
 

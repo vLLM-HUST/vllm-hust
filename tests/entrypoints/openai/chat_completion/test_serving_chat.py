@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 from openai import OpenAI
 
+from tests.conftest import has_harmony_gpt_oss_encoding
 from tests.entrypoints.openai.utils import (
     accumulate_streaming_response,
     verify_chat_response,
@@ -1107,6 +1108,10 @@ async def test_serving_chat_data_parallel_rank_extraction():
     assert mock_engine.generate.call_args.kwargs["data_parallel_rank"] is None
 
 
+@pytest.mark.skipif(
+    not has_harmony_gpt_oss_encoding(),
+    reason="Harmony GPT-OSS vocab is unavailable in this environment.",
+)
 class TestServingChatWithHarmony:
     """
     These tests ensure Chat Completion requests are being properly converted into

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import contextlib
+import functools
 import pathlib
 from copy import deepcopy
 
@@ -77,6 +78,17 @@ if TYPE_CHECKING:
 
 
 logger = init_logger(__name__)
+
+
+@functools.cache
+def has_harmony_gpt_oss_encoding() -> bool:
+    try:
+        from openai_harmony import HarmonyEncodingName, load_harmony_encoding
+
+        load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    except Exception:
+        return False
+    return True
 
 
 @pytest.fixture

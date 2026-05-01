@@ -1928,7 +1928,11 @@ def cleanup_dist_env_and_memory(shutdown_ray: bool = False):
     from vllm.platforms import current_platform
 
     if not current_platform.is_cpu():
-        torch.accelerator.empty_cache()
+        empty_cache = getattr(current_platform, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+        else:
+            torch.accelerator.empty_cache()
         try:
             torch._C._host_emptyCache()
         except AttributeError:
