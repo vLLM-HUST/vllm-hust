@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import os
+import json
 from unittest.mock import patch
 
 import pytest
@@ -117,6 +118,17 @@ class TestEnvWithChoices:
                 "TEST_ENV", "default", ["option1", "option2"], case_sensitive=True
             )
             assert env_func() == "option1"
+
+
+def test_maybe_convert_json_str_or_file_with_json_string():
+    assert envs.maybe_convert_json_str_or_file('{"a": 1}') == {"a": 1}
+
+
+def test_maybe_convert_json_str_or_file_with_file(tmp_path: pytest.TempPathFactory):
+    json_path = tmp_path / "config.json"
+    json_path.write_text(json.dumps({"a": 1}), encoding="utf-8")
+
+    assert envs.maybe_convert_json_str_or_file(str(json_path)) == {"a": 1}
 
     def test_valid_lowercase_value_returned_case_insensitive(self):
         """Test that lowercase value is accepted in case insensitive mode."""
