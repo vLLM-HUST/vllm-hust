@@ -293,6 +293,15 @@ def maybe_convert_bool(value: str | None) -> bool | None:
     return bool(int(value))
 
 
+def maybe_convert_json_str_or_file(value: str | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if os.path.exists(value):
+        with open(value) as file:
+            return json.load(file)
+    return json.loads(value)
+
+
 def disable_compile_cache() -> bool:
     return bool(int(os.getenv("VLLM_DISABLE_COMPILE_CACHE", "0")))
 
