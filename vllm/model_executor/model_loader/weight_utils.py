@@ -466,6 +466,33 @@ def get_sparse_attention_config(
     return config
 
 
+def get_activation_sparsity_config(
+    model_config: Any,
+    load_config: Any,
+    config_filename: str = "activation_sparsity_config.json",
+) -> dict[str, Any]:
+    """Look for ``activation_sparsity_config.json`` in the model directory.
+
+    Follows the same remote/local resolution pattern as
+    :func:`get_sparse_attention_config`.
+
+    Args:
+        model_config: The model config (usually ``ModelConfig``).
+        load_config: The load config (usually ``LoadConfig``).
+        config_filename: Name of the JSON config file to look for.
+
+    Returns:
+        The parsed JSON dict, or ``{}`` if the file does not exist.
+    """
+    # Delegate to the implementation in vllm.sparsity.utils to keep
+    # sparsity-specific logic in one place.
+    from vllm.sparsity.utils import (
+        get_activation_sparsity_config as _get_activation_sparsity_config,
+    )
+
+    return _get_activation_sparsity_config(model_config, load_config, config_filename)
+
+
 def download_gguf(
     repo_id: str,
     quant_type: str,
