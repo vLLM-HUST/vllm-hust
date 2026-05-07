@@ -35,6 +35,7 @@ from transformers import Qwen2Config
 
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
+from vllm.sparsity import build_sparsifier
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.attention import (
@@ -88,6 +89,7 @@ class Qwen2MLP(nn.Module):
         hidden_act: str,
         quant_config: QuantizationConfig | None = None,
         prefix: str = "",
+        sparsity_config: "ActivationSparsityConfig | None" = None,
     ) -> None:
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
@@ -110,9 +112,28 @@ class Qwen2MLP(nn.Module):
             )
         self.act_fn = SiluAndMul()
 
+        try:
+            layer_idx = extract_layer_index(prefix)
+        except Exception:
+            layer_idx = 0
+        self.sparsify_gate_up = (
+            build_sparsifier(sparsity_config, layer_idx, "mlp.gate_up")
+            if sparsity_config is not None
+            else None
+        )
+        self.sparsify_down = (
+            build_sparsifier(sparsity_config, layer_idx, "mlp.down")
+            if sparsity_config is not None
+            else None
+        )
+
     def forward(self, x):
+        if self.sparsify_gate_up is not None:
+            x = self.sparsify_gate_up(x)
         gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
+        if self.sparsify_down is not None:
+            x = self.sparsify_down(x)
         x, _ = self.down_proj(x)
         return x
 
@@ -132,6 +153,7 @@ class Qwen2Attention(nn.Module):
         dual_chunk_attention_config: dict[str, Any] | None = None,
         qk_norm: bool = False,
         rms_norm_eps: float = 1e-6,
+        sparsity_config: "ActivationSparsityConfig | None" = None,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -206,11 +228,25 @@ class Qwen2Attention(nn.Module):
             else {},
         )
 
+        layer_idx = extract_layer_index(prefix)
+        self.sparsify_qkv = (
+            build_sparsifier(sparsity_config, layer_idx, "self_attn.qkv")
+            if sparsity_config is not None
+            else None
+        )
+        self.sparsify_o = (
+            build_sparsifier(sparsity_config, layer_idx, "self_attn.o")
+            if sparsity_config is not None
+            else None
+        )
+
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
+        if self.sparsify_qkv is not None:
+            hidden_states = self.sparsify_qkv(hidden_states)
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
@@ -232,6 +268,8 @@ class Qwen2Attention(nn.Module):
 
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
+        if self.sparsify_o is not None:
+            attn_output = self.sparsify_o(attn_output)
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -243,6 +281,7 @@ class Qwen2DecoderLayer(nn.Module):
         cache_config: CacheConfig | None = None,
         quant_config: QuantizationConfig | None = None,
         prefix: str = "",
+        sparsity_config: "ActivationSparsityConfig | None" = None,
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -276,6 +315,7 @@ class Qwen2DecoderLayer(nn.Module):
             dual_chunk_attention_config=dual_chunk_attention_config,
             qk_norm=qk_norm,
             rms_norm_eps=config.rms_norm_eps,
+            sparsity_config=sparsity_config,
         )
         self.mlp = Qwen2MLP(
             hidden_size=self.hidden_size,
@@ -283,6 +323,7 @@ class Qwen2DecoderLayer(nn.Module):
             hidden_act=config.hidden_act,
             quant_config=quant_config,
             prefix=f"{prefix}.mlp",
+            sparsity_config=sparsity_config,
         )
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
@@ -335,6 +376,7 @@ class Qwen2Model(nn.Module, EagleModelMixin):
         config = vllm_config.model_config.hf_config.get_text_config()
         cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
+        sparsity_config = getattr(vllm_config, "activation_sparsity_config", None)
 
         # TODO (@robertgshaw2): see if this can be moved out
         if is_interleaved(vllm_config.model_config.hf_text_config):
@@ -371,6 +413,7 @@ class Qwen2Model(nn.Module, EagleModelMixin):
                 cache_config=cache_config,
                 quant_config=quant_config,
                 prefix=prefix,
+                sparsity_config=sparsity_config,
             ),
             prefix=f"{prefix}.layers",
         )
