@@ -34,6 +34,7 @@ class KVCacheCoordinator(ABC):
         self,
         kv_cache_config: KVCacheConfig,
         max_model_len: int,
+        max_num_batched_tokens: int,
         use_eagle: bool,
         enable_caching: bool,
         enable_kv_cache_events: bool,
@@ -59,6 +60,8 @@ class KVCacheCoordinator(ABC):
         self.single_type_managers = tuple(
             get_manager_for_kv_cache_spec(
                 kv_cache_spec=kv_cache_group.kv_cache_spec,
+                max_num_batched_tokens=max_num_batched_tokens,
+                max_model_len=max_model_len,
                 block_pool=self.block_pool,
                 enable_caching=enable_caching,
                 kv_cache_group_id=i,
@@ -76,6 +79,7 @@ class KVCacheCoordinator(ABC):
         num_encoder_tokens: int,
         total_computed_tokens: int,
         num_tokens_main_model: int,
+        apply_admission_cap: bool = False,
     ) -> int:
         """
         Get the number of blocks needed to be allocated for the request.
@@ -102,7 +106,12 @@ class KVCacheCoordinator(ABC):
                 # For cross-attention, we issue a single static allocation
                 # of blocks based on the number of encoder input tokens.
                 num_blocks_to_allocate += manager.get_num_blocks_to_allocate(
-                    request_id, num_encoder_tokens, [], 0, num_encoder_tokens
+                    request_id,
+                    num_encoder_tokens,
+                    [],
+                    0,
+                    num_encoder_tokens,
+                    apply_admission_cap=apply_admission_cap,
                 )
             else:
                 num_blocks_to_allocate += manager.get_num_blocks_to_allocate(
@@ -111,6 +120,7 @@ class KVCacheCoordinator(ABC):
                     new_computed_blocks[i],
                     total_computed_tokens,
                     num_tokens_main_model,
+                    apply_admission_cap=apply_admission_cap,
                 )
         return num_blocks_to_allocate
 
@@ -265,6 +275,7 @@ class KVCacheCoordinatorNoPrefixCache(KVCacheCoordinator):
         self,
         kv_cache_config: KVCacheConfig,
         max_model_len: int,
+        max_num_batched_tokens: int,
         use_eagle: bool,
         enable_kv_cache_events: bool,
         dcp_world_size: int,
@@ -275,6 +286,7 @@ class KVCacheCoordinatorNoPrefixCache(KVCacheCoordinator):
         super().__init__(
             kv_cache_config,
             max_model_len,
+            max_num_batched_tokens,
             use_eagle,
             False,
             enable_kv_cache_events,
@@ -310,6 +322,7 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
         self,
         kv_cache_config: KVCacheConfig,
         max_model_len: int,
+        max_num_batched_tokens: int,
         use_eagle: bool,
         enable_caching: bool,
         enable_kv_cache_events: bool,
@@ -321,6 +334,7 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
         super().__init__(
             kv_cache_config,
             max_model_len,
+            max_num_batched_tokens,
             use_eagle,
             enable_caching,
             enable_kv_cache_events,
@@ -375,6 +389,7 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
         self,
         kv_cache_config: KVCacheConfig,
         max_model_len: int,
+        max_num_batched_tokens: int,
         use_eagle: bool,
         enable_caching: bool,
         enable_kv_cache_events: bool,
@@ -386,6 +401,7 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
         super().__init__(
             kv_cache_config,
             max_model_len,
+            max_num_batched_tokens,
             use_eagle,
             enable_caching,
             enable_kv_cache_events,
@@ -547,6 +563,7 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
 def get_kv_cache_coordinator(
     kv_cache_config: KVCacheConfig,
     max_model_len: int,
+    max_num_batched_tokens: int,
     use_eagle: bool,
     enable_caching: bool,
     enable_kv_cache_events: bool,
@@ -559,6 +576,7 @@ def get_kv_cache_coordinator(
         return KVCacheCoordinatorNoPrefixCache(
             kv_cache_config,
             max_model_len,
+            max_num_batched_tokens,
             use_eagle,
             enable_kv_cache_events,
             dcp_world_size=dcp_world_size,
@@ -570,6 +588,7 @@ def get_kv_cache_coordinator(
         return UnitaryKVCacheCoordinator(
             kv_cache_config,
             max_model_len,
+            max_num_batched_tokens,
             use_eagle,
             enable_caching,
             enable_kv_cache_events,
@@ -581,6 +600,7 @@ def get_kv_cache_coordinator(
     return HybridKVCacheCoordinator(
         kv_cache_config,
         max_model_len,
+        max_num_batched_tokens,
         use_eagle,
         enable_caching,
         enable_kv_cache_events,

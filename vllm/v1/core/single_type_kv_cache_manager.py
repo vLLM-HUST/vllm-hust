@@ -39,6 +39,7 @@ class SingleTypeKVCacheManager(ABC):
         kv_cache_group_id: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
+        max_admission_blocks_per_request: int | None = None,
     ) -> None:
         """
         Initializes the SingleTypeKVCacheManager.
@@ -55,6 +56,7 @@ class SingleTypeKVCacheManager(ABC):
         self.kv_cache_spec = kv_cache_spec
         self.block_pool = block_pool
         self.enable_caching = enable_caching
+        self._max_admission_blocks_per_request = max_admission_blocks_per_request
         self.new_block_ids: list[int] = []
 
         # Mapping from request ID to blocks to track the blocks allocated
@@ -82,6 +84,7 @@ class SingleTypeKVCacheManager(ABC):
         new_computed_blocks: Sequence[KVCacheBlock],
         total_computed_tokens: int,
         num_tokens_main_model: int,
+        apply_admission_cap: bool = False,
     ) -> int:
         """
         Get the number of blocks needed to be allocated for the request.
@@ -103,6 +106,10 @@ class SingleTypeKVCacheManager(ABC):
         """
 
         num_required_blocks = cdiv(num_tokens, self.block_size)
+        if apply_admission_cap and self._max_admission_blocks_per_request is not None:
+            num_required_blocks = min(
+                num_required_blocks, self._max_admission_blocks_per_request
+            )
         num_req_blocks = len(self.req_to_blocks.get(request_id, ()))
 
         if request_id in self.num_cached_block:
@@ -866,6 +873,7 @@ class MambaManager(SingleTypeKVCacheManager):
         new_computed_blocks: Sequence[KVCacheBlock],
         total_computed_tokens: int,
         num_tokens_main_model: int,
+        apply_admission_cap: bool = False,
     ) -> int:
         assert isinstance(self.kv_cache_spec, MambaSpec)
         if (
@@ -890,6 +898,7 @@ class MambaManager(SingleTypeKVCacheManager):
                 new_computed_blocks,
                 total_computed_tokens,
                 num_tokens_main_model,
+                apply_admission_cap=apply_admission_cap,
             )
         else:
             # We don't allocate blocks for lookahead tokens in align mode, because if
@@ -1118,8 +1127,18 @@ spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = {
 
 
 def get_manager_for_kv_cache_spec(
-    kv_cache_spec: KVCacheSpec, **kwargs
+    kv_cache_spec: KVCacheSpec,
+    max_num_batched_tokens: int,
+    max_model_len: int,
+    **kwargs,
 ) -> SingleTypeKVCacheManager:
     manager_class = spec_manager_map[type(kv_cache_spec)]
+    if isinstance(kv_cache_spec, (SlidingWindowSpec, ChunkedLocalAttentionSpec)):
+        kwargs["max_admission_blocks_per_request"] = (
+            kv_cache_spec.max_admission_blocks_per_request(
+                max_num_batched_tokens=max_num_batched_tokens,
+                max_model_len=max_model_len,
+            )
+        )
     manager = manager_class(kv_cache_spec, **kwargs)
     return manager
