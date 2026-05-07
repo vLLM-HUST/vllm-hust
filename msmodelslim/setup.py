@@ -1,23 +1,16 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) 2024-2024 Huawei Technologies Co., Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import logging
 import os
@@ -46,23 +39,9 @@ for group, models in config.items("ModelAdapter"):
     for model in model_list:
         model_adapter_plugins.append(f"{model}={entry_point}")
 
-# 从 config.ini 读取插件配置
-plugin_entry_points = {}
-for section_name in config.sections():
-    if section_name.startswith("Plugin:"):
-        # 提取插件名称（去掉 "Plugin:" 前缀）
-        plugin_name = section_name[7:]  # len("Plugin:") = 7
-        # 自动补全为 msmodelslim.xxx.plugins 格式
-        plugin_path = f"msmodelslim.{plugin_name}.plugins"
-        plugin_list = []
-        for plugin_type, plugin_func_path in config.items(section_name):
-            plugin_list.append(f"{plugin_type}={plugin_func_path}")
-        if plugin_list:
-            plugin_entry_points[plugin_path] = plugin_list
-
 setup(
     name='msmodelslim',
-    version='26.0.0.alpha01',
+    version='8.2.0',
     description='msModelSlim, MindStudio ModelSlim Tools',
     long_description_content_type='text/markdown',
     url=config.get('URL', 'repository_url'),
@@ -90,11 +69,9 @@ setup(
         'msmodelslim.config': ['*'],
         'msmodelslim.lab_calib': ['**'],
         'msmodelslim.lab_practice': ['**'],
-        'msmodelslim.core.tune_strategy.common.config_builder.expert_experience': ['*.yaml', '*.yml'],
-        'msmodelslim.core.analysis_service': ['pipeline_analysis/pipeline_template/*.yaml'],
     },
     data_files=[('', ['requirements.txt'])],
-    license='Mulan PSL v2',
+    license='Apache-2.0',
     keywords='msmodelslim',
     python_requires='>=3.7',
     install_requires=required,
@@ -102,7 +79,23 @@ setup(
         'console_scripts': [
             'msmodelslim=msmodelslim.cli.__main__:main'
         ],
+        "msmodelslim.quant_service.plugins": [
+            "modelslim_v0=msmodelslim.core.quant_service.modelslim_v0.quant_service:ModelslimV0QuantService",
+            "modelslim_v1=msmodelslim.core.quant_service.modelslim_v1:ModelslimV1QuantService",
+            "multimodal_sd_modelslim_v1="
+            "msmodelslim.core.quant_service.multimodal_sd_v1:MultimodalSDModelslimV1QuantService",
+            "multimodal_vlm_modelslim_v1="
+            "msmodelslim.core.quant_service.multimodal_vlm_v1:MultimodalVLMModelslimV1QuantService",
+        ],
         "msmodelslim.model_adapter.plugins": model_adapter_plugins,
-        **plugin_entry_points,  # 从 config.ini 读取的插件配置（含 quant_service、tuning_strategy、evaluation 等）
+        "msmodelslim.strategy_config.plugins": [
+            "standing_high=msmodelslim.core.tune_strategy.standing_high.strategy:StandingHighStrategyConfig",
+        ],
+        "msmodelslim.strategy.plugins": [
+            "standing_high=msmodelslim.core.tune_strategy.standing_high.strategy:StandingHighStrategy",
+        ],
+        "msmodelslim.evaluate_config.plugins": [
+            "service_oriented=msmodelslim.infra.service_oriented_evaluate_service:ServiceOrientedEvaluateServiceConfig",
+        ],
     },
 )

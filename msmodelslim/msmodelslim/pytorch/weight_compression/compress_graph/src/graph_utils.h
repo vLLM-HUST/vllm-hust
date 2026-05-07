@@ -1,18 +1,9 @@
-/* -------------------------------------------------------------------------
- * This file is part of the MindStudio project.
- * Copyright (c) 2025 Huawei Technologies Co.,Ltd.
- *
- * MindStudio is licensed under Mulan PSL v2.
- * You can use this software according to the terms and conditions of the Mulan PSL v2.
- * You may obtain a copy of Mulan PSL v2 at:
- *
- *          http://license.coscl.org.cn/MulanPSL2
- *
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PSL v2 for more details.
- * ------------------------------------------------------------------------- */
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2023-2023. All rights reserved.
+ * Description: graph_utils.h for weight compression
+ * Author: Huawei
+ * Create: 2023-09-21
+ */
 
 #ifndef DAVINCI_GRAPH_UTILS_H
 #define DAVINCI_GRAPH_UTILS_H
@@ -40,7 +31,7 @@ int CheckShape(std::vector<int64_t> &shape);
 
 void GetDataSizeFromShape(std::vector<int64_t> shape, int64_t &size);
 
-bool GetDataFromBin(std::string input_path, std::vector<int64_t> shapes, uint8_t *&data, int data_type_size);
+bool GetDataFromBin(std::string input_path, std::vector<int64_t> shapes, uint8_t** data, int data_type_size);
 
 int32_t BuildCompressFcGraph(Graph &graph, uint8_t* data, std::vector<int64_t> &shape, std::vector<int64_t> &compressParameters);
 }

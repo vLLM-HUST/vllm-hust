@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 import json
 import os
 import tempfile
@@ -41,14 +22,11 @@ class DummyConfig:
     """模拟配置对象"""
 
     def __init__(self):
-        self.num_hidden_layers = 5
+        self.num_hidden_layers = 2
         self.num_attention_heads = 8
         self.num_key_value_heads = 4
         self.qk_nope_head_dim = 64
         self.v_head_dim = 64
-        self.first_k_dense_replace = 3
-        self.n_routed_experts = 256
-        self.n_shared_experts = 1
 
 
 class DummyAttention(nn.Module):
@@ -171,7 +149,7 @@ class TestDeepSeekV3ModelAdapter(unittest.TestCase):
             result = adapter.get_adapter_config_for_subgraph()
 
             self.assertIsInstance(result, list)
-            expected_configs = (adapter.config.num_hidden_layers - 1) * 4 + 1 * adapter.config.n_routed_experts # 不包含MTP
+            expected_configs = (adapter.config.num_hidden_layers - 1) * 3  # 不包含MTP
             self.assertEqual(len(result), expected_configs)
             self.assertIsInstance(result[0], AdapterConfig)
 
@@ -260,15 +238,16 @@ class TestDeepSeekV3ModelAdapter(unittest.TestCase):
         with patch.object(DeepSeekV3ModelAdapter, '__init__', lambda x, *args, **kwargs: None):
             adapter = DeepSeekV3ModelAdapter()
             adapter.config = DummyConfig()
+            adapter.config.num_hidden_layers = 5
 
             result = adapter.get_adapter_config_for_subgraph()
 
             # 验证返回正确数量的配置
-            expected_count = (adapter.config.num_hidden_layers - 1) * 4 + 1 * adapter.config.n_routed_experts # 4层 * 3个配置，不包含MTP
+            expected_count = (5 - 1) * 3  # 4层 * 3个配置，不包含MTP
             self.assertEqual(len(result), expected_count)
 
             # 验证第二层的配置
-            layer_1_configs = result[4:7]
+            layer_1_configs = result[3:6]
             self.assertEqual(layer_1_configs[0].mapping.source, 'model.layers.1.self_attn.kv_b_proj')
             self.assertEqual(layer_1_configs[1].mapping.source, 'model.layers.1.input_layernorm')
             self.assertEqual(layer_1_configs[2].mapping.source, 'model.layers.1.self_attn.q_a_layernorm')

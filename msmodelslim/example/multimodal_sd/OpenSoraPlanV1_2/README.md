@@ -2,10 +2,6 @@
 
 Open-Sora-Plan V1.2的推理量化依赖于推理工程仓：[MindIE/open_sora_planv1_2](https://modelers.cn/models/MindIE/open_sora_planv1_2)，根据该工程仓完成配置后，使用以下示例代码进行量化。
 
-## 使用前准备
-
-- 安装 msModelSlim 工具，详情请参见[《msModelSlim工具安装指南》](https://msmodelslim.readthedocs.io/zh-cn/latest/zh/getting_started/install_guide/)。
-
 ## 支持的模型版本与量化策略
 
 | 模型系列 | 模型版本 | HuggingFace链接 | W8A8 | W8A16 | W4A16 | W4A4 | 稀疏量化 | KV Cache | Attention | 时间步量化 | FA3量化 | 异常值抑制量化 | 量化命令 |
@@ -13,19 +9,17 @@ Open-Sora-Plan V1.2的推理量化依赖于推理工程仓：[MindIE/open_sora_p
 | **Open-Sora-Plan** | Open-Sora-Plan v1.2 | [Open-Sora-Plan v1.2](https://huggingface.co/LanguageBind/Open-Sora-Plan-v1.2.0) | ✅ | | | | | | | | | | [W8A8静态量化](#open-sora-plan-v12-w8a8静态量化) |
 
 **说明：**
-
 - ✅ 表示该量化策略已通过msModelSlim官方验证，功能完整、性能稳定，建议优先采用。
 - 空格表示该量化策略暂未通过msModelSlim官方验证，用户可根据实际需求进行配置尝试，但量化效果和功能稳定性无法得到官方保证。
 - 点击量化命令列中的链接可跳转到对应的具体量化命令
 
-## 使用示例
+## <span id="open-sora-plan-v12-w8a8静态量化">Open-Sora-Plan V1.2 W8A8静态量化</span>
 
-### <span id="open-sora-plan-v12-w8a8静态量化">Open-Sora-Plan V1.2 W8A8静态量化</span>
+### 量化命令和示例代码
 
 #### 量化启动命令
 
 我们提供了完整的量化启动脚本示例：[OpenSoraPlanV1_2/inference.py](./inference.py)，其启动命令可参考(请提前确保calib_prompts.txt权限不大于'0o640')：
-
 ```shell
 # 根据使用卡数进行配置多卡环境变量和nproc_per_node，以下使用8卡为例
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
@@ -79,9 +73,7 @@ dump_data_path = os.path.join(DUMP_CALIB_FOLDER, get_rank_suffix_file(base_name=
                                                                       is_distributed=is_distributed, rank=rank))
 
 ############################ 加载模型 ############################
-model_path = './model' #模型路径
-
-def load_t2v_checkpoint(model_path):
+def load_t2v_checkpoint():
     pass
 
 
@@ -90,10 +82,6 @@ pipeline = load_t2v_checkpoint(model_path)  # 加载模型
 model = pipeline.transformer
 
 ############################ dump 校准数据 ############################
-def run_model_and_save_images(pipeline, ...):
-    # 原始模型推理过程
-    pass
-
 if not os.path.exists(dump_data_path):  # 检查校准数据是否已存在，不存在则dump
     # 添加forward hook用于dump model的forward输入
     dumper_manager = DumperManager(model, capture_mode='args')
@@ -143,9 +131,7 @@ quant_model(model, session_cfg)
 
 ```
 
-## 附录
-
-### 运行参数说明
+## 运行参数说明
 
 以下是使用[OpenSoraPlanV1_2/inference.py](./inference.py)进行Open-Sora-Plan V1.2模型推理量化时的参数说明。量化启动命令未涉及参数对应的说明请见Open-Sora-Plan V1.2推理工程仓[MindIE/open_sora_planv1_2](https://modelers.cn/models/MindIE/open_sora_planv1_2)
 

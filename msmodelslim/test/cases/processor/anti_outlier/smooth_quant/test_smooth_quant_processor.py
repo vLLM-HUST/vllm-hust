@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
 
 from typing import List
 
@@ -25,7 +6,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from msmodelslim.processor.anti_outlier.common.subgraph_type import NormLinearSubgraph
+from msmodelslim.ir.qal.qtypes import NormLinearSubgraph
 from msmodelslim.core.base.protocol import BatchProcessRequest
 from msmodelslim.core.graph.adapter_types import AdapterConfig, MappingConfig
 from msmodelslim.ir.norm_bias import RMSNormBias
@@ -132,16 +113,13 @@ class TestSmoothQuantProcessor:
 
     @staticmethod
     def test_init_with_invalid_adapter():
-        """验证使用无效适配器时回退到默认适配器逻辑"""
+        """验证使用无效适配器时抛出异常"""
         model = MockModel()
         config = SmoothQuantProcessorConfig()
         adapter = MockInvalidAdapter()
 
-        processor = SmoothQuantProcessor(model, config, adapter)
-
-        # 不再抛出异常，而是回退到默认适配器逻辑
-        assert isinstance(processor, SmoothQuantProcessor)
-        assert processor.is_defalut_adapter is True
+        with pytest.raises(UnsupportedError):
+            SmoothQuantProcessor(model, config, adapter)
 
     @staticmethod
     def test_filter_adapter_configs_by_config():

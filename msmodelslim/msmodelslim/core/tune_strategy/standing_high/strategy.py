@@ -1,47 +1,27 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright Huawei Technologies Co., Ltd. 2025. All rights reserved.
 from typing import Generator, List, Optional, Literal, Annotated
 
 from pydantic import Field, model_validator, AfterValidator
 
-from msmodelslim.core.const import DeviceType
 from msmodelslim.core.practice import PracticeConfig, Metadata
 from msmodelslim.core.quant_service.modelslim_v1.quant_config import ModelslimV1ServiceConfig
 from msmodelslim.core.quant_service.modelslim_v1.save import AscendV1Config
-from msmodelslim.core.quantizer.base import QConfig
-from msmodelslim.core.quantizer.linear import LinearQConfig
 from msmodelslim.core.tune_strategy import ITuningStrategy
 from msmodelslim.core.tune_strategy.base import BaseTuningStrategy
 from msmodelslim.core.tune_strategy.dataset_loader_infra import DatasetLoaderInfra
 from msmodelslim.core.tune_strategy.interface import StrategyConfig, EvaluateResult
 from msmodelslim.core.tune_strategy.standing_high.standing_high_interface import StandingHighInterface
 from msmodelslim.ir.qal import QScope, QDType
+from msmodelslim.core.const import DeviceType
 from msmodelslim.model import IModel
+from msmodelslim.pytorch.llm_ptq.llm_ptq_tools.layer_select import LayerSelector
 from msmodelslim.processor.base import AutoProcessorConfigList
 from msmodelslim.processor.quant.linear import LinearProcessorConfig
-from msmodelslim.pytorch.llm_ptq.llm_ptq_tools.layer_select import LayerSelector
+from msmodelslim.core.quantizer.base import QConfig
+from msmodelslim.core.quantizer.linear import LinearQConfig
 from msmodelslim.utils.exception import SchemaValidateError, UnsupportedError
 from msmodelslim.utils.logging import logger_setter, get_logger
 from msmodelslim.utils.validation.pydantic import at_least_one_element
-from msmodelslim.utils.config_map import ConfigSet
 
 
 def _create_default_template() -> ModelslimV1ServiceConfig:
@@ -97,21 +77,25 @@ class StandingHighStrategyConfig(StrategyConfig):
 
     @model_validator(mode='after')
     def validate_template_has_linear_quant(self):
-        """校验template中至少有一个linear_quant配置"""
+        """校验template中必须有且只有一个linear_quant配置"""
         linear_quant_count = sum(
             1 for proc in self.template.process if isinstance(proc, LinearProcessorConfig))
-        if linear_quant_count < 1:
-            raise SchemaValidateError(f"template_practice must contain at least one linear_quant processor, "
+        if linear_quant_count != 1:
+            raise SchemaValidateError(f"template_practice must contain exactly one linear_quant processor, "
                                       f"found {linear_quant_count}")
         return self
 
 
-@logger_setter("msmodelslim.core.tune_strategy.standing_high")
+@logger_setter("msmodelslim.core.tune_strategy.standing_high") 
 class StandingHighStrategy(BaseTuningStrategy, ITuningStrategy):
-    def __init__(self, config: StandingHighStrategyConfig, dataset_loader: DatasetLoaderInfra, **kwargs):
-        self.config = config
+    def __init__(self, config: StrategyConfig, dataset_loader: DatasetLoaderInfra):
+        super().__init__(config, dataset_loader)
+
+        if not isinstance(config, StandingHighStrategyConfig):
+            raise SchemaValidateError(f"StandingHighStrategy requires StandingHighStrategyConfig, got {type(config)}")
+
+        self.config: StandingHighStrategyConfig = config
         self.__counter = 0
-        super().__init__(config, dataset_loader, **kwargs)
 
     def generate_practice(self,
                           model: IModel,
@@ -148,50 +132,14 @@ class StandingHighStrategy(BaseTuningStrategy, ITuningStrategy):
             anti_outlier_processors: AutoProcessorConfigList,
             linear_quant_exclude: List[str],
     ) -> PracticeConfig:
-        """构建PracticeConfig：离群值抑制processors放在最前面，然后拼接模板中的所有processors
-        
-        针对每个 linear_quant 的 include 模式分别分配回退层，只回退匹配该 linear_quant include 模式的层。
-        """
+        """构建PracticeConfig：离群值抑制processors放在最前面，然后拼接模板中的所有processors"""
         process: AutoProcessorConfigList = list(anti_outlier_processors)
         template = self.config.template
-        
-        # 为每个 linear_quant 分配对应的回退层
+
         for proc in template.process:
             if isinstance(proc, LinearProcessorConfig):
-                # 根据 include 模式过滤回退层
-                include_patterns = proc.include or ["*"]
-                include_set = ConfigSet(include_patterns)
-                
-                # 过滤出匹配 include 模式的回退层，并去重
-                filtered_exclude = list(set([
-                    layer 
-                    for layer in linear_quant_exclude 
-                    if layer in include_set
-                ]))
-                
-                # 合并原始的 exclude 模式（去重）
-                exclude_list = list(dict.fromkeys(proc.exclude or []))
-                
-                # 如果原始 exclude 中有模式，需要检查 filtered_exclude 中的具体层名是否已被模式匹配
-                if exclude_list:
-                    exclude_set = ConfigSet(exclude_list)
-                    # 过滤掉已被模式匹配的具体层名
-                    filtered_exclude = [
-                        layer 
-                        for layer in filtered_exclude 
-                        if layer not in exclude_set
-                    ]
-                    # 合并模式和剩余的具体层名（保持顺序：模式在前，具体层名在后）
-                    exclude_list.extend(filtered_exclude)
-                else:
-                    exclude_list = filtered_exclude
-                
-                process.append(LinearProcessorConfig(
-                    type="linear_quant",
-                    qconfig=proc.qconfig,
-                    include=proc.include,
-                    exclude=exclude_list
-                ))
+                process.append(LinearProcessorConfig(type="linear_quant", qconfig=proc.qconfig, include=proc.include,
+                                                     exclude=linear_quant_exclude))
             else:
                 process.append(proc)
 
@@ -284,16 +232,7 @@ class StandingHighStrategy(BaseTuningStrategy, ITuningStrategy):
                     return
                 reduce_level = 1
                 get_logger().info("Reset reduce level to 1")
-
+            
         yield best_practice_config
 
         get_logger().info("No disable layer can satisfy demand")
-
-
-def get_plugin():
-    """
-    获取 standing_high 策略插件（返回配置类与组件类，由框架完成注册）。
-    Returns:
-        (StandingHighStrategyConfig, StandingHighStrategy) 元组
-    """
-    return StandingHighStrategyConfig, StandingHighStrategy

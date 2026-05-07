@@ -1,26 +1,8 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# -*- coding: utf-8 -*-
+# Copyright Huawei Technologies Co., Ltd. 2023-2023. All rights reserved.
 import os
-from msmodelslim.onnx.squant_ptq import OnnxCalibrator, QuantConfig # 导入squant_ptq量化接口
-from msmodelslim import set_logger_level # 可选，导入日志配置接口
+from modelslim.onnx.squant_ptq import OnnxCalibrator, QuantConfig # 导入squant_ptq量化接口
+from modelslim import set_logger_level # 可选，导入日志配置接口
 set_logger_level("info")
 config = QuantConfig(is_dynamic_shape = True, input_shape = [[1,3,640,640]])
 

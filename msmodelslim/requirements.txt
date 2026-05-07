@@ -3,5 +3,3 @@ einops
 pydantic>=2.10.1
 wcmatch>=10.0
 accelerate>=0.28.0
-requests
-scipy

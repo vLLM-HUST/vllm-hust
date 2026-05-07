@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 
 """
 iter_smooth.py 单元测试用例
@@ -33,7 +14,10 @@ import torch
 import torch.nn as nn
 
 # 应用程序自定义模块导入
-from msmodelslim.processor.anti_outlier.common.subgraph_type import (
+from msmodelslim.ir.qal.qtypes import (
+    LinearLinearSubgraph,
+    NormLinearSubgraph,
+    OVSubgraph,
     UpDownSubgraph,
 )
 from msmodelslim.processor.anti_outlier.common.smooth_types import (
@@ -46,7 +30,6 @@ from msmodelslim.processor.anti_outlier.common.scale_computation import (
     prepare_mqga_parameters,
     reduce_scales_for_mqga_mean,
 )
-from msmodelslim.processor.anti_outlier.common.subgraph_type import LinearLinearSubgraph, NormLinearSubgraph, OVSubgraph
 from msmodelslim.processor.anti_outlier.iter_smooth.api import (
     iter_smooth_impl_linear_linear,
     iter_smooth_impl_norm_linear,

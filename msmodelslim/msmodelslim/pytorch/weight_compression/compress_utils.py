@@ -1,23 +1,5 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# -*- coding: utf-8 -*-
+# Copyright Huawei Technologies Co., Ltd. 2023-2023. All rights reserved.
 
 import os 
 import subprocess
@@ -65,40 +47,16 @@ def compress_weight_fun(weights, record_detail_root='./', sparse_type=None):
         # compressType, isTiling, inputWeightPath, outputWeightPath, indexPath, compressInfoPath
         # isTight: 1表示高稀疏模式，0表示低稀疏模式
         if sparse_type == QuantType.W16A16S:
-            command = [
-                compress_excutor_path,
-                str(shape_k),
-                str(shape_n),
-                "1",
-                "1",
-                "1",
-                str(HIGH_SPARSE_MODE),
-                "0",
-                input_weight_path,
-                compress_output_path,
-                compress_index_path,
-                compress_info_path,
-            ]
+            command = '{} {} {} 1 1 1 {} 0 {} {} {} {}'.format(compress_excutor_path, shape_k, shape_n, 
+                    HIGH_SPARSE_MODE, input_weight_path, compress_output_path, compress_index_path, compress_info_path)
         elif sparse_type == QuantType.W8A8S:
-            command = [
-                compress_excutor_path,
-                str(shape_k),
-                str(shape_n),
-                "1",
-                "1",
-                "1",
-                str(LOW_SPARSE_MODE),
-                "0",
-                input_weight_path,
-                compress_output_path,
-                compress_index_path,
-                compress_info_path,
-            ]
+            command = '{} {} {} 1 1 1 {} 0 {} {} {} {}'.format(compress_excutor_path, shape_k, shape_n, 
+                    LOW_SPARSE_MODE, input_weight_path, compress_output_path, compress_index_path, compress_info_path)
         else:
             raise ValueError(f"Invalid sparse type: {sparse_type}")
 
         with SafeWriteUmask(umask=0o077):
-            process = subprocess.Popen(command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            process = subprocess.Popen(command.split(), shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
                 stdout, stderr = process.communicate(timeout=600)
             except subprocess.TimeoutExpired:

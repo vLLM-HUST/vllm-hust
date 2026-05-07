@@ -1,22 +1,16 @@
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 import gc
 import os
@@ -49,7 +43,7 @@ from msmodelslim.model.interface_hub import (
 )
 from msmodelslim.processor.quarot import QuaRotInterface
 from msmodelslim.model.common.vlm_base import VLMBaseModelAdapter
-from msmodelslim.infra.dataset_loader.vlm_dataset_loader import VLMDatasetLoader, VlmCalibSample
+from msmodelslim.infra.vlm_dataset_loader import VlmCalibSample
 from msmodelslim.utils.exception import InvalidModelError, UnsupportedError
 from msmodelslim.utils.logging import logger_setter, get_logger
 from msmodelslim.utils.security import get_valid_read_path, json_safe_load, MAX_READ_FILE_SIZE_32G
@@ -85,19 +79,10 @@ class Qwen3VLMoeModelAdapter(
         self._processor = None
         self._tokenizer = None
         super().__init__(model_type, model_path, trust_remote_code)
-
-    def _create_model_instance(self, model_cls) -> nn.Module:
-        """创建模型实例的基础方法，子类可重写以修改参数（如torch_dtype）"""
-        return model_cls.from_pretrained(
-            self.model_path,
-            config=self.config,
-            trust_remote_code=self.trust_remote_code,
-            torch_dtype="auto",
-            local_files_only=True,
-            device_map="cpu",  # All on CPU for now
-            attn_implementation='eager'  # Required: prevents KeyError when accessing ALL_ATTENTION_FUNCTIONS
-        ).eval()
-
+        
+        # Initialize attention heads config (required for OV smoothing)
+        self.num_attention_heads, self.num_key_value_heads = self._init_num_attention_heads()
+    
     def get_model_pedigree(self) -> str:
         """Return model pedigree for best practice matching"""
         return 'qwen3_vl_moe'
@@ -112,7 +97,11 @@ class Qwen3VLMoeModelAdapter(
         
         Supported sample structure (preferred):
             VlmCalibSample(text: str, image: Optional[str])
-
+        Legacy dict format is also accepted:
+            {'text': '...', 'image': '/path/to/img.jpg' or None}
+        
+        For text-only samples, messages contain only text:
+            [{"role": "user", "content": [{"type": "text", "text": text}]}]
         For image+text samples:
             [{"role": "user", "content": [
                 {"type": "image", "image": "<path>"},
@@ -147,18 +136,27 @@ class Qwen3VLMoeModelAdapter(
         # Preprocess each sample
         processed_data = []
         for item in tqdm(dataset, desc="Processing calibration dataset"):
-            # Support dataclass
-            image_path = item.image
-            text = item.text
-
+            # Support both dataclass and legacy dict
+            if isinstance(item, VlmCalibSample):
+                image_path = item.image
+                text = item.text
+            else:
+                image_path = item.get('image')
+                text = item.get('text')
+            
             # Build messages based on presence of image
-            # Validate image path
-            image_path = get_valid_read_path(image_path)
-            content = [
-                {"type": "image", "image": str(image_path)},
-                {"type": "text", "text": text},
-            ]
-
+            if image_path:
+                # Validate image path only when present
+                image_path = get_valid_read_path(image_path)
+                content = [
+                    {"type": "image", "image": str(image_path)},
+                    {"type": "text", "text": text},
+                ]
+            else:
+                content = [
+                    {"type": "text", "text": text},
+                ]
+            
             messages = [
                 {
                     "role": "user",
@@ -238,8 +236,16 @@ class Qwen3VLMoeModelAdapter(
         # Load model with only 1 text decoder layer
         # Vision encoder is fully loaded, text decoder has only 1 layer
         get_logger().info("Loading vision encoder and first text decoder layer...")
-        model = self._create_model_instance(Qwen3VLMoeForConditionalGeneration)
-
+        model = Qwen3VLMoeForConditionalGeneration.from_pretrained(
+            self.model_path,
+            config=self.config,
+            trust_remote_code=self.trust_remote_code,
+            torch_dtype="auto",
+            local_files_only=True,
+            device_map="cpu",  # All on CPU for now
+            attn_implementation='eager'  # Required: prevents KeyError when accessing ALL_ATTENTION_FUNCTIONS
+        ).eval()
+        
         # Restore original layer count
         self.config.text_config.num_hidden_layers = origin_layers
         
@@ -332,9 +338,15 @@ class Qwen3VLMoeModelAdapter(
         # 2. Vision encoder forward
         pixel_values = sample['pixel_values']
         image_grid_thw = sample['image_grid_thw']
-
+        
+        with torch.no_grad():
+            # Run vision encoder
+            image_embeds, deepstack_image_embeds = model.model.visual(
+                pixel_values, grid_thw=image_grid_thw
+            )
+        
         # Yield vision encoder result
-        image_embeds, deepstack_image_embeds = yield ProcessRequest(
+        yield ProcessRequest(
             name="model.visual",
             module=model.model.visual,
             args=(pixel_values, image_grid_thw),
@@ -401,8 +413,28 @@ class Qwen3VLMoeModelAdapter(
         # 4. Process each decoder layer
         hidden_states = inputs_embeds
         for layer_idx, (name, layer) in enumerate(self.generate_decoder_layer(model)):
+            with torch.no_grad():
+                # Forward through current layer
+                hidden_states = layer(
+                    hidden_states,
+                    attention_mask=attention_mask,  # Now 4D: [batch, 1, seq_len, seq_len]
+                    position_ids=text_position_ids,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                    past_key_values=None,
+                    use_cache=False,
+                )
+                
+                # CRITICAL: Inject deepstack visual features after specific layers
+                # This mimics Qwen3VLMoeTextModel.forward (lines 996-1001)
+                if deepstack_image_embeds is not None and layer_idx < len(deepstack_image_embeds):
+                    # _deepstack_process: hidden_states[visual_pos_masks, :] += visual_embeds
+                    visual_embeds = deepstack_image_embeds[layer_idx].to(hidden_states.device, hidden_states.dtype)
+                    hidden_states = hidden_states.clone()
+                    hidden_states[visual_pos_masks, :] = hidden_states[visual_pos_masks, :] + visual_embeds
+            
             # Yield layer result
-            hidden_states = yield ProcessRequest(
+            yield ProcessRequest(
                 name=name,
                 module=layer,
                 args=(hidden_states,),
@@ -415,14 +447,7 @@ class Qwen3VLMoeModelAdapter(
                     'use_cache': False,
                 }
             )
-            # CRITICAL: Inject deepstack visual features after specific layers
-            # This mimics Qwen3VLMoeTextModel.forward (lines 996-1001)
-            if deepstack_image_embeds is not None and layer_idx < len(deepstack_image_embeds):
-                # _deepstack_process: hidden_states[visual_pos_masks, :] += visual_embeds
-                visual_embeds = deepstack_image_embeds[layer_idx].to(hidden_states.device, hidden_states.dtype)
-                hidden_states = hidden_states.clone()
-                hidden_states[visual_pos_masks, :] = hidden_states[visual_pos_masks, :] + visual_embeds
-
+    
     def generate_decoder_layer(self, model: nn.Module) -> Generator[Tuple[str, nn.Module], None, None]:
         """
         Generate decoder layers, loading them on-demand.
@@ -466,7 +491,7 @@ class Qwen3VLMoeModelAdapter(
         # Text decoder layers
         for layer_idx in range(self.config.text_config.num_hidden_layers):
             # Norm-Linear: input_layernorm -> QKV
-            input_layernorm_mapping_config = MappingConfig(
+            norm_linear_mapping_config = MappingConfig(
                 source=f"model.language_model.layers.{layer_idx}.input_layernorm",
                 targets=[
                     f"model.language_model.layers.{layer_idx}.self_attn.q_proj",
@@ -484,13 +509,15 @@ class Qwen3VLMoeModelAdapter(
             adapter_config.extend([
                 AdapterConfig(
                     subgraph_type="norm-linear",
-                    mapping=input_layernorm_mapping_config
+                    mapping=norm_linear_mapping_config
                 ),
                 AdapterConfig(
                     subgraph_type="ov",
                     mapping=ov_mapping_config,
                     extra_config={
-                        'group_method': 'max'
+                        'group_method': 'max',
+                        'num_attention_heads': self.config.text_config.num_attention_heads,
+                        'num_key_value_heads': self.config.text_config.num_key_value_heads
                     }
                 ),
             ])
@@ -760,6 +787,41 @@ class Qwen3VLMoeModelAdapter(
         # Clean up
         del original_moe_block
         gc.collect()
+
+    def _init_num_attention_heads(self):
+        """
+        Initialize attention heads configuration.
+        
+        Required for OV smoothing and other attention-related processing.
+        Based on qwen3vl.py implementation.
+        
+        Returns:
+            Tuple of (num_attention_heads, num_key_value_heads)
+        """
+        num_attention_heads = None
+        num_key_value_heads = None
+
+        attention_heads_keys = ["num_attention_heads", "n_head", "num_heads"]
+        key_value_heads_keys = ["num_key_value_heads"]
+
+        # Check in text_config (Qwen3VLMoe has separate text and vision configs)
+        for key in attention_heads_keys:
+            if hasattr(self.config.text_config, key):
+                num_attention_heads = getattr(self.config.text_config, key)
+                break
+
+        for key in key_value_heads_keys:
+            if hasattr(self.config.text_config, key):
+                num_key_value_heads = getattr(self.config.text_config, key)
+                break
+
+        if not num_attention_heads:
+            raise ValueError(
+                "the config of model must have num_attention_heads, n_head or num_heads, "
+                "please check or modify the config file"
+            )
+        
+        return num_attention_heads, num_key_value_heads
 
 
 def _qwen3_vl_moe_get_ln_fuse_map(config):

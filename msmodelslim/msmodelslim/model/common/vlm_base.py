@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 import re
 from pathlib import Path
 
@@ -28,12 +9,11 @@ from transformers import PreTrainedTokenizerBase, PreTrainedModel, PretrainedCon
 
 from msmodelslim.core.const import DeviceType
 from msmodelslim.utils.exception import SchemaValidateError
-from msmodelslim.model.interface_hub import AscendV1GlobalModelDtypeInterface
 from msmodelslim.utils.security.model import SafeGenerator
 from ..base import BaseModelAdapter
 
 
-class VLMBaseModelAdapter(BaseModelAdapter, AscendV1GlobalModelDtypeInterface):
+class VLMBaseModelAdapter(BaseModelAdapter):
     """
     VLM base model adapter providing basic attributes and methods for VLM models.
     To use, subclass and implement the required methods for your specific model.
@@ -44,22 +24,6 @@ class VLMBaseModelAdapter(BaseModelAdapter, AscendV1GlobalModelDtypeInterface):
         self.config = self._load_config(trust_remote_code=trust_remote_code)
         self.model_pedigree = self._get_model_pedigree(self.model_type)
         self.model_type = self._get_model_type(self.model_type)
-
-    def get_global_model_torch_dtype(self) -> torch.dtype:
-        """AscendV1GlobalModelDtypeInterface: return global model torch dtype (delegate to get_global_torch_dtype)."""
-        dt = (
-            getattr(self.config, "torch_dtype", None)
-            or getattr(getattr(self.config, "text_config", None), "torch_dtype", None)
-            or getattr(getattr(self.config, "vision_config", None), "torch_dtype", None)
-        )
-        if dt is None:
-            return torch.float32
-        if isinstance(dt, torch.dtype):
-            return dt
-        if isinstance(dt, str):
-            m = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
-            return m.get(dt, torch.float32)
-        return torch.float32
 
     @staticmethod
     def _maybe_to_device(value, device):

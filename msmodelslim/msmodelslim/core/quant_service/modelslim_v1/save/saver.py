@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 from abc import abstractmethod
 from collections.abc import Callable
@@ -97,8 +91,6 @@ class AutoSaverProcessor(AutoSessionProcessor):
         self.processed_modules: Set[nn.Module] = set()
         self.process_map: Dict[Type[nn.Module], Callable[[str, nn.Module], None]] = {
             qir.W8A8StaticFakeQuantLinear: self.on_w8a8_static,
-            qir.W8A16StaticPerChannelFakeQuantLinear: self.on_w8a16_static_per_channel,
-            qir.W8A16StaticPerGroupFakeQuantLinear: self.on_w8a16_static_per_group,
             qir.W8A8DynamicPerChannelFakeQuantLinear: self.on_w8a8_dynamic_per_channel,
             qir.W8A8PDMixFakeQuantLinear: self.on_w8a8_pd_mix,
             qir.W8A8DynamicPerGroupFakeQuantLinear: self.on_w8a8_dynamic_per_group,
@@ -112,15 +104,10 @@ class AutoSaverProcessor(AutoSessionProcessor):
             nn.Module: self.on_float_module,
             qir.FakeQuantDynamicCache: self.on_dynamic_cache,
             qir.FakeQuantActivationPerHead: self.on_activation_per_head,
-            qir.FakeQuantActivationPerToken: self.on_activation_per_token,
             qir.W16A16sLinear: self.on_w16a16s,
             qir.QuarotOnlineHeadRotationWrapper: self.on_rotation_wrapper,
             qir.QuarotOnlineKroneckerRotationWrapper: self.on_kronecker_rotation_wrapper,
-            qir.QuaRotExtraInfoWrapperIR: self.on_quarot_extra_info_wrapper,
-            qir.OnlineRotationWrapper: self.on_online_rotation_wrapper,
             qir.WFP8AFP8DynamicPerChannelFakeQuantLinear: self.on_wfp8afp8_dynamic_per_channel,
-            qir.FlatQuantOnlineWrapper: self.on_flat_clip_wrapper,
-            qir.NonFusionSmoothQuantWrapper: self.on_non_fusion_smooth_quant_wrapper,
         }
 
     def support_distributed(self) -> bool:
@@ -159,7 +146,13 @@ class AutoSaverProcessor(AutoSessionProcessor):
         _convert_hookir_to_wrapper(module)
 
         for name, sub_module in module.named_modules(memo=self.processed_modules, prefix=prefix):
-            self._process_module_maybe_wrapper_ir(name, sub_module)
+            # 优先判断是否为WrapperIR
+            if isinstance(sub_module, qir.WrapperIR):
+                self.on_wrapper_ir(name, sub_module)
+                continue
+
+            # 使用通用的处理逻辑
+            self._process_module(name, sub_module)
 
     @abstractmethod
     def merge_ranks(self) -> None:
@@ -171,12 +164,6 @@ class AutoSaverProcessor(AutoSessionProcessor):
 
     def on_w8a8_static(self, prefix: str, module: qir.W8A8StaticFakeQuantLinear):
         raise NotImplementedError(f"You should implement the on_w8a8_static method for {self.__class__.__name__}")
-
-    def on_w8a16_static_per_channel(self, prefix: str, module: qir.W8A16StaticPerChannelFakeQuantLinear):
-        raise NotImplementedError(f"You should implement the on_w8a16_static_per_channel method for {self.__class__.__name__}")
-
-    def on_w8a16_static_per_group(self, prefix: str, module: qir.W8A16StaticPerGroupFakeQuantLinear):
-        raise NotImplementedError(f"You should implement the on_w8a16_static_per_group method for {self.__class__.__name__}")
 
     def on_w8a8_dynamic_per_channel(self, prefix: str, module: qir.W8A8DynamicPerChannelFakeQuantLinear):
         raise NotImplementedError(
@@ -230,11 +217,6 @@ class AutoSaverProcessor(AutoSessionProcessor):
         raise NotImplementedError(
             f"You should implement the on_activation_per_head method for {self.__class__.__name__}"
             )
-    
-    def on_activation_per_token(self, prefix: str, module: qir.FakeQuantActivationPerToken):
-        raise NotImplementedError(
-            f"You should implement the on_activation_per_token method for {self.__class__.__name__}"
-            )
 
     def on_rotation_wrapper(self, prefix: str, module: qir.QuarotOnlineHeadRotationWrapper):
         """
@@ -263,35 +245,6 @@ class AutoSaverProcessor(AutoSessionProcessor):
         """
         # 只处理被包装的模块，旋转矩阵由全局逻辑处理
         self._process_module(prefix, module.wrapped_module)
-
-    def on_quarot_extra_info_wrapper(self, prefix: str, module: qir.QuaRotExtraInfoWrapperIR):
-        """
-        处理 QuaRot 额外信息（全局旋转矩阵等）的导出。
-        子类应实现：将 rotation_info 写入独立 safetensors，并在 JSON 中写入 optional.quarot.global_rotation 路径。
-        """
-        raise NotImplementedError(
-            f"You should implement the on_quarot_extra_info_wrapper method for {self.__class__.__name__}")
-
-    def on_flat_clip_wrapper(self, prefix: str, module: qir.FlatQuantOnlineWrapper):
-        """
-        处理FlatQuantOnlineWrapper类型的模块。
-
-        保存旋转矩阵到left_trans, right_trans, clip_factor, 并在JSON中添加相应的描述。
-
-        Args:
-            prefix: 模块名称前缀
-            module: FlatQuantOnlineWrapper模块实例
-        """
-        self._process_module(prefix, module.wrapped_module)
-    
-    def on_non_fusion_smooth_quant_wrapper(self, prefix: str, module: qir.NonFusionSmoothQuantWrapper):
-        """
-        Args:
-            prefix: 模块名称前缀
-            module: NonFusionSmoothQuantWrapper模块实例
-        """
-        raise NotImplementedError(
-            f"You should implement the on_non_fusion_smooth_quant_wrapper method for {self.__class__.__name__}")
 
     def on_wrapper_ir(self, prefix: str, module: qir.WrapperIR):
         """
@@ -324,20 +277,6 @@ class AutoSaverProcessor(AutoSessionProcessor):
     def on_w16a16s(self, prefix: str, module: qir.W16A16sLinear):
         raise NotImplementedError(f"You should implement the on_w16a16s method for {self.__class__.__name__}")
 
-    def on_online_rotation_wrapper(self, prefix: str, module: qir.OnlineRotationWrapper):
-        """
-        处理OnlineRotationWrapper类型的模块。
-        
-        OnlineRotationWrapper使用旋转矩阵替换模块，在保存时需要保存旋转矩阵。
-        
-        Args:
-            prefix: 模块名称前缀
-            module: OnlineRotationWrapper模块实例
-        """
-        raise NotImplementedError(
-            f"You should implement the on_online_rotation_wrapper method for {self.__class__.__name__}"
-        )
-
     def _process_module(self, prefix: str, module: nn.Module):
         """
         使用process_map处理模块的通用方法。
@@ -346,25 +285,9 @@ class AutoSaverProcessor(AutoSessionProcessor):
             prefix: 模块名称前缀
             module: 要处理的模块
         """
-
-        get_logger().debug("Processing module %r for %r", type(module).__name__, prefix)
-
         if type(module) in self.process_map:
             self.process_map[type(module)](prefix, module)
         else:
             self.on_float_module(prefix, module)
 
         self.processed_modules.add(module)
-        
-    def _process_module_maybe_wrapper_ir(self, prefix: str, module: nn.Module):
-        """
-        处理模块的通用方法，如果模块是WrapperIR，则调用on_wrapper_ir方法，否则调用_process_module方法。
-        
-        Args:
-            prefix: 模块名称前缀
-            module: 要处理的模块
-        """
-        if isinstance(module, qir.WrapperIR):
-            self.on_wrapper_ir(prefix, module)
-        else:
-            self._process_module(prefix, module)

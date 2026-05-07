@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 from typing import Type, Tuple
 
@@ -25,10 +19,13 @@ import torch
 from torch import nn
 
 from msmodelslim.ir.qal.qregistry import QFuncRegistry
-from msmodelslim.processor.anti_outlier.common.subgraph_type import (
+from msmodelslim.ir.qal.qtypes import (
+    Subgraph,
+    NormLinearSubgraph,
+    LinearLinearSubgraph,
+    OVSubgraph,
     UpDownSubgraph,
 )
-from msmodelslim.processor.anti_outlier.common.subgraph_type import LinearLinearSubgraph, NonFusionSubgraph, NormLinearSubgraph, OVSubgraph, Subgraph
 from msmodelslim.utils.logging import get_logger
 from .alpha_beta_search import (
     FlexSmoothAlphaBetaSearcher,
@@ -58,7 +55,6 @@ def flex_smooth_quant(subgraph: Subgraph, config: FlexSmoothQuantConfig, context
             LinearLinearSubgraph
             OVSubgraph
             UpDownSubgraph
-            NonFusionSubgraph（非融合子图）
         config: FlexSmoothQuant算法配置
         context: 上下文，用于输入激活的smooth_scale，并记录权重的smooth_scale
         
@@ -188,38 +184,6 @@ def flex_smooth_impl_norm_linear(subgraph: Subgraph, config: FlexSmoothQuantConf
     )
     get_logger().debug("Norm-Linear smoothing completed successfully")
     return
-
-
-@torch.no_grad()
-@QFuncRegistry.register(dispatch_key=(NonFusionSubgraph, 1), api_name="flex_smooth_quant")
-def flex_smooth_impl_non_fusion_linear(
-    subgraph: Subgraph, config: FlexSmoothQuantConfig, context: SmoothContext
-) -> torch.Tensor:
-    """
-    对 NonFusionSubgraph 应用 flex_smooth_quant 进行异常值抑制（非融合子图接口）。
-
-    从 context 获取激活，对 subgraph.linears 的权重做 alpha/beta 搜索得到最优 scale，
-    通过 SubgraphFusionFactory 做权重融合，并在每个 linear 上注册 NonFusionSmoothQuantHookIR，
-    在推理时对输入做 scale 校正。
-    """
-    if len(subgraph.linears) < 1:
-        raise ValueError("NonFusionSubgraph must have at least one linear layer")
-
-    tmp_device = next(subgraph.linears[0].parameters()).device
-    dtype = subgraph.linears[0].weight.dtype
-    act = validate_and_process_tensors(context, tmp_device, dtype)
-    a_scale = context.a_smooth_scale
-    fc_weights = torch.cat([fc.weight for fc in subgraph.linears], dim=0)
-    best_alpha, best_beta = get_optimal_alpha_beta_flex_smooth(config, act, fc_weights)
-    w_scale = compute_multi_weight_scale([fc.weight for fc in subgraph.linears], dtype)
-    calculator = FlexSmoothScaleCalculator(alpha=best_alpha, beta=best_beta, group_method='max')
-    scales = calculator.compute_smooth_scale(a_scale, w_scale)
-
-    SubgraphFusionFactory.apply_fusion_to_subgraph(
-        subgraph,
-        scales={'scales': scales}
-    )
-    return scales
 
 
 # ============== FlexAWQSSZ Implementation ==============

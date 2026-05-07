@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 
 from typing_extensions import Self, Type
 
@@ -45,11 +26,11 @@ class ModelslimError(Exception):
         message = super().__str__()
         if not message or message == "None":
             message = self.default_message
-
+        
         desc = f"[{error_type}] Code: {self.code}, Message: {message}"
         if self.action:
             desc += f", TIP: {self.action}"
-
+        
         return desc
 
     @classmethod
@@ -79,18 +60,12 @@ SecurityError: Type[ModelslimError] = MisbehaviorError.create_exception("Securit
                                                                         "Potential security risk.")
 
 # TrivialError
-TrivialError: Type[ModelslimError] = ModelslimError.create_exception(
-    "TrivialError", 300, "Trivial error, no need to resolve."
-)
-UnsupportedError: Type[ModelslimError] = TrivialError.create_exception(
-    "UnsupportedError", 301, "Unsupported operation."
-)
-SpecError: Type[ModelslimError] = TrivialError.create_exception(
-    "SpecError", 302, "Specific scenario error."
-)
-TimeoutError: Type[ModelslimError] = TrivialError.create_exception(
-    "TimeoutError", 303, "Timeout error."
-)
+TrivialError: Type[ModelslimError] = ModelslimError.create_exception("TrivialError", 300,
+                                                                     "Trivial error, no need to resolve.")
+UnsupportedError: Type[ModelslimError] = TrivialError.create_exception("UnsupportedError", 301,
+                                                                       "Unsupported operation.")
+SpecError: Type[ModelslimError] = TrivialError.create_exception("SpecError", 302,
+                                                                "Specific scenario error.")
 
 # ToDoError
 ToDoError: Type[ModelslimError] = ModelslimError.create_exception("ToDoError", 400, "Bug to be fixed soon.")

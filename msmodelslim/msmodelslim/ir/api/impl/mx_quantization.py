@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 #  Adapted from https://github.com/microsoft/microxcaling/blob/main/mx_ops.py
 
 import torch
@@ -31,6 +25,7 @@ FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
 @QFuncRegistry.register(dispatch_key=(QDType.MXFP8, QScope.PER_BLOCK, True), api_name="calculate_qparam")
+@QFuncRegistry.register(dispatch_key=(QDType.MXFP4, QScope.PER_BLOCK, True), api_name="calculate_qparam")
 def calculate_mx_qparam(
         min_val: torch.Tensor,
         max_val: torch.Tensor,
@@ -73,6 +68,7 @@ def calculate_mx_qparam(
 
 
 @QFuncRegistry.register(dispatch_key=(QDType.FLOAT, QDType.MXFP8, QScope.PER_BLOCK, True), api_name="quantize")
+@QFuncRegistry.register(dispatch_key=(QDType.FLOAT, QDType.MXFP4, QScope.PER_BLOCK, True), api_name="quantize")
 def mxfp_per_block_quantize(tensor: QStorage, q_param: QParam) -> QStorage:
     mx_finfo = q_param.scheme.dtype.mx_finfo
     inp = tensor.value
@@ -133,69 +129,3 @@ def _clamp_out(out, a, max_norm):
     out[a == float("NaN")] = float("NaN")
     return out
 
-
-@QFuncRegistry.register(dispatch_key=(QDType.MXFP4, QScope.PER_BLOCK, True), api_name="calculate_qparam")
-def calculate_mxfp4_qparam(
-        min_val: torch.Tensor,
-        max_val: torch.Tensor,
-        q_dtype: QDType,
-        q_scope: QScope,
-        symmetric: bool,
-        **kwargs
-) -> QParam:
-    """
-        Calculate the quantization parameters for MXFP4.
-        scale = 2 ** (floor(log2(max(abs(x)) * 8/7 + 9.6e-7)) - 2)
-    """
-    mx_finfo = q_dtype.mx_finfo
-    man_shift_bit = mx_finfo.mbits - 2
-    shared_exp = torch.floor(torch.log2(max_val/(1-0.5**(man_shift_bit+2))+9.6e-7))
-    shared_exp = shared_exp - mx_finfo.emax
-    scale_emax = 2 ** (mx_finfo.scale_bits - 1) - 1
-    shared_exp = torch.clip(shared_exp, -scale_emax - mx_finfo.emax, scale_emax - mx_finfo.emax)
-
-    return QParam(
-        scheme=QScheme(
-            dtype=q_dtype,
-            scope=q_scope,
-            symmetric=symmetric,
-        ),
-        ext={
-            "scale": shared_exp,
-        }
-    )
-
-
-@QFuncRegistry.register(dispatch_key=(QDType.FLOAT, QDType.MXFP4, QScope.PER_BLOCK, True), api_name="quantize")
-def mxfp4_quantize(tensor: QStorage, q_param: QParam) -> QStorage:
-    mx_finfo = q_param.scheme.dtype.mx_finfo
-    inp = tensor.value
-    dtype = inp.dtype
-
-    inp = inp.to(torch.float32)
-    shared_exp = q_param.ext['scale']
-    
-    x_unsigned = torch.abs(inp)
-    sign = torch.sign(inp)
-    x_biased = x_unsigned / torch.exp2(shared_exp)
-    private_exp_with_bias = torch.floor(torch.log2(x_biased + 9.6e-7))
-    min_exp = - (2 ** (mx_finfo.ebits - 1)) + 2
-    private_exp = torch.clip(private_exp_with_bias, min_exp, mx_finfo.emax)
-
-    man_shift_bit = mx_finfo.mbits - 2
-    mant_lshifted = x_biased / (2 ** private_exp) * (2 ** man_shift_bit)
-    mant_trunc = torch.floor(mant_lshifted + 0.5)
-    fp_value = mant_trunc / (2 ** man_shift_bit) * (2 ** private_exp)
-
-    fp_val_max = 2 ** mx_finfo.emax * float(2 ** (man_shift_bit + 1) - 1) / 2 ** man_shift_bit
-    fp_val_max = min(fp_val_max, 1e38)
-    fp_value = torch.clip(fp_value, -fp_val_max, fp_val_max)
-
-    ind_nan = shared_exp < -127
-    fp_value[torch.broadcast_to(ind_nan, fp_value.shape)] = 0
-
-    out = sign * fp_value
-    out = out.to(dtype)
-
-    tensor_q = tensor.same_like(out).to(q_param.scheme.dtype)
-    return tensor_q

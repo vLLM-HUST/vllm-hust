@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 import torch
 
@@ -109,9 +103,9 @@ def int_per_group_param(
         symmetric: bool,
         **kwargs
 ) -> QParam:
+    group_size = min_val.shape[-1]
     q_param = calculate_int_qparam(min_val, max_val, q_dtype, q_scope, symmetric, **kwargs)
-    # 此处无法获取group_size，需要在外层填充group_size值
-    q_param.ext['group_size'] = -1
+    q_param.ext['group_size'] = group_size
     return q_param
 
 
@@ -190,20 +184,18 @@ def int8_per_group_quantize(tensor: QStorage, q_param: QParam) -> QStorage:
     if group_size < 0:
         raise SchemaValidateError(f"group quantize group_size must be greater than 0 but got group_size = {group_size}",
                                   action=f"Please make sure group_size is greater than 0")
-    tmp_tensor = tensor.value.t()
-    org_shape = tmp_tensor.shape
-    tensor_reshaped = tmp_tensor.reshape(-1, group_size)
+    org_shape = tensor.value.shape
+    tensor_reshaped = tensor.value.reshape(-1, group_size)
     q_param_reshaped = QParam(
         scheme=q_param.scheme,
         ext={
             "scale": q_param.ext["scale"].view(-1, 1),
             "offset": q_param.ext["offset"].view(-1, 1),
-            "group_size": group_size
+            "group_size": q_param.ext["scale"].view(-1, 1)
         }
     )
     tensor_q = int_quantize(tensor.same_like(tensor_reshaped), q_param_reshaped)
     tensor_q.value = tensor_q.value.reshape(org_shape)
-    tensor_q.value = tensor_q.value.t()
     return tensor_q
 
 
@@ -216,20 +208,18 @@ def int_per_group_dequantize(tensor: QStorage, q_param: QParam) -> QStorage:
     if group_size < 0:
         raise SchemaValidateError(f"group quantize group_size must be greater than 0 but got group_size = {group_size}",
                                   action=f"Please make sure group_size is greater than 0")
-    tmp_tensor = tensor.value.t()
-    org_shape = tmp_tensor.shape
-    tensor_reshaped = tmp_tensor.reshape(-1, group_size)
+    org_shape = tensor.value.shape
+    tensor_reshaped = tensor.value.reshape(-1, group_size)
     q_param_reshaped = QParam(
         scheme=q_param.scheme,
         ext={
             "scale": q_param.ext["scale"].view(-1, 1),
             "offset": q_param.ext["offset"].view(-1, 1),
-            "group_size": group_size
+            "group_size": q_param.ext["scale"].view(-1, 1)
         }
     )
     tensor_q = int_dequantize(tensor.same_like(tensor_reshaped), q_param_reshaped)
     tensor_q.value = tensor_q.value.reshape(org_shape)
-    tensor_q.value = tensor_q.value.t()
     return tensor_q
 
 

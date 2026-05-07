@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 import functools
 import inspect
@@ -32,14 +26,13 @@ from torch import nn
 
 from ascend_utils.common.security.path import json_safe_dump
 from msmodelslim import logger
-from msmodelslim.core.base.protocol import BatchProcessRequest
 from msmodelslim.ir.qal.qregistry import QABCRegistry
+from msmodelslim.core.base.protocol import BatchProcessRequest
 from msmodelslim.processor.base import AutoSessionProcessor
 from msmodelslim.utils.distributed import DistHelper
 from msmodelslim.utils.logging import logger_setter, get_logger
 from .ascendv1 import AscendV1Saver, AscendV1Config, ASCENDV1_DESC_JSON_NAME, copy_files, remove_quantization_config
 from .interface import AscendV1SaveInterface
-from .saver import _convert_hookir_to_wrapper
 from .utils.json import JsonWriter
 
 
@@ -200,9 +193,8 @@ class DistributedAscendV1Saver(AscendV1Saver):
 
     def post_run(self) -> None:
 
-        _convert_hookir_to_wrapper(self.model)
         for name, sub_module in self.model.named_modules(memo=self.processed_modules):
-            self._process_module_maybe_wrapper_ir(name, sub_module)
+            self.on_float_module(name, sub_module)
 
         for key, val in self.json_append.items():
             self.json_writer.write(key, val)
@@ -214,10 +206,6 @@ class DistributedAscendV1Saver(AscendV1Saver):
         self.json_writer.write("model_quant_type", self.model_quant_type)
         self.json_writer.write("metadata", self.metadata)
         self.json_writer.write("group_size", self.group_size)
-        self.json_writer.write("optional", {
-            scope: scope_info.model_dump(mode='json')
-            for scope, scope_info in self.json_optional_infos.items()
-        })
 
         self.json_writer.close()
         self.safetensors_writer.close()

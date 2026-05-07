@@ -1,24 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
-
+# Copyright Huawei Technologies Co., Ltd. 2024-2024. All rights reserved.
 
 from ascend_utils.common.security import check_number, check_type, check_element_type
 from ascend_utils.common.security.pytorch import validate_device
@@ -183,7 +163,7 @@ def check_and_set_w4a8_dynamic_config(config):
     is_per_group = False
     if not config.open_outlier and config.is_lowbit and config.group_size in GROUP_SIZE_LIST:
         is_per_group = True
-    is_per_group = True#jxd修改
+    
     if config.w_bit == 4 and config.a_bit == 8:
         # w4a8_dynamic 需要同时开启 per-group 量化和动态量化
         if not (config.is_dynamic and is_per_group):

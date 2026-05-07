@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 from typing import List, Optional, Any
 import os
 
@@ -30,12 +24,10 @@ from msmodelslim.core.runner.layer_wise_runner import LayerWiseRunner
 from msmodelslim.core.runner.pipeline_interface import PipelineInterface
 from msmodelslim.processor import AutoProcessorConfig
 from msmodelslim.processor.base import AutoSessionProcessor
-from msmodelslim.utils.config import msmodelslim_config
 from msmodelslim.utils.distributed import find_free_port, setup_distributed
-from msmodelslim.utils.logging import logger_setter, get_logger, set_logger_level
+from msmodelslim.utils.logging import logger_setter, get_logger
 from msmodelslim.core.runner.generated_runner import get_input_datas
 from msmodelslim.utils.exception import UnsupportedError
-from msmodelslim.core.context import ContextManager, get_current_context
 
 
 
@@ -94,8 +86,7 @@ class DPLayerWiseRunner(LayerWiseRunner):
 
     def distributed_worker(self, rank: int, world_size: int, device_indices: List[int],
                           model: Optional[nn.Module], calib_data: Optional[List[Any]], 
-                          device: DeviceType, master_port: int = 29500,
-                          shared_ctx=None):
+                          device: DeviceType, master_port: int = 29500):
         """
         Worker function for distributed execution.
         
@@ -107,61 +98,56 @@ class DPLayerWiseRunner(LayerWiseRunner):
             calib_data: Calibration data (optional)
             device: Target device type
             master_port: Master port for distributed communication
-            shared_ctx: Shared context instance
         """
         try:
-            with ContextManager(ctx=shared_ctx):
-                set_logger_level(msmodelslim_config.env_vars.log_level)
-
-                # Get the actual device index for this rank
-                actual_device_idx = device_indices[rank]
-                
-                # Setup distributed environment
-                # rank is used for process group communication, actual_device_idx is used for device selection
-                setup_distributed(rank, world_size, self.backend, device_index=actual_device_idx, master_port=master_port)
-                
-                get_logger().info(
-                    f"Rank {rank}/{world_size} initialized on device {actual_device_idx} "
-                    f"(device index {actual_device_idx}) with backend {self.backend}"
-                )
-
+            # Get the actual device index for this rank
+            actual_device_idx = device_indices[rank]
             
-                # Initialize model in distributed environment
-                _ = get_input_datas(self.adapter, calib_data, DeviceType.CPU)
-                
-                if model is None:
-                    get_logger().info('Start to init model in distributed environment')
-                    model = self.adapter.init_model(device=DeviceType.CPU)
-                    get_logger().info('Init model success in distributed environment')
-                
-                # Check if all processors support distributed execution (only rank 0 performs check)
-                unsupported_processors = self._check_distributed_support(self.process_config_list, model)
-                
-                if unsupported_processors:
-                    # Found unsupported processors, raise error
-                    unsupported_names = [str(p) for p in unsupported_processors]
-                    error_msg = (
-                        f"The following processors do not support distributed quantization: {unsupported_names}. "
-                        f"Please check the processor configuration."
-                    )
-                    get_logger().error(error_msg)
-                    raise UnsupportedError(error_msg)
-                
-                # Execute quantization (based on layer_wise_runner.run)
-                processor_list = self.process_config_list.copy()
-                self.preprocess_processor(processor_list, model, device=device)
-                
-                from msmodelslim.core.base.protocol import DataUnit
-                data_recorder = DataUnit(None, None)
-                process_unit = self.build_process_unit(
-                    processor_list,
-                    model=model,
-                    adapter=self.adapter,
-                    calib_data=calib_data,
-                    data_recorder=data_recorder
+            # Setup distributed environment
+            # rank is used for process group communication, actual_device_idx is used for device selection
+            setup_distributed(rank, world_size, self.backend, device_index=actual_device_idx, master_port=master_port)
+            
+            get_logger().info(
+                f"Rank {rank}/{world_size} initialized on device {actual_device_idx} "
+                f"(device index {actual_device_idx}) with backend {self.backend}"
+            )
+            
+            # Initialize model in distributed environment
+            _ = get_input_datas(self.adapter, calib_data, DeviceType.CPU)
+            
+            if model is None:
+                get_logger().info('Start to init model in distributed environment')
+                model = self.adapter.init_model(device=DeviceType.CPU)
+                get_logger().info('Init model success in distributed environment')
+            
+            # Check if all processors support distributed execution (only rank 0 performs check)
+            unsupported_processors = self._check_distributed_support(self.process_config_list, model)
+            
+            if unsupported_processors:
+                # Found unsupported processors, raise error
+                unsupported_names = [str(p) for p in unsupported_processors]
+                error_msg = (
+                    f"The following processors do not support distributed quantization: {unsupported_names}. "
+                    f"Please check the processor configuration."
                 )
-                
-                self.generated_schedule(process_unit, data_recorder)
+                get_logger().error(error_msg)
+                raise UnsupportedError(error_msg)
+            
+            # Execute quantization (based on layer_wise_runner.run)
+            processor_list = self.process_config_list.copy()
+            self.preprocess_processor(processor_list, model, device=device)
+            
+            from msmodelslim.core.base.protocol import DataUnit
+            data_recorder = DataUnit(None, None)
+            process_unit = self.build_process_unit(
+                processor_list,
+                model=model,
+                adapter=self.adapter,
+                calib_data=calib_data,
+                data_recorder=data_recorder
+            )
+            
+            self.generated_schedule(process_unit, data_recorder)
             
         except Exception as e:
             get_logger().error(f"Error in rank {rank}: {e}")
@@ -209,12 +195,10 @@ class DPLayerWiseRunner(LayerWiseRunner):
                     f"Main process: Using existing MASTER_PORT {master_port} for distributed quantization"
                 )
             
-            shared_ctx = get_current_context()
-
             # Start distributed execution
             mp.spawn(
                 self.distributed_worker,
-                args=(world_size, device_indices, model, calib_data, device, master_port, shared_ctx),
+                args=(world_size, device_indices, model, calib_data, device, master_port),
                 nprocs=world_size,
                 join=True
             )

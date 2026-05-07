@@ -1,25 +1,9 @@
+#  Copyright (c) Huawei Technologies Co., Ltd. 2024-2024. All rights reserved.
 """
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
-""" 
-工具正式改名为"msModelSlim"，对工具包的三点变化： 
-1. 调用接口从`import modelslim;`，更改为`import msmodelslim;` 
-2. 调用接口需要同时兼容之前的包引入方式`import modelslim`，暂时兼容至MindStudio 7.0.RC3的版本 
-3. 当对尝试使用原来的导入方式的时候，报出`DeprecationWarning` 
+工具正式改名为"msModelSlim"，对工具包的三点变化：
+1. 调用接口从`import modelslim;`，更改为`import msmodelslim;`
+2. 调用接口需要同时兼容之前的包引入方式`import modelslim`，暂时兼容至MindStudio 7.0.RC3的版本
+3. 当对尝试使用原来的导入方式的时候，报出`DeprecationWarning`
 """
 
 import sys
@@ -47,7 +31,6 @@ def _recursive_import_and_replace(module_name, redirected_module_name):
             except ModuleNotFoundError:
                 continue
 
-
 _recursive_import_and_replace(NEW_PACKAGE_NAME, OLD_PACKAGE_NAME)
 
 
@@ -59,7 +42,5 @@ def issue_deprecation_warn():
         stacklevel=3
     )
 
-    # 报出DeprecationWarning
-
-
+# 报出DeprecationWarning
 issue_deprecation_warn()

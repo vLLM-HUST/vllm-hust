@@ -1,26 +1,20 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 
-from typing import Optional, Tuple, Union, List, Literal
+from typing import Optional, Tuple, Union, List
 
 import torch
 from pydantic import BaseModel
@@ -33,29 +27,10 @@ from msmodelslim.utils.exception import SpecError
 class MinMaxObserverConfig(BaseModel):
     dim: Union[int, List[int]] = []
     keepdim: bool = False
-    aggregation_type: Literal["max", "mean"] = "max"
 
 
 class MsMinMaxObserver(nn.Module):
-    def __init__(self, config: MinMaxObserverConfig):
-        super().__init__()
-        self.config = config
-        if config.aggregation_type == "max":
-            self._impl = _MaxMinMaxObserver(config)
-        else:
-            self._impl = _MeanMinMaxObserver(config)
 
-    def update(self, x: torch.Tensor, sync: bool = False, group: Optional[dist.ProcessGroup] = None):
-        self._impl.update(x, sync, group)
-
-    def reset(self):
-        self._impl.reset()
-
-    def get_min_max(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._impl.get_min_max()
-
-
-class _MaxMinMaxObserver(nn.Module):
     def __init__(self, config: MinMaxObserverConfig):
         super().__init__()
         self.config = config
@@ -63,17 +38,16 @@ class _MaxMinMaxObserver(nn.Module):
         self.max_val = None
 
     def update(self, x: torch.Tensor, sync: bool = False, group: Optional[dist.ProcessGroup] = None):
-        current_min = torch.amin(x, self.config.dim, self.config.keepdim)
-        current_max = torch.amax(x, self.config.dim, self.config.keepdim)
+
         if self.min_val is None:
-            self.min_val = current_min
+            self.min_val = torch.amin(x, self.config.dim, self.config.keepdim)
         else:
-            self.min_val = torch.min(self.min_val, current_min)
+            self.min_val = torch.min(self.min_val, torch.amin(x, self.config.dim, self.config.keepdim))
 
         if self.max_val is None:
-            self.max_val = current_max
+            self.max_val = torch.amax(x, self.config.dim, self.config.keepdim)
         else:
-            self.max_val = torch.max(self.max_val, current_max)
+            self.max_val = torch.max(self.max_val, torch.amax(x, self.config.dim, self.config.keepdim))
 
         if sync and dist.is_initialized():
             sync_base_operation(self.min_val, op='min')
@@ -90,66 +64,6 @@ class _MaxMinMaxObserver(nn.Module):
                 "maybe you are quantifying a moe expert, but this expert has never been activated.",
                 action="Please check your model and quant config.")
         return self.min_val, self.max_val
-
-
-class _MeanMinMaxObserver(nn.Module):
-    def __init__(self, config: MinMaxObserverConfig):
-        super().__init__()
-        self.config = config
-        self.min_sum = None 
-        self.max_sum = None 
-        self.batch_count = 0
-        self.mean_min = None
-        self.mean_max = None 
-        self._orig_dtype = None 
-
-    def update(self, x: torch.Tensor, sync: bool = False, group: Optional[dist.ProcessGroup] = None):
-        current_min = torch.amin(x, self.config.dim, self.config.keepdim)
-        current_max = torch.amax(x, self.config.dim, self.config.keepdim)
-        if self._orig_dtype is None:
-            self._orig_dtype = current_min.dtype
-        self.batch_count += 1
-        if self.min_sum is None:
-            self.min_sum = current_min.to(torch.float64)
-            self.max_sum = current_max.to(torch.float64)
-        else:
-            self.min_sum.add_(current_min.to(torch.float64))
-            self.max_sum.add_(current_max.to(torch.float64))
-        self.mean_min = (self.min_sum / self.batch_count).to(self._orig_dtype)
-        self.mean_max = (self.max_sum / self.batch_count).to(self._orig_dtype)
-
-        if sync and dist.is_initialized():
-            if self.min_sum is not None and self.max_sum is not None:
-                temp_min_sum = self.min_sum.clone()
-                temp_max_sum = self.max_sum.clone()
-                sync_base_operation(temp_min_sum, op='sum')
-                sync_base_operation(temp_max_sum, op='sum')
-                batch_count_tensor = torch.tensor(
-                    [self.batch_count],
-                    device=x.device,
-                    dtype=torch.int64
-                )
-                sync_base_operation(batch_count_tensor, op='sum')
-                global_batch_count = batch_count_tensor.item()
-                if global_batch_count > 0:
-                    self.mean_min = (temp_min_sum / global_batch_count).to(self._orig_dtype)
-                    self.mean_max = (temp_max_sum / global_batch_count).to(self._orig_dtype)
-
-    def reset(self):
-        self.min_sum = None
-        self.max_sum = None
-        self.batch_count = 0
-        self.mean_min = None
-        self.mean_max = None
-        self._orig_dtype = None
-
-    def get_min_max(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.mean_min is None or self.mean_max is None:
-            raise SpecError(
-                "Trying to get stats but no any update_stats invoked,"
-                "maybe you are quantifying a moe expert, but this expert has never been activated.",
-                action="Please check your model and quant config.")
-        return self.mean_min, self.mean_max
 
 
 class MinMaxBlockObserverConfig(BaseModel):

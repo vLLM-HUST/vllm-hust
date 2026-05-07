@@ -1,24 +1,6 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
+# Copyright 2024 PixArt-Sigma Authors and The HuggingFace Team. All rights reserved.
+# Copyright Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-Copyright 2024 PixArt-Sigma Authors and The HuggingFace Team. All rights reserved.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
 from typing import Union, Optional, List, Tuple, Callable
 
 import torch.distributed

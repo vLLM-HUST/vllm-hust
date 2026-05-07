@@ -1,36 +1,21 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
-
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 __all__ = [
-    "AdaptRotationProcessor",
-    "AdaptRotationProcessorConfig",
     "AutoProcessorConfig",
     "AutoroundQuantProcessor",
-    "UnaryAnalysisProcessorConfig",
-    "UnaryAnalysisProcessor",
-    "BinaryAnalysisProcessorConfig",
-    "BinaryAnalysisProcessor",
-    "BinaryOperatorModelWiseProcessorConfig",
-    "BinaryOperatorModelWiseProcessor",
     "LinearProcessorConfig",
     "LinearQuantProcessor",
     "SmoothQuantProcessorConfig",
@@ -53,21 +38,9 @@ __all__ = [
     "FloatSparseProcessorConfig",
     "FloatSparseProcessor",
     "QuaRotProcessorConfig",
-    "QuaRotProcessor",
-    'FlatQuantProcessorConfig', 
-    'FlatQuantProcessor',
-    "AWQProcessorConfig",
-    "AWQProcessor"
+    "QuaRotProcessor"
 ]
 
-from .analysis import (
-    UnaryAnalysisProcessorConfig,
-    UnaryAnalysisProcessor,
-    BinaryAnalysisProcessorConfig,
-    BinaryAnalysisProcessor,
-    BinaryOperatorModelWiseProcessorConfig,
-    BinaryOperatorModelWiseProcessor,
-)
 from .anti_outlier import (
     SmoothQuantProcessorConfig,
     SmoothQuantProcessor,
@@ -86,7 +59,4 @@ from .quant.autoround import AutoProcessorConfig, AutoroundQuantProcessor
 from .quant.fa3 import FA3QuantProcessorConfig, FA3QuantProcessor
 from .quant.linear import LinearProcessorConfig, LinearQuantProcessor
 from .quarot import QuaRotProcessor, QuaRotProcessorConfig
-from .adapt_rotation import AdaptRotationProcessor, AdaptRotationProcessorConfig
 from .sparse.float_sparse import FloatSparseProcessorConfig, FloatSparseProcessor
-from .flat_quant import FlatQuantProcessorConfig, FlatQuantProcessor
-from .anti_outlier import AWQProcessor, AWQProcessorConfig

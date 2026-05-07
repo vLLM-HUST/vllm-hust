@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -48,7 +29,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_model_type(self):
         """测试get_model_type方法"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -60,7 +41,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_model_pedigree(self):
         """测试get_model_pedigree方法"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -71,7 +52,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_load_model(self):
         """测试load_model方法"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -87,7 +68,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_handle_dataset(self):
         """测试handle_dataset方法"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -103,7 +84,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_handle_dataset_by_batch(self):
         """测试handle_dataset_by_batch方法"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -127,7 +108,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_init_model(self):
         """测试init_model方法"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -143,7 +124,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_enable_kv_cache(self):
         """测试enable_kv_cache方法"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -158,7 +139,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_kvcache_smooth_fused_subgraph(self):
         """测试get_kvcache_smooth_fused_subgraph方法"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -183,7 +164,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_head_dim_success(self):
         """测试get_head_dim方法成功情况"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -199,7 +180,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_head_dim_missing_hidden_size(self):
         """测试get_head_dim方法缺少hidden_size时抛出异常"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -214,7 +195,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_head_dim_missing_num_attention_heads(self):
         """测试get_head_dim方法缺少num_attention_heads时抛出异常"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -229,7 +210,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_head_dim_zero_num_attention_heads(self):
         """测试get_head_dim方法num_attention_heads为0时抛出异常"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -246,7 +227,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_num_key_value_groups_success(self):
         """测试get_num_key_value_groups方法成功情况"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -262,7 +243,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_num_key_value_groups_missing_num_attention_heads(self):
         """测试get_num_key_value_groups缺少num_attention_heads时抛出异常"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -276,7 +257,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_num_key_value_groups_missing_num_key_value_heads(self):
         """测试get_num_key_value_groups缺少num_key_value_heads时抛出异常"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -290,7 +271,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_num_key_value_groups_zero_num_key_value_heads(self):
         """测试get_num_key_value_groups的num_key_value_heads为0时抛出异常"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -307,7 +288,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_num_key_value_heads_success(self):
         """测试get_num_key_value_heads方法成功情况"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -321,7 +302,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_get_num_key_value_heads_missing(self):
         """测试get_num_key_value_heads缺少num_key_value_heads时抛出异常"""
-        with patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None):
+        with patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path
@@ -335,7 +316,7 @@ class TestQwen25ModelAdapter(unittest.TestCase):
 
     def test_load_tokenizer(self):
         """测试_load_tokenizer方法"""
-        with ((patch('msmodelslim.model.qwen2_5.model_adapter.DefaultModelAdapter.__init__', return_value=None))):
+        with ((patch('msmodelslim.model.qwen2_5.model_adapter.TransformersModel.__init__', return_value=None))):
             adapter = Qwen25ModelAdapter(
                 model_type=self.model_type,
                 model_path=self.model_path

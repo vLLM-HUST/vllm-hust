@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 """
 Test cases for DistributedAscendV1Saver.
@@ -33,10 +27,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from torch import nn
 
-from msmodelslim.core.quant_service.modelslim_v1.save.ascendv1 import (
-    AscendV1Config,
-    QuaRotOptionalScopeInfo,
-)
+from msmodelslim.core.quant_service.modelslim_v1.save.ascendv1 import AscendV1Config
 from msmodelslim.core.quant_service.modelslim_v1.save.ascendv1_distributed import (
     DistributedAscendV1Config,
     DistributedAscendV1Saver,
@@ -533,45 +524,7 @@ class TestDistributedAscendV1Saver:
             mock_barrier.assert_called()
             # Verify copy_files was mocked (not actually called to copy files)
             mock_copy_files.assert_called_once()
-
-    @staticmethod
-    def test_post_run_writes_optional_from_json_optional_infos(
-        temp_dir, mock_model, mock_adapter_with_interface
-    ):
-        """Test that post_run writes 'optional' from json_optional_infos (model_dump_json)."""
-        dist_path = (
-            'msmodelslim.core.quant_service.modelslim_v1.save.'
-            'ascendv1_distributed'
-        )
-        with patch(f'{dist_path}.copy_files'), \
-             patch(f'{dist_path}.remove_quantization_config'), \
-             patch(f'{dist_path}.dist.barrier'), \
-             patch(f'{dist_path}.dist.all_gather_object') as mock_all_gather:
-            def set_file_counts(output_list, local_count):
-                output_list[0] = 1
-                output_list[1] = 1
-            mock_all_gather.side_effect = set_file_counts
-
-            TestDistributedAscendV1Saver.setup_rank_directories(temp_dir)
-            saver = TestDistributedAscendV1Saver.create_saver_with_rank_dir(
-                temp_dir, mock_model, mock_adapter_with_interface
-            )
-            TestDistributedAscendV1Saver.setup_writers(saver)
-
-            # 设置 json_optional_infos，与 ascendv1 一致
-            scope_info = QuaRotOptionalScopeInfo(
-                rotation_map={"global_rotation": "optional/quarot.safetensors"}
-            )
-            saver.json_optional_infos["quarot"] = scope_info
-            expected_optional = {
-                scope: scope_info.model_dump(mode='json')
-                for scope, scope_info in saver.json_optional_infos.items()
-            }
-
-            saver.post_run()
-
-            saver.json_writer.write.assert_any_call("optional", expected_optional)
-
+    
     @patch(
         'msmodelslim.core.quant_service.modelslim_v1.save.'
         'ascendv1_distributed.DistHelper'

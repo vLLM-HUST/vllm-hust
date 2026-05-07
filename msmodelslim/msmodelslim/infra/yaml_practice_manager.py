@@ -1,25 +1,6 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright Huawei Technologies Co., Ltd. 2025. All rights reserved.
 from pathlib import Path
-from typing import Dict, Generator, List, Optional
+from typing import Dict, Generator, Optional
 
 from msmodelslim.app.auto_tuning import PracticeManagerInfra as atpm
 from msmodelslim.app.naive_quantization import PracticeManagerInfra as nqpm
@@ -33,12 +14,7 @@ class YamlPracticeManager(
     nqpm,
     atpm,
 ):
-    def __init__(
-        self,
-        official_config_dir: Path,
-        custom_config_dir: Optional[Path] = None,
-        third_party_config_dirs: Optional[List[Path]] = None,
-    ):
+    def __init__(self, official_config_dir: Path, custom_config_dir: Optional[Path] = None):
         get_valid_read_path(str(official_config_dir), is_dir=True)
         self.official_config_dir = official_config_dir
         if custom_config_dir is not None:
@@ -58,44 +34,19 @@ class YamlPracticeManager(
             if model_type_dir.is_dir()
         } if self.custom_config_dir else {}
 
-        # One dict per third-party root: pedigree -> YamlDatabase (read-only)
-        self._plugin_database_maps: List[Dict[str, YamlDatabase]] = []
-        for plugin_root in (third_party_config_dirs or []):
-            if not plugin_root.exists() or not plugin_root.is_dir():
-                continue
-            try:
-                get_valid_read_path(str(plugin_root), is_dir=True)
-                db_map = {
-                    d.name: YamlDatabase(d, read_only=True)
-                    for d in plugin_root.iterdir()
-                    if d.is_dir()
-                }
-                if db_map:
-                    self._plugin_database_maps.append(db_map)
-            except Exception:  # noqa: S110
-                continue
-
     def __contains__(self, model_pedigree: str) -> bool:
         model_pedigree = model_pedigree.lower()
-        if model_pedigree in self.custom_databases or model_pedigree in self.official_databases:
-            return True
-        return any(model_pedigree in m for m in self._plugin_database_maps)
+        return model_pedigree in self.custom_databases or model_pedigree in self.official_databases
 
     def get_config_by_id(self, model_pedigree: str, config_id: str) -> PracticeConfig:
         model_pedigree = model_pedigree.lower()
-        value = None
         if model_pedigree in self.custom_databases and config_id in self.custom_databases[model_pedigree]:
             value = self.custom_databases[model_pedigree][config_id]
         elif model_pedigree in self.official_databases and config_id in self.official_databases[model_pedigree]:
             value = self.official_databases[model_pedigree][config_id]
         else:
-            for db_map in self._plugin_database_maps:
-                if model_pedigree in db_map and config_id in db_map[model_pedigree]:
-                    value = db_map[model_pedigree][config_id]
-                    break
-            if value is None:
-                raise UnsupportedError(f"Practice {config_id} of ModelType {model_pedigree} not found",
-                                       action='Please check the practice id and model type')
+            raise UnsupportedError(f"Practice {config_id} of ModelType {model_pedigree} not found",
+                                   action='Please check the practice id and model type')
 
         quant_config = PracticeConfig.model_validate(value)
 
@@ -104,32 +55,11 @@ class YamlPracticeManager(
                                 action='Please make sure the practice is not tampered')
         return quant_config
 
-    def get_config_url(self, model_pedigree: str, config_id: str) -> Optional[str]:
-        """Return the URL/location of the config (same lookup order as get_config_by_id). In file-based use, url is the YAML path."""
-        path = self._get_config_path(model_pedigree, config_id)
-        return str(path) if path is not None else None
-
-    def _get_config_path(self, model_pedigree: str, config_id: str) -> Optional[Path]:
-        """Return the full path to the YAML file for the given config (same lookup order as get_config_by_id)."""
-        model_pedigree = model_pedigree.lower()
-        if model_pedigree in self.custom_databases and config_id in self.custom_databases[model_pedigree]:
-            return self.custom_databases[model_pedigree].config_dir / f"{config_id}.yaml"
-        if model_pedigree in self.official_databases and config_id in self.official_databases[model_pedigree]:
-            return self.official_databases[model_pedigree].config_dir / f"{config_id}.yaml"
-        for db_map in self._plugin_database_maps:
-            if model_pedigree in db_map and config_id in db_map[model_pedigree]:
-                return db_map[model_pedigree].config_dir / f"{config_id}.yaml"
-        return None
-
     def iter_config(self, model_pedigree) -> Generator[PracticeConfig, None, None]:
         tasks = []
         if model_pedigree in self.custom_databases:
             for value in self.custom_databases[model_pedigree].values():
                 tasks.append(PracticeConfig.model_validate(value))
-        for db_map in self._plugin_database_maps:
-            if model_pedigree in db_map:
-                for value in db_map[model_pedigree].values():
-                    tasks.append(PracticeConfig.model_validate(value))
         if model_pedigree in self.official_databases:
             for value in self.official_databases[model_pedigree].values():
                 tasks.append(PracticeConfig.model_validate(value))

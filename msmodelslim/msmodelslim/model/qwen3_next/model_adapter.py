@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 
 from typing import List, Any, Optional, Generator, Tuple
 
@@ -26,11 +7,11 @@ from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
 from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextRMSNorm
 
 from msmodelslim.core.base.protocol import ProcessRequest
-from msmodelslim.core.const import DeviceType
 from msmodelslim.core.graph import AdapterConfig, MappingConfig
+from msmodelslim.core.const import DeviceType
 from msmodelslim.utils.logging import logger_setter
 from ..common.layer_wise_forward import generated_decoder_layer_visit_func, transformers_generated_forward_func
-from ..default.model_adapter import DefaultModelAdapter
+from ..common.transformers import TransformersModel
 from ..interface_hub import (
     ModelInfoInterface,
     ModelSlimPipelineInterfaceV0,
@@ -42,7 +23,7 @@ from ..interface_hub import (
 
 
 @logger_setter()
-class Qwen3NextModelAdapter(DefaultModelAdapter,
+class Qwen3NextModelAdapter(TransformersModel,
                             ModelInfoInterface,
                             ModelSlimPipelineInterfaceV0,
                             ModelSlimPipelineInterfaceV1,
@@ -113,11 +94,10 @@ class Qwen3NextModelAdapter(DefaultModelAdapter,
             ])
         return adapter_config
 
-    def ascendv1_save_module_preprocess(self, prefix: str, module: nn.Module, model: nn.Module) -> Tuple[
-        str, nn.Module]:
+    def ascendv1_save_module_preprocess(self, prefix: str, module: nn.Module, model: nn.Module) -> Optional[nn.Module]:
         if 'input_layernorm' in prefix and module.__class__.__name__ == 'Qwen3RMSNorm':
             new_module = Qwen3NextRMSNorm(module.weight.shape[0], module.variance_epsilon)
             new_module.weight.data = module.weight.data - 1
             model.set_submodule(prefix, new_module)
-            return prefix, new_module
-        return prefix, module
+            return new_module
+        return None

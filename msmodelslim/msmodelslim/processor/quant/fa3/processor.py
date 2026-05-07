@@ -1,24 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
-
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 from typing import Optional, Literal, List
 
@@ -29,9 +22,8 @@ from torch import nn
 from msmodelslim.ir.api import calculate_qparam
 from msmodelslim.ir.qal import QScope, QDType, QABCRegistry
 from msmodelslim.core.base.protocol import BatchProcessRequest
-from msmodelslim.ir import FakeQuantActivationPerHead, FakeQuantActivationPerToken
+from msmodelslim.ir import FakeQuantActivationPerHead
 from msmodelslim.core.observer.recall_window import RecallWindowObserver, RecallWindowObserverConfig
-from msmodelslim.core.quantizer.base import QConfig
 from msmodelslim.processor.base import AutoSessionProcessor, AutoProcessorConfig
 from msmodelslim.utils.config_map import ConfigSet
 from msmodelslim.utils.exception import UnsupportedError
@@ -41,26 +33,14 @@ from .interface import FA3QuantAdapterInterface, FA3QuantPlaceHolder
 
 class FA3QuantProcessorConfig(AutoProcessorConfig):
     type: Literal["fa3_quant"] = "fa3_quant"
-    qconfig: Optional[QConfig] = Field(default=None, description="量化配置，默认使用INT8 per-head symmetric")
     include: List[str] = Field(default_factory=lambda: ["*"], description="包含的模块名称")
     exclude: List[str] = Field(default_factory=lambda: [], description="排除的模块名称")
 
     model_config = ConfigDict(extra="forbid")
-    
-    def __init__(self, **data):
-        super().__init__(**data)
-        # 如果没有提供qconfig，使用默认的INT8 per-head symmetric配置
-        if self.qconfig is None:
-            self.qconfig = QConfig(
-                dtype=QDType.INT8,
-                scope=QScope.PER_HEAD,
-                symmetric=True,
-                method="minmax"
-            )
 
 
 class _FA3PerHeadObserver(nn.Module):
-    """监测器：复用 MsMinMaxObserver 的按维度统计，得到 per-head min/max。"""
+    """监听器：复用 MsMinMaxObserver 的按维度统计，得到 per-head min/max。"""
 
     def __init__(self, ratio: float = 1.0):
         super().__init__()
@@ -107,7 +87,7 @@ class FA3QuantProcessor(AutoSessionProcessor):
         self.exclude = ConfigSet(config.exclude)
 
     def is_data_free(self) -> bool:
-        return self.config.qconfig.scope == QScope.PER_TOKEN
+        return False
 
     def support_distributed(self) -> bool:
         return False
@@ -124,7 +104,7 @@ class FA3QuantProcessor(AutoSessionProcessor):
         except Exception as e:
             get_logger().warning(f"install fa3 placeholders at {request.name} failed: {e}")
 
-        # 2) 将占位模块替换为监测器
+        # 2) 将占位模块替换为监听器
         for name, submodule in request.module.named_modules(prefix=request.name):
             if isinstance(submodule, FA3QuantPlaceHolder):
                 # 适配器已据 should_inject 做过滤，这里不再重复 include/exclude 判定
@@ -132,36 +112,25 @@ class FA3QuantProcessor(AutoSessionProcessor):
                 self.model.set_submodule(name, observer)
 
     def postprocess(self, request: BatchProcessRequest) -> None:
-        # 根据qconfig的scope创建对应的IR
-        qconfig = self.config.qconfig
+        # 汇总监听器数据，计算 per-head 对称 scale，并替换为 IR
         for name, submodule in request.module.named_modules(prefix=request.name):
             if isinstance(submodule, _FA3PerHeadObserver):
-                if qconfig.scope == QScope.PER_HEAD:
-                    # per-head需要从observer获取统计数据
-                    if submodule.min_val is None:
-                        raise UnsupportedError(
-                            f"FA3 quantization at {name} collected no calibration data",
-                            action="Please ensure a calibration run covers this attention path before postprocess"
-                        )
-                    # 形状 (1, H, 1, 1) → (H,)
-                    min_v = submodule.min_val.squeeze()
-                    max_v = submodule.max_val.squeeze()
-
-                    # 根据qconfig计算量化参数
-                    q_param = calculate_qparam(
-                        min_val=min_v,
-                        max_val=max_v,
-                        q_dtype=qconfig.dtype,
-                        q_scope=qconfig.scope,
-                        symmetric=qconfig.symmetric,
+                if submodule.min_val is None:
+                    raise UnsupportedError(
+                        f"FA3 quantization at {name} collected no calibration data",
+                        action="Please ensure a calibration run covers this attention path before postprocess"
                     )
-                    ir = FakeQuantActivationPerHead(q_param)
-                    self.model.set_submodule(name, ir)
-                # per-token不需要observer，直接创建IR
-                elif qconfig.scope == QScope.PER_TOKEN:
-                    # 创建空的QParam，per-token在forward中动态计算
-                    from msmodelslim.ir.qal import QParam, QScheme
-                    q_param = QParam(scheme=self.config.qconfig.to_scheme())
-                    ir = FakeQuantActivationPerToken(q_param)
-                    self.model.set_submodule(name, ir)
-                
+                # 形状 (1, H, 1, 1) → (H,)
+                min_v = submodule.min_val.squeeze()
+                max_v = submodule.max_val.squeeze()
+
+                # 固定 per-head 对称 INT8 方案
+                q_param = calculate_qparam(
+                    min_val=min_v,
+                    max_val=max_v,
+                    q_dtype=QDType.INT8,
+                    q_scope=QScope.PER_HEAD,
+                    symmetric=True,
+                )
+                ir = FakeQuantActivationPerHead(q_param)
+                self.model.set_submodule(name, ir)

@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 import functools
 import inspect
 import os
@@ -37,7 +31,6 @@ from msmodelslim.utils.distributed import DistHelper
 from msmodelslim.utils.exception import UnsupportedError, SchemaValidateError
 from msmodelslim.utils.logging import logger
 from msmodelslim.utils.security import safe_copy_file
-from msmodelslim.ir.qal import QDType, QScope
 from .saver import AutoSaverProcessor, AutoSaverBaseConfig
 from .utils.json import JsonWriter
 from .utils.safetensors import SafetensorsWriter, BufferedSafetensorsWriter
@@ -304,14 +297,6 @@ class MindIEFormatSaver(AutoSaverProcessor):
             self.json_append[ValidJsonExt.JSON_APPEND] = dict()
         self.json_append[ValidJsonExt.JSON_APPEND]['model_quant_type'] = "W8A8_MXFP8"
 
-    def on_online_rotation_wrapper(self, prefix: str, module: qir.OnlineRotationWrapper):
-        """
-        处理OnlineRotationWrapper类型的模块。
-        """
-        rotation_matrix = module.rotation_info.rotation_matrix
-        # 保存旋转矩阵，标签为 FLOAT
-        self.write_tensor(f"{prefix}", "FLOAT", rotation_matrix.clone())
-
     @save_this_rank_only()
     def on_float_linear(self, prefix: str, module: nn.Linear):
         return self.on_float_module(prefix, module)
@@ -320,16 +305,3 @@ class MindIEFormatSaver(AutoSaverProcessor):
     def on_float_module(self, prefix: str, module: nn.Module):
         for name, param in module.named_parameters(recurse=False, prefix=prefix):
             self.write_tensor(name, "FLOAT", param)
-
-    def on_activation_per_token(self, prefix: str, module: qir.FakeQuantActivationPerToken):
-        # 对于FP8 per-token动态量化，保存quant_type标签
-        if (module.x_q_scheme.dtype == QDType.FP8_E4M3 and 
-            module.x_q_scheme.scope == QScope.PER_TOKEN):
-            # 保存格式为 self_attn.quant_type，而不是 fa3_q.quant_type
-            # 提取父路径，例如 model.layers.0.self_attn.fa3_q -> model.layers.0.self_attn
-            parent_prefix = prefix.rsplit('.', 1)[0]
-            quant_type_key = parent_prefix + ".quant_type"
-
-            self.json_writer.write(quant_type_key, "FP8_DYNAMIC")
-        else:
-            raise SchemaValidateError(f"FakeQuantActivationPerToken Unsupported dtype: {module.x_q_scheme.dtype}")

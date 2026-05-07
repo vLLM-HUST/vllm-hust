@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 
 import unittest
@@ -34,9 +28,8 @@ except ImportError:
 
 from msmodelslim.processor.anti_outlier.smooth_base import BaseSmoothProcessor
 from msmodelslim.processor.anti_outlier.iter_smooth import IterSmoothProcessorConfig
-from msmodelslim.core.graph.adapter_types import AdapterConfig, MappingConfig
+from msmodelslim.core.graph.adapter_types import AdapterConfig
 from msmodelslim.core.base.protocol import BatchProcessRequest
-from msmodelslim.processor.anti_outlier.common.subgraph_type import NonFusionSubgraph
 from msmodelslim.utils.exception import SchemaValidateError
 
 
@@ -91,10 +84,9 @@ class TestBaseSmoothProcessor(unittest.TestCase):
         self.assertFalse(result)
 
     def test_pre_run(self):
-        """验证 pre_run 当前为空实现，不修改 global_adapter_config"""
         self.adapter.get_adapter_config_for_subgraph.return_value = ["config1", "config2"]
         self.processor.pre_run()
-        self.assertIsNone(self.processor.global_adapter_config)
+        self.assertEqual(self.processor.global_adapter_config, ["config1", "config2"])
 
     def test_preprocess(self):
         request = MagicMock(spec=BatchProcessRequest)
@@ -138,25 +130,6 @@ class TestBaseSmoothProcessor(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].mapping.source, "layer1.module")
 
-    def test_filter_adapter_configs_by_config_source_none_uses_targets_first(self):
-        """When mapping.source is None, module_name is targets[0] for filtering."""
-        adapter_configs = [
-            AdapterConfig(
-                subgraph_type="up-down",
-                mapping=MappingConfig(targets=["layer1.linear"], source=None)
-            ),
-            AdapterConfig(
-                subgraph_type="up-down",
-                mapping=MappingConfig(targets=["layer2.linear"], source=None)
-            ),
-        ]
-        result = self.processor._filter_adapter_configs_by_config(
-            adapter_configs, self.config, "layer1"
-        )
-        self.assertEqual(len(result), 1)
-        self.assertIsNone(result[0].mapping.source)
-        self.assertEqual(result[0].mapping.targets[0], "layer1.linear")
-
     def test_install_statistics_hooks(self):
         # 设置 stats_collector
         mock_stats_collector = MagicMock()
@@ -179,11 +152,12 @@ class TestBaseSmoothProcessor(unittest.TestCase):
             mock_stats_collector.create_hook.assert_called_once()
 
     def test_remove_all_hooks(self):
-        hook1 = MagicMock()
-        hook2 = MagicMock()
-        self.processor.hook_manager.hook_handles = [hook1, hook2]
-        with patch.object(hook1, 'remove') as mock_remove1:
-            with patch.object(hook2, 'remove') as mock_remove2:
+        self.processor.hook_manager.hook_handles = {
+            "module1": MagicMock(),
+            "module2": MagicMock()
+        }
+        with patch.object(self.processor.hook_manager.hook_handles["module1"], 'remove') as mock_remove1:
+            with patch.object(self.processor.hook_manager.hook_handles["module2"], 'remove') as mock_remove2:
                 self.processor._remove_all_hooks()
                 mock_remove1.assert_called_once()
                 mock_remove2.assert_called_once()
@@ -210,21 +184,6 @@ class TestBaseSmoothProcessor(unittest.TestCase):
             self.processor._apply_norm_linear_smooth(adapter_config)
             mock_apply.assert_called_once()
 
-    def test_apply_norm_linear_smooth_non_fusion(self):
-        """When mapping.source is None and targets present, _process_single_subgraph applies NonFusionSubgraph."""
-        adapter_config = MagicMock(spec=AdapterConfig, subgraph_type="norm-linear")
-        adapter_config.mapping = MagicMock(source=None, targets=["fc1", "fc2"])
-        target_modules = [MagicMock(spec=nn.Module), MagicMock(spec=nn.Module)]
-        self.model.get_submodule.side_effect = (
-            lambda n: target_modules[0] if n == "fc1" else target_modules[1]
-        )
-        with patch.object(self.processor, 'apply_smooth_algorithm') as mock_apply:
-            self.processor._process_single_subgraph(adapter_config)
-            mock_apply.assert_called_once()
-            call_args = mock_apply.call_args[0]
-            self.assertIsInstance(call_args[0], NonFusionSubgraph)
-            self.assertEqual(call_args[1], ["fc1", "fc2"])
-
     def test_apply_linear_linear_smooth(self):
         adapter_config = MagicMock(spec=AdapterConfig, mapping=MagicMock(source="source", targets=["target1"]))
         source_module = MagicMock(spec=nn.Module)
@@ -238,27 +197,8 @@ class TestBaseSmoothProcessor(unittest.TestCase):
             self.processor._apply_linear_linear_smooth(adapter_config)
             mock_apply.assert_called_once()
 
-    def test_apply_linear_linear_smooth_non_fusion(self):
-        """When mapping.source is None and targets present, _process_single_subgraph applies NonFusionSubgraph."""
-        adapter_config = MagicMock(spec=AdapterConfig, subgraph_type="linear-linear")
-        adapter_config.mapping = MagicMock(source=None, targets=["linear1", "linear2"])
-        target_modules = [MagicMock(spec=nn.Module), MagicMock(spec=nn.Module)]
-        self.model.get_submodule.side_effect = (
-            lambda n: target_modules[0] if n == "linear1" else target_modules[1]
-        )
-        with patch.object(self.processor, 'apply_smooth_algorithm') as mock_apply:
-            self.processor._process_single_subgraph(adapter_config)
-            mock_apply.assert_called_once()
-            call_args = mock_apply.call_args[0]
-            self.assertIsInstance(call_args[0], NonFusionSubgraph)
-            self.assertEqual(call_args[1], ["linear1"])
-
     def test_apply_ov_smooth_with_fusion(self):
-        adapter_config = MagicMock(
-            spec=AdapterConfig,
-            mapping=MagicMock(source="v_proj", targets=["o_proj"]),
-            fusion=MagicMock(fusion_type="qkv"),
-        )
+        adapter_config = MagicMock(spec=AdapterConfig, fusion=MagicMock(fusion_type="qkv"))
         with patch.object(self.processor, '_apply_qkv_fusion_smooth') as mock_fusion:
             with patch.object(self.processor, '_apply_standard_ov_smooth') as mock_standard:
                 self.processor._apply_ov_smooth(adapter_config)
@@ -266,31 +206,12 @@ class TestBaseSmoothProcessor(unittest.TestCase):
                 mock_standard.assert_not_called()
 
     def test_apply_ov_smooth_standard(self):
-        adapter_config = MagicMock(
-            spec=AdapterConfig,
-            mapping=MagicMock(source="v_proj", targets=["o_proj"]),
-            fusion=None,
-        )
+        adapter_config = MagicMock(spec=AdapterConfig, fusion=None)
         with patch.object(self.processor, '_apply_qkv_fusion_smooth') as mock_fusion:
             with patch.object(self.processor, '_apply_standard_ov_smooth') as mock_standard:
                 self.processor._apply_ov_smooth(adapter_config)
                 mock_fusion.assert_not_called()
                 mock_standard.assert_called_once_with(adapter_config)
-
-    def test_apply_ov_smooth_non_fusion(self):
-        """When mapping.source is None and targets present, _process_single_subgraph applies NonFusionSubgraph."""
-        adapter_config = MagicMock(spec=AdapterConfig, subgraph_type="ov")
-        adapter_config.mapping = MagicMock(source=None, targets=["v_layer", "o_layer"])
-        target_modules = [MagicMock(spec=nn.Module), MagicMock(spec=nn.Module)]
-        self.model.get_submodule.side_effect = (
-            lambda n: target_modules[0] if n == "v_layer" else target_modules[1]
-        )
-        with patch.object(self.processor, 'apply_smooth_algorithm') as mock_apply:
-            self.processor._process_single_subgraph(adapter_config)
-            mock_apply.assert_called_once()
-            call_args = mock_apply.call_args[0]
-            self.assertIsInstance(call_args[0], NonFusionSubgraph)
-            self.assertEqual(call_args[1], ["v_layer"])
 
     def test_apply_qkv_fusion_smooth_qkv(self):
         adapter_config = MagicMock(
@@ -365,20 +286,6 @@ class TestBaseSmoothProcessor(unittest.TestCase):
             self.processor._apply_up_down_smooth(adapter_config)
             mock_apply.assert_called_once()
 
-    def test_apply_up_down_smooth_non_fusion(self):
-        """When mapping.source is None and targets present, _process_single_subgraph applies NonFusionSubgraph."""
-        adapter_config = MagicMock(spec=AdapterConfig, subgraph_type="up-down")
-        adapter_config.mapping = MagicMock(source=None, targets=["layer1", "layer2"])
-        target_modules = [MagicMock(spec=nn.Module), MagicMock(spec=nn.Module)]
-        self.model.get_submodule.side_effect = lambda n: target_modules[0] if n == "layer1" else target_modules[1]
-        with patch.object(self.processor, 'apply_smooth_algorithm') as mock_apply:
-            self.processor._process_single_subgraph(adapter_config)
-            mock_apply.assert_called_once()
-            call_args = mock_apply.call_args[0]
-            self.assertIsInstance(call_args[0], NonFusionSubgraph)
-            self.assertEqual(list(call_args[0].linears), target_modules)
-            self.assertEqual(call_args[1], ["layer1"])
-
     def test_process_single_subgraph(self):
         adapter_config = MagicMock(spec=AdapterConfig, subgraph_type="norm-linear")
         adapter_config.mapping = MagicMock(source="source")
@@ -410,24 +317,15 @@ class TestBaseSmoothProcessor(unittest.TestCase):
                 self.processor._apply_qkv_fusion_smooth(adapter_config)
 
     def test_process_subgraphs_by_priority(self):
-        """Subgraphs are processed in SUBGRAPH_PRIORITY order: up-down, ov, linear-linear, norm-linear."""
         self.processor.adapter_config = [
-            AdapterConfig(
-                subgraph_type="up-down",
-                mapping=MappingConfig(source="up", targets=["down"]),
-            ),
-            AdapterConfig(
-                subgraph_type="ov",
-                mapping=MappingConfig(source="ov", targets=["o_proj"]),
-            ),
-            AdapterConfig(
-                subgraph_type="norm-linear",
-                mapping=MappingConfig(source="norm", targets=["linear"]),
-            ),
-            AdapterConfig(
-                subgraph_type="linear-linear",
-                mapping=MappingConfig(source="linear_src", targets=["linear_tgt"]),
-            ),
+            MagicMock(spec=AdapterConfig, subgraph_type="up-down", mapping=MagicMock(source="up"),
+                      priority=1),
+            MagicMock(spec=AdapterConfig, subgraph_type="ov", mapping=MagicMock(source="ov"),
+                      priority=2),
+            MagicMock(spec=AdapterConfig, subgraph_type="norm-linear", mapping=MagicMock(source="norm"),
+                      priority=3),
+            MagicMock(spec=AdapterConfig, subgraph_type="linear-linear", mapping=MagicMock(source="linear"),
+                      priority=4)
         ]
         with patch.object(self.processor, '_process_single_subgraph') as mock_process:
             self.processor._process_subgraphs_by_priority()
@@ -435,39 +333,8 @@ class TestBaseSmoothProcessor(unittest.TestCase):
             calls = mock_process.call_args_list
             self.assertEqual(calls[0][0][0].subgraph_type, "up-down")
             self.assertEqual(calls[1][0][0].subgraph_type, "ov")
-            self.assertEqual(calls[2][0][0].subgraph_type, "linear-linear")
-            self.assertEqual(calls[3][0][0].subgraph_type, "norm-linear")
-
-    def test_process_subgraphs_by_priority_order_by_subgraph_priority(self):
-        """When adapter_config has multiple types, order follows SUBGRAPH_PRIORITY (up-down before linear-linear)."""
-        self.processor.adapter_config = [
-            AdapterConfig(
-                subgraph_type="linear-linear",
-                mapping=MappingConfig(source="a", targets=["a_tgt"]),
-            ),
-            AdapterConfig(
-                subgraph_type="up-down",
-                mapping=MappingConfig(source="b", targets=["b_tgt"]),
-            ),
-        ]
-        with patch.object(self.processor, '_process_single_subgraph') as mock_process:
-            self.processor._process_subgraphs_by_priority()
-            self.assertEqual(mock_process.call_count, 2)
-            self.assertEqual(mock_process.call_args_list[0][0][0].subgraph_type, "up-down")
-            self.assertEqual(mock_process.call_args_list[1][0][0].subgraph_type, "linear-linear")
-
-    def test_process_single_subgraph_source_none_logs_custom_operator(self):
-        """When mapping.source is None, non-fusion path is used; type-specific handler is not called."""
-        adapter_config = MagicMock(spec=AdapterConfig, subgraph_type="up-down")
-        adapter_config.mapping = MagicMock(source=None, targets=["target1"])
-        target_module = MagicMock(spec=nn.Module)
-        self.model.get_submodule.side_effect = lambda n: target_module
-        with patch.object(self.processor, '_apply_up_down_smooth') as mock_apply:
-            with patch.object(self.processor, 'apply_smooth_algorithm') as mock_smooth:
-                self.processor._process_single_subgraph(adapter_config)
-                mock_apply.assert_not_called()
-                mock_smooth.assert_called_once()
-                self.assertIsInstance(mock_smooth.call_args[0][0], NonFusionSubgraph)
+            self.assertEqual(calls[2][0][0].subgraph_type, "norm-linear")
+            self.assertEqual(calls[3][0][0].subgraph_type, "linear-linear")
 
 
 if __name__ == '__main__':

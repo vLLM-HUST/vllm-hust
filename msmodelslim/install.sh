@@ -1,19 +1,30 @@
-#!/usr/bin/env bash
-# -------------------------------------------------------------------------
-# This file is part of the MindStudio project.
-# Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-#
-# MindStudio is licensed under Mulan PSL v2.
-# You can use this software according to the terms and conditions of the Mulan PSL v2.
-# You may obtain a copy of Mulan PSL v2 at:
-#
-#          http://license.coscl.org.cn/MulanPSL2
-#
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-# See the Mulan PSL v2 for more details.
-# -------------------------------------------------------------------------
+#!/bin/bash
+# Copyright Huawei Technologies Co., Ltd. 2024-2024. All rights reserved.
+if [ ! -d "$ASCEND_HOME_PATH/" ]; then
+    echo "ASCEND_HOME_PATH not exist.\
+    Please check that the cann package is installed.\
+    Please run 'source set_env.sh' in the CANN installation path."
+    exit 1
+fi
+
+src_dir="$ASCEND_HOME_PATH/python/site-packages/msmodelslim/"
+script_dir=$(cd $(dirname $0);pwd)$"/msmodelslim"
+echo "collect packages from CANN installation path: $src_dir, copy to $script_dir"
+
+for file in $(find $src_dir -type f -name "*.so"); do
+    file_name=$(basename $file)
+    base_file=${file##$src_dir}
+    base_file=${base_file%%$file_name}
+
+    dst_dir=$script_dir/$base_file
+    if [ ! -d "$dst_dir" ]; then
+        mkdir $dst_dir
+        touch $dst_dir"__init__.py"
+        chmod 640 $dst_dir"__init__.py"
+    fi
+    cp $file $dst_dir
+    chmod 550 $dst_dir$file_name
+done
 
 # 清理构建缓存，确保重新构建包
 echo "cleaning build cache to ensure fresh build"

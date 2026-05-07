@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -351,37 +332,3 @@ class TestTransformersModelGetPaddingData(unittest.TestCase):
                 # 验证第一个输入被padding到max_len=4
                 self.assertEqual(len(result), 1)  # 返回一个concatenated tensor的列表
                 self.assertEqual(result[0].shape[1], 4)  # 两个tensor都应该被padding到长度4
-
-class TestTransformersModelGetGlobalModelTorchDtype(unittest.TestCase):
-    """测试 TransformersModel.get_global_model_torch_dtype（AscendV1GlobalModelDtypeInterface）。"""
-
-    def setUp(self):
-        self.model_path = Path('.')
-
-    def test_config_torch_dtype_none_returns_float32(self):
-        with patch('msmodelslim.model.common.transformers.TransformersModel.__init__', return_value=None):
-            adapter = TransformersModel.__new__(TransformersModel)
-            adapter.config = DummyConfig()
-            self.assertFalse(hasattr(adapter.config, 'torch_dtype'))
-        self.assertEqual(adapter.get_global_model_torch_dtype(), torch.float32)
-
-    def test_config_torch_dtype_bfloat16_returns_bfloat16(self):
-        with patch('msmodelslim.model.common.transformers.TransformersModel.__init__', return_value=None):
-            adapter = TransformersModel.__new__(TransformersModel)
-            adapter.config = DummyConfig()
-            adapter.config.torch_dtype = torch.bfloat16
-        self.assertEqual(adapter.get_global_model_torch_dtype(), torch.bfloat16)
-
-    def test_config_torch_dtype_str_bfloat16_returns_bfloat16(self):
-        with patch('msmodelslim.model.common.transformers.TransformersModel.__init__', return_value=None):
-            adapter = TransformersModel.__new__(TransformersModel)
-            adapter.config = DummyConfig()
-            adapter.config.torch_dtype = "bfloat16"
-        self.assertEqual(adapter.get_global_model_torch_dtype(), torch.bfloat16)
-
-    def test_config_torch_dtype_str_float32_returns_float32(self):
-        with patch('msmodelslim.model.common.transformers.TransformersModel.__init__', return_value=None):
-            adapter = TransformersModel.__new__(TransformersModel)
-            adapter.config = DummyConfig()
-            adapter.config.torch_dtype = "float32"
-        self.assertEqual(adapter.get_global_model_torch_dtype(), torch.float32)

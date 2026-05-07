@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 import os
 import shutil
 from typing import Dict
@@ -100,26 +94,6 @@ class BufferedSafetensorsWriter(SafetensorsWriter):
         json_safe_dump(index_json_dict, index_json_path, indent=2)
         self.logger.debug(f'Save index json to {index_json_path} successfully')
 
-    def _dedupe_shared_storage(self, keys_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Resolve shared storage: prefer embed_tokens, write other keys (e.g. lm_head.weight) as clones."""
-        seen_ptr: Dict[int, str] = {}
-        out: Dict[str, torch.Tensor] = {}
-        for k in sorted(keys_dict.keys(), key=lambda x: (0 if "embed_tokens" in x else 1, x)):
-            t = keys_dict[k]
-            if not t.is_contiguous():
-                t = t.contiguous()
-            ptr = t.data_ptr()
-            if ptr in seen_ptr:
-                self.logger.warning(
-                    "Saving %s as clone (shares storage with %s) so both keys exist for tie_word_embeddings.",
-                    k, seen_ptr[ptr],
-                )
-                out[k] = t.clone()
-                continue
-            seen_ptr[ptr] = k
-            out[k] = t
-        return out
-
     def save_one_file(self) -> None:
         # no tensors no saving
         if not self.wait_save_keys:
@@ -130,9 +104,6 @@ class BufferedSafetensorsWriter(SafetensorsWriter):
             self.logger.warning(f'Tensor is too large with size {self._wait_save_size / ONE_GB_FILE_BYTES}GB, '
                                 f'exceeds file size limit: {self.max_size / ONE_GB_FILE_BYTES}GB')
 
-        # Dedupe shared storage (e.g. tie_word_embeddings: lm_head.weight vs embed_tokens.weight)
-        tensors_to_save = self._dedupe_shared_storage(self.wait_save_keys)
-
         self._save_count += 1
         save_file_name = f"{self.save_prefix}-{self._save_count:05d}{FILE_TMP_SUFFIX}"
         full_save_file_name = os.path.join(self.save_directory, save_file_name)
@@ -140,7 +111,7 @@ class BufferedSafetensorsWriter(SafetensorsWriter):
 
         self.logger.debug(f"Start save {full_save_file_name}")
         with SafeWriteUmask(umask=0o377):
-            save_file(tensors_to_save, full_save_file_name)
+            save_file(self.wait_save_keys, full_save_file_name)
         self.saved_keys_map.update({key: save_file_name for key in self.wait_save_keys.keys()})
         self.wait_save_keys.clear()
         self._wait_save_size = 0

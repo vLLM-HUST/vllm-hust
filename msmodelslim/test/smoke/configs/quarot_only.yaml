@@ -6,8 +6,4 @@ spec:
       down_proj_online_layers: [ 1,2 ]
       max_tp_size: 2
 
-  save:
-    - type: "ascendv1_saver"
-      part_file_size: 4
-
   dataset: test.json

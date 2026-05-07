@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -41,17 +22,21 @@ class TestDefaultModelAdapter(unittest.TestCase):
         """测试默认模型适配器成功初始化"""
         mock_super_init.return_value = None
 
-        DefaultModelAdapter(
-            model_type=self.model_type,
-            model_path=self.model_path,
-            trust_remote_code=self.trust_remote_code
-        )
+        with patch('msmodelslim.model.default.model_adapter.get_logger') as mock_logger:
+            adapter = DefaultModelAdapter(
+                model_type=self.model_type,
+                model_path=self.model_path,
+                trust_remote_code=self.trust_remote_code
+            )
 
-        mock_super_init.assert_called_once_with(
-            self.model_type,
-            self.model_path,
-            self.trust_remote_code
-        )
+            mock_logger().warning.assert_called_once()
+            self.assertIn('default model adapter',
+                          mock_logger().warning.call_args[0][0])
+            mock_super_init.assert_called_once_with(
+                self.model_type,
+                self.model_path,
+                self.trust_remote_code
+            )
 
     @patch('msmodelslim.model.default.model_adapter.TransformersModel.__init__')
     def test_initialization_failure(self, mock_super_init):
@@ -74,8 +59,13 @@ class TestDefaultModelAdapter(unittest.TestCase):
             )
             adapter.model_type = self.model_type
 
-            result = adapter.get_model_type()
-            self.assertEqual(result, self.model_type)
+            with patch('msmodelslim.model.default.model_adapter.get_logger') as mock_logger:
+                result = adapter.get_model_type()
+
+                self.assertEqual(result, self.model_type)
+                mock_logger().warning.assert_called_once()
+                self.assertIn('default get_model_type',
+                              mock_logger().warning.call_args[0][0])
 
     def test_get_model_pedigree(self):
         """测试get_model_pedigree方法"""
@@ -84,8 +74,15 @@ class TestDefaultModelAdapter(unittest.TestCase):
                 model_type=self.model_type,
                 model_path=self.model_path
             )
-            result = adapter.get_model_pedigree()
-            self.assertEqual(result, 'default')
+            adapter.model_pedigree = 'default_pedigree'
+
+            with patch('msmodelslim.model.default.model_adapter.get_logger') as mock_logger:
+                result = adapter.get_model_pedigree()
+
+                self.assertEqual(result, 'default_pedigree')
+                mock_logger().warning.assert_called_once()
+                self.assertIn('default get_model_pedigree',
+                              mock_logger().warning.call_args[0][0])
 
     def test_load_model_success(self):
         """测试load_model方法成功情况"""
@@ -98,10 +95,12 @@ class TestDefaultModelAdapter(unittest.TestCase):
             mock_model = nn.Linear(10, 10)
             adapter._load_model = MagicMock(return_value=mock_model)
 
-            result = adapter.load_model(device=DeviceType.CPU)
+            with patch('msmodelslim.model.default.model_adapter.get_logger') as mock_logger:
+                result = adapter.load_model(device=DeviceType.CPU)
 
-            self.assertIs(result, mock_model)
-            adapter._load_model.assert_called_once_with(DeviceType.CPU)
+                self.assertIs(result, mock_model)
+                adapter._load_model.assert_called_once_with(DeviceType.CPU)
+                mock_logger().warning.assert_called()
 
     def test_load_model_failure(self):
         """测试load_model方法失败情况"""
@@ -127,10 +126,12 @@ class TestDefaultModelAdapter(unittest.TestCase):
             mock_dataset = ['data1', 'data2']
             adapter._get_tokenized_data = MagicMock(return_value=mock_dataset)
 
-            result = adapter.handle_dataset(dataset='test_data', device=DeviceType.CPU)
+            with patch('msmodelslim.model.default.model_adapter.get_logger') as mock_logger:
+                result = adapter.handle_dataset(dataset='test_data', device=DeviceType.CPU)
 
-            self.assertEqual(result, mock_dataset)
-            adapter._get_tokenized_data.assert_called_once_with('test_data', DeviceType.CPU)
+                self.assertEqual(result, mock_dataset)
+                adapter._get_tokenized_data.assert_called_once_with('test_data', DeviceType.CPU)
+                mock_logger().warning.assert_called()
 
     def test_handle_dataset_failure(self):
         """测试handle_dataset方法失败情况"""
@@ -156,18 +157,20 @@ class TestDefaultModelAdapter(unittest.TestCase):
             mock_batch_dataset = [['batch1_data1', 'batch1_data2'], ['batch2_data1', 'batch2_data2']]
             adapter._get_batch_tokenized_data = MagicMock(return_value=mock_batch_dataset)
 
-            result = adapter.handle_dataset_by_batch(
-                dataset='test_data',
-                batch_size=2,
-                device=DeviceType.CPU
-            )
+            with patch('msmodelslim.model.default.model_adapter.get_logger') as mock_logger:
+                result = adapter.handle_dataset_by_batch(
+                    dataset='test_data',
+                    batch_size=2,
+                    device=DeviceType.CPU
+                )
 
-            self.assertEqual(result, mock_batch_dataset)
-            adapter._get_batch_tokenized_data.assert_called_once_with(
-                calib_list='test_data',
-                batch_size=2,
-                device=DeviceType.CPU
-            )
+                self.assertEqual(result, mock_batch_dataset)
+                adapter._get_batch_tokenized_data.assert_called_once_with(
+                    calib_list='test_data',
+                    batch_size=2,
+                    device=DeviceType.CPU
+                )
+                mock_logger().warning.assert_called()
 
     def test_init_model_success(self):
         """测试init_model方法成功情况"""
@@ -180,10 +183,11 @@ class TestDefaultModelAdapter(unittest.TestCase):
             mock_model = nn.Linear(10, 10)
             adapter._load_model = MagicMock(return_value=mock_model)
 
-            result = adapter.init_model(device=DeviceType.NPU)
+            with patch('msmodelslim.model.default.model_adapter.get_logger') as mock_logger:
+                result = adapter.init_model(device=DeviceType.NPU)
 
-            self.assertIs(result, mock_model)
-            adapter._load_model.assert_called_once_with(DeviceType.NPU)
+                self.assertIs(result, mock_model)
+                adapter._load_model.assert_called_once_with(DeviceType.NPU)
 
     def test_enable_kv_cache_success(self):
         """测试enable_kv_cache方法成功情况"""
@@ -196,8 +200,11 @@ class TestDefaultModelAdapter(unittest.TestCase):
             mock_model = nn.Linear(10, 10)
             adapter._enable_kv_cache = MagicMock(return_value=None)
 
-            result = adapter.enable_kv_cache(model=mock_model, need_kv_cache=True)
-            adapter._enable_kv_cache.assert_called_once_with(mock_model, True)
+            with patch('msmodelslim.model.default.model_adapter.get_logger') as mock_logger:
+                result = adapter.enable_kv_cache(model=mock_model, need_kv_cache=True)
+
+                adapter._enable_kv_cache.assert_called_once_with(mock_model, True)
+                mock_logger().warning.assert_called()
 
     def test_enable_kv_cache_failure(self):
         """测试enable_kv_cache方法失败情况"""

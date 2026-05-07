@@ -1,4 +1,4 @@
-# DeepSeek 量化说明
+# DeepSeek 量化案例
 
 ## 模型介绍
 
@@ -17,11 +17,11 @@
 - [DeepSeek-R1](https://github.com/deepseek-ai/DeepSeek-R1) 通过纯强化学习、真实奖励机制和 GRPO
   算法，展示了在无需人类干预的情况下实现复杂任务的能力。具体来说，DeepSeek-R1 通过大规模强化学习技术，仅需少量标注数据即可显著提升模型性能。
 
-## 使用前准备
+## 环境配置
 
-- 安装 msModelSlim 工具，详情请参见[《msModelSlim工具安装指南》](../../docs/zh/getting_started/install_guide.md)。
+- 环境配置请参考[安装指南](../../docs/安装指南.md)
 - 对于DeepSeek-V3系列/DeepSeek-R1系列模型，由于模型比较大，请先完成"
-  运行前必检"（[DeepSeek-V3运行前必检](#deepseek-v3-运行前必检) / [DeepSeek-R1运行前必检](#deepseek-r1-运行前必检)）。
+  运行前必检"（[DeepSeek-V3运行前必检](#运行前必检) / [DeepSeek-R1运行前必检](#运行前必检-1)）。
 - 由于模型量化对显存要求较高，请确保在单卡显存不低于64G的环境下执行。
 
 ## 支持的模型版本与量化策略
@@ -32,8 +32,8 @@
 |                    | DeepSeek-V2-Lite-Chat-236B | [DeepSeek-V2-Lite-Chat-236B](https://huggingface.co/deepseek-ai/DeepSeek-V2-Lite-Chat) | ✅    | ✅     |      |        |        |      |          |           |       |       | [W8A8](#deepseek-v2-w8a8-dynamic量化) / [W8A16](#deepseek-v2-w8a16量化)                                                                                                                                                                       |
 | **DeepSeek-Coder** | DeepSeek-Coder-33B         | [DeepSeek-Coder-33B](https://huggingface.co/deepseek-ai/deepseek-coder-33b-instruct)   | ✅    | ✅     |      | ✅      |        |      |          |           |       |       | [W8A8](#deepseek-coder-33b-w8a8量化) / [W8A16](#deepseek-coder-33b-w8a16量化) / [W8A8C8](#deepseek-coder-33b-w8a8c8量化)                                                                                                                        |
 | **DeepSeek-V3**    | DeepSeek-V3                | [DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3)                          | ✅    |       |      |        |        |      |          |           | ✅     |       | [W8A8](#deepseek-v3-w8a8-混合量化mlaw8a8量化moew8a8-dynamic量化) / [FA3](#deepseek-v3-w8a8-fa3-混合量化)                                                                                                                                              |
-|                    | DeepSeek-V3.1              | [DeepSeek-V3.1](https://huggingface.co/deepseek-ai/DeepSeek-V3.1)                    | ✅    |       | ✅    | ✅      | ✅      |      |          |           |       | ✅     | [W8A8](#deepseek-v31-w8a8-混合量化--mtp-量化) / [W8A8C8](#deepseek-v31-w8a8c8-混合量化--mtp-量化) / [W4A8](#deepseek-v31-w4a8-混合量化) / [W4A8C8](#deepseek-v31-w4a8c8) / [MTP量化](#deepseek-v31-w8a8c8-混合量化--mtp-量化)                                      |
-|                    | DeepSeek-V3.2-Exp          | [DeepSeek-V3.2-Exp](https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp)            | ✅    |       | ✅    |        |        |      |          |           |       |       | [W8A8](#deepseek-v32-w8a8) / [W4A8](#deepseek-v32-w4a8)                                                                                                                                                                                                                |
+|                    | DeepSeek-V3.1              | [DeepSeek-V3.1 ](https://huggingface.co/deepseek-ai/DeepSeek-V3.1 )                    | ✅    |       | ✅    | ✅      | ✅      |      |          |           |       | ✅     | [W8A8](#deepseek-v31-w8a8-混合量化--mtp-量化) / [W8A8C8](#deepseek-v31-w8a8c8-混合量化--mtp-量化) / [W4A8](#deepseek-v31-w4a8-混合量化) / [W4A8C8](#deepseek-v31-w4a8c8) / [MTP量化](#deepseek-v31-w8a8c8-混合量化--mtp-量化)                                      |
+|                    | DeepSeek-V3.2-Exp          | [DeepSeek-V3.2-Exp ](https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp )            | ✅    |       | ✅    |        |        |      |          |           |       |       | [W8A8](#deepseek-v32-w8a8) / [W4A8](#deepseek-v32-w4a8)                                                                                                                                                                                                                |
 |                    | DeepSeek-V3.2              | [DeepSeek-V3.2](https://huggingface.co/deepseek-ai/DeepSeek-V3.2)                      | ✅    |       |      |        |        |      |          |           |       |       | [W8A8](#deepseek-v32-w8a8-quarot)                                                                                                                                                                                                                                             |
 | **DeepSeek-R1**    | DeepSeek-R1                | [DeepSeek-R1](https://huggingface.co/deepseek-ai/DeepSeek-R1)                          | ✅    |       | ✅    |        |        |      |          |           | ✅     | ✅     | [W8A8](#deepseek-r1-w8a8-混合量化) / [W4A8](#deepseek-r1-w4a8-混合量化) / [W8A8动态](#deepseek-r1-w8a8-动态量化) / [FA3](#deepseek-r1-w8a8-fa3-混合量化) / [MTP量化](#deepseek-r1-w8a8-混合量化--mtp-量化)                                                          |
 |                    | DeepSeek-R1-0528           | [DeepSeek-R1-0528](https://huggingface.co/deepseek-ai/DeepSeek-R1-0528)                | ✅    |       | ✅    | ✅      | ✅      |      |          |           | ✅     | ✅     | [W8A8](#deepseek-r1-0528-w8a8-混合量化--mtp-量化) / [W4A8](#deepseek-r1-0528-w4a8-per-channel量化) / [W8A8C8](#deepseek-r1-0528-w8a8c8-混合量化--mtp-量化) / [W4A8C8](#deepseek-r1-0528-w4a8c8-per-channel量化) / [MTP量化](#deepseek-r1-0528-w8a8-混合量化--mtp-量化) |
@@ -50,7 +50,7 @@
   和[quant_deepseek_w4a8.py](./quant_deepseek_w4a8.py)
   脚本生成，以下提供DeepSeek模型量化权重生成快速启动命令。
 
-### quant_deepseek.py 量化参数说明
+#### quant_deepseek.py 量化参数说明
 
 | 参数名                 | 含义                             | 默认值                         | 使用方法                                                                                                                      | 
 |---------------------|--------------------------------|-----------------------------|---------------------------------------------------------------------------------------------------------------------------| 
@@ -93,7 +93,7 @@
 注：在量化脚本里面通过transformers库对模型进行加载时，调用`from_pretrained`函数时会指定`trust_remote_code=True`
 让修改后的modeling文件能够正确的被加载。(请确保加载的modeling文件的安全性)
 
-### quant_deepseek_w8a8.py/quant_deepseek_w4a8.py 量化参数说明
+#### quant_deepseek_w8a8.py/quant_deepseek_w4a8.py 量化参数说明
 
 | 参数名           | 含义                             | 默认值                                                    | 使用方法                                                                                  |
 |---------------|--------------------------------|--------------------------------------------------------|---------------------------------------------------------------------------------------|
@@ -109,7 +109,7 @@
 | quant_mtp     | 指定量化模式                         | none                                                   | 可选参数；<br>none: 不保存mtp权重；<br>float: 保存mtp浮点权重；<br>mix: 保存mtp混合量化权重。                    |
 | trust_remote_code | 是否信任自定义代码                      | False                                                  | 可选参数；<br>指定`trust_remote_code=True`让修改后的自定义代码文件能够正确地被加载(请确保所加载的自定义代码文件来源可靠，避免潜在的安全风险)。                                             |
 
-### quant_deepseek_w8a8.py 额外量化参数
+#### quant_deepseek_w8a8.py 额外量化参数
 
 | 参数名          | 含义           | 默认值 | 使用方法                 |
 |--------------|--------------|-----|----------------------|
@@ -122,27 +122,25 @@
 注：在量化脚本里面通过transformers库对模型进行加载时，调用`from_pretrained`函数时会指定`trust_remote_code=True`
 让修改后的modeling文件能够正确的被加载。(请确保加载的modeling文件的安全性)
 
-更多参数配置要求，请参考量化过程中配置的参数 [QuantConfig](../../docs/zh/python_api_v0/foundation_model_compression_apis/foundation_model_quantization_apis/pytorch_QuantConfig.md)
-以及量化参数配置类 [Calibrator](../../docs/zh/python_api_v0/foundation_model_compression_apis/foundation_model_quantization_apis/pytorch_Calibrator.md)
+更多参数配置要求，请参考量化过程中配置的参数 [QuantConfig](../../docs/接口说明/Python-API接口说明/大模型压缩接口/大模型量化接口/PyTorch/QuantConfig.md)
+以及量化参数配置类 [Calibrator](../../docs/接口说明/Python-API接口说明/大模型压缩接口/大模型量化接口/PyTorch/Calibrator.md)
 
-## 使用示例
+### 使用案例
 
 请将`${model_path}`和`${save_path}`替换为用户实际路径。
 
-### DeepSeek-V2系列
+#### DeepSeek-V2系列
 
-#### <span id="deepseek-v2-w8a16量化">DeepSeek-V2 W8A16量化</span>
+##### <span id="deepseek-v2-w8a16量化">DeepSeek-V2 W8A16量化</span>
 
 - 生成DeepSeek-V2模型W8A16量化权重，使用histogram量化方式，在CPU上进行运算
-
   ```shell
   python3 quant_deepseek.py --model_path ${model_path} --save_directory ${save_path} --device_type cpu --act_method 2 --w_bit 8 --a_bit 16
   ```
 
-#### <span id="deepseek-v2-w8a8-dynamic量化">DeepSeek-V2 W8A8 Dynamic量化</span>
+##### <span id="deepseek-v2-w8a8-dynamic量化">DeepSeek-V2 W8A8 Dynamic量化</span>
 
 - 生成DeepSeek-V2模型W8A8 Dynamic量化权重，使用histogram量化方式，在CPU上进行运算
-
   ```shell
   python3 quant_deepseek.py --model_path ${model_path} --save_directory ${save_path} --device_type cpu --act_method 2 --w_bit 8 --a_bit 8  --is_dynamic True
   ```
@@ -150,35 +148,32 @@
 **注意事项：** 若加载自定义模型，调用`from_pretrained`函数时要指定`trust_remote_code=True`
 让修改后的自定义代码文件能够正确的被加载。(请确保加载的自定义代码文件的安全性)
 
-### DeepSeek-Coder系列
+#### DeepSeek-Coder系列
 
-#### <span id="deepseek-coder-33b-w8a8量化">DeepSeek-Coder-33B W8A8量化</span>
+##### <span id="deepseek-coder-33b-w8a8量化">DeepSeek-Coder-33B W8A8量化</span>
 
 - 生成DeepSeek-Coder-33B模型W8A8量化权重，使用自动混合min-max和histogram的激活值量化方式，SmoothQuant加强版算法，在NPU上进行运算
-
   ```shell
   python3 quant_deepseek.py --model_path ${model_path} --save_directory ${save_path} --device_type npu --act_method 3 --anti_method m2 --w_bit 8 --a_bit 8 --model_name deepseek_coder
   ```
 
-#### <span id="deepseek-coder-33b-w8a16量化">DeepSeek-Coder-33B W8A16量化</span>
+##### <span id="deepseek-coder-33b-w8a16量化">DeepSeek-Coder-33B W8A16量化</span>
 
 - 生成DeepSeek-Coder-33B模型W8A16量化权重，使用AWQ算法，在NPU上进行运算
-
   ```shell
   python3 quant_deepseek.py --model_path ${model_path} --save_directory ${save_path} --device_type npu --anti_method m3 --w_bit 8 --a_bit 16 --model_name deepseek_coder
   ```
 
-#### <span id="deepseek-coder-33b-w8a8c8量化">DeepSeek-Coder-33B W8A8C8量化</span>
+##### <span id="deepseek-coder-33b-w8a8c8量化">DeepSeek-Coder-33B W8A8C8量化</span>
 
 - 生成DeepSeek-Coder-33B模型W8A8C8量化权重，使用histogram激活值量化方式，SmoothQuant加强版算法，在NPU上进行运算
-
   ```shell
   python3 quant_deepseek.py --model_path ${model_path} --save_directory ${save_path} --device_type npu --act_method 2 --anti_method m2 --w_bit 8 --a_bit 8 --use_kvcache_quant True --model_name deepseek_coder
   ```
 
-### DeepSeek-V3系列
+#### DeepSeek-V3系列
 
-#### <span id="deepseek-v3-运行前必检">运行前必检</span>
+##### 运行前必检
 
 DeepSeek-V3模型较大，且存在需要手动适配的点，为了避免浪费时间，还请在运行脚本前，请根据以下必检项对相关内容进行更改。
 
@@ -188,7 +183,7 @@ DeepSeek-V3模型较大，且存在需要手动适配的点，为了避免浪费
 - 3、（V3.2-Exp模型可跳过该项检查）当前transformers不支持FP8量化格式加载，需要将权重文件夹中config.json中的以下字段删除：
 - ![img_1.png](img_1.png)
 
-#### <span id="deepseek-v3-w8a8-混合量化mlaw8a8量化moew8a8-dynamic量化">DeepSeek-V3 W8A8 混合量化(MLA:w8a8量化，MOE:w8a8 dynamic量化)</span>
+##### <span id="deepseek-v3-w8a8-混合量化mlaw8a8量化moew8a8-dynamic量化">DeepSeek-V3 W8A8 混合量化(MLA:w8a8量化，MOE:w8a8 dynamic量化)</span>
 
 注：脚本内置FP8反量化逻辑，当前量化支持输入DeepSeek官方FP8模型权重和通过官方脚本转换得到的BF16模型权重
 
@@ -197,25 +192,22 @@ DeepSeek-V3模型较大，且存在需要手动适配的点，为了避免浪费
 2、多次量化场景下，建议先用官方脚本将 BF16 权重持久化存储，后续量化时直接复用该 BF16 权重，通过省略冗余的 FP8 反量化步骤，可显著提升效率。
 
 - 生成DeepSeek-V3模型 W8A8 混合量化权重
-
   ```shell
   python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_path} --batch_size 4 --trust_remote_code True
   ```
 
-#### <span id="deepseek-v3-w8a8-fa3-混合量化">DeepSeek-V3 W8A8 + FA3 混合量化</span>
+##### <span id="deepseek-v3-w8a8-fa3-混合量化">DeepSeek-V3 W8A8 + FA3 混合量化</span>
 
 - 生成DeepSeek-V3模型 W8A8 + FA3 混合量化权重
-
   ```shell
   python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_path} --batch_size 4 --fa_quant --trust_remote_code True
   ```
 
-### DeepSeek-V3.1系列
+#### DeepSeek-V3.1系列
 
-#### <span id="deepseek-v31-w8a8-混合量化--mtp-量化">DeepSeek-V3.1 W8A8 混合量化 + MTP 量化</span>
+##### <span id="deepseek-v31-w8a8-混合量化--mtp-量化">DeepSeek-V3.1 W8A8 混合量化 + MTP 量化</span>
 
 - 生成DeepSeek-V3.1 W8A8 混合量化 + MTP 量化
-
   ```shell
   python3 quant_deepseek_w8a8.py \
   --model_path ${model_path} \
@@ -229,10 +221,9 @@ DeepSeek-V3模型较大，且存在需要手动适配的点，为了避免浪费
   --trust_remote_code True
   ```
 
-#### <span id="deepseek-v31-w8a8c8-混合量化--mtp-量化">DeepSeek-V3.1 W8A8C8 混合量化 + MTP 量化</span>
+##### <span id="deepseek-v31-w8a8c8-混合量化--mtp-量化">DeepSeek-V3.1 W8A8C8 混合量化 + MTP 量化</span>
 
 - 生成DeepSeek-V3.1 W8A8C8 混合量化 + MTP 量化
-
   ```shell
   python3 quant_deepseek_w8a8.py \
   --model_path ${model_path} \
@@ -247,18 +238,16 @@ DeepSeek-V3模型较大，且存在需要手动适配的点，为了避免浪费
   --trust_remote_code True
   ```
 
-#### <span id="deepseek-v31-w4a8-混合量化">DeepSeek-V3.1 W4A8 混合量化</span>
+##### <span id="deepseek-v31-w4a8-混合量化">DeepSeek-V3.1 W4A8 混合量化</span>
 
 - 生成DeepSeek-V3.1 模型 W4A8 混合量化权重
-
   ```shell
   python3 quant_deepseek_w4a8.py --model_path ${model_path} --save_path ${save_path} --anti_dataset ../common/deepseek_anti_prompt_50_v3_1.json --calib_dataset ../common/deepseek_calib_prompt_50_v3_1.json --quant_mtp mix  --batch_size 16 --trust_remote_code True
   ```
 
-#### <span id="deepseek-v31-w4a8c8">DeepSeek-V3.1 W4A8C8 per-channel 量化</span>
+##### <span id="deepseek-v31-w4a8c8">DeepSeek-V3.1 W4A8C8 per-channel 量化</span>
 
 - 生成DeepSeek-V3.1 模型 W4A8C8 per-channel 量化权重
-
   ```shell
   msmodelslim quant \
    --model_path ${model_path} \
@@ -268,9 +257,9 @@ DeepSeek-V3模型较大，且存在需要手动适配的点，为了避免浪费
    --trust_remote_code True
   ```
 
-### DeepSeek-V3.2系列
+#### DeepSeek-V3.2系列
 
-#### <span id="deepseek-v32-w8a8">DeepSeek-V3.2-Exp(含MTP层) W8A8 混合量化</span>
+##### <span id="deepseek-v32-w8a8">DeepSeek-V3.2-Exp(含MTP层) W8A8 混合量化</span>
 
   ```shell
   msmodelslim quant \
@@ -281,7 +270,7 @@ DeepSeek-V3模型较大，且存在需要手动适配的点，为了避免浪费
    --trust_remote_code True
   ```
 
-#### <span id="deepseek-v32-w4a8">DeepSeek-V3.2-Exp(含MTP层) W4A8 混合量化</span>
+##### <span id="deepseek-v32-w4a8">DeepSeek-V3.2-Exp(含MTP层) W4A8 混合量化</span>
 
   ```shell
   msmodelslim quant \
@@ -303,9 +292,9 @@ DeepSeek-V3模型较大，且存在需要手动适配的点，为了避免浪费
    --trust_remote_code True
   ```
 
-### DeepSeek-R1系列
+#### DeepSeek-R1系列
 
-#### <span id="deepseek-r1-运行前必检">运行前必检</span>
+##### 运行前必检
 
 DeepSeek-R1模型较大，且存在需要手动适配的点，为了避免浪费时间，还请在运行脚本前，请根据以下必检项对相关内容进行更改。
 
@@ -315,32 +304,30 @@ DeepSeek-R1模型较大，且存在需要手动适配的点，为了避免浪费
 - 3、当前transformers不支持FP8量化格式加载，需要将权重文件夹中config.json中的以下字段删除：
 - ![img_1.png](img_1.png)
 
-#### <span id="deepseek-r1-w8a8-混合量化">DeepSeek-R1 W8A8 混合量化</span>
+##### <span id="deepseek-r1-w8a8-混合量化">DeepSeek-R1 W8A8 混合量化</span>
 
 - 生成DeepSeek-R1模型 W8A8 混合量化权重
-
   ```shell
   python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_path} --batch_size 4 --trust_remote_code True
   ```
 
-#### <span id="deepseek-r1-w8a8-fa3-混合量化">DeepSeek-R1 W8A8 + FA3 混合量化</span>
+##### <span id="deepseek-r1-w8a8-fa3-混合量化">DeepSeek-R1 W8A8 + FA3 混合量化</span>
 
 - 生成DeepSeek-R1模型 W8A8 + FA3 混合量化权重
-
   ```shell
   python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_path} --batch_size 4 --fa_quant --trust_remote_code True
   ```
 
-#### <span id="deepseek-r1-w8a8-动态量化">DeepSeek-R1 W8A8 动态量化</span>
+##### <span id="deepseek-r1-w8a8-动态量化">DeepSeek-R1 W8A8 动态量化</span>
 
 注：当前 per-token 量化若进行离群值抑制可能会导致精度异常，建议配合 --disable_anti 参数使用。
 
 ```shell
 # 使用 disable_anti 参数可以减少量化所需时间
-python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_path} --dynamic --disable_anti --trust_remote_code True
+python3 quant_deepseek_W8A8.py --model_path ${model_path} --save_path ${save_path} --dynamic --disable_anti --trust_remote_code True
 ```
 
-#### <span id="deepseek-r1-w4a8-混合量化">DeepSeek-R1 W4A8 混合量化(前三层 mlp：w8a8 dynamic 量化，MLA&共享专家:w8a8量化，路由专家:w4a8 dynamic量化)</span>
+##### <span id="deepseek-r1-w4a8-混合量化">DeepSeek-R1 W4A8 混合量化(前三层 mlp：w8a8 dynamic 量化，MLA&共享专家:w8a8量化，路由专家:w4a8 dynamic量化)</span>
 
 注：脚本内置FP8反量化逻辑，当前量化支持输入DeepSeek官方FP8模型权重和通过官方脚本转换得到的BF16模型权重
 
@@ -351,7 +338,6 @@ python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_pat
 3、 若存在推理时tp数大于16的情况，请在量化时添加参数 "--mindie_format"。
 
 - 生成DeepSeek-R1模型 W4A8 混合量化权重
-
   ```shell
   # 下面命令默认使用 10 条校准集
   python3 quant_deepseek_w4a8.py --model_path ${model_path} --save_path ${save_path} --trust_remote_code True
@@ -360,17 +346,16 @@ python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_pat
   python3 quant_deepseek_w4a8.py --model_path ${model_path} --save_path ${save_path} --anti_dataset ../common/deepseek_anti_prompt_50.json --calib_dataset ../common/deepseek_calib_prompt_50.json  --batch_size 16 --trust_remote_code True
   ```
 
-#### <span id="deepseek-r1-w8a8-混合量化--mtp-量化">DeepSeek-R1 W8A8 混合量化 + MTP 量化</span>
+##### <span id="deepseek-r1-w8a8-混合量化--mtp-量化">DeepSeek-R1 W8A8 混合量化 + MTP 量化</span>
 
 - 生成DeepSeek-R1模型 W8A8 MTP 量化权重
-
   ```shell
   python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_path} --batch_size 4 --quant_mtp mix --trust_remote_code True
   ```
 
-### DeepSeek-R1-0528系列
+#### DeepSeek-R1-0528系列
 
-#### <span id="deepseek-r1-0528-w4a8-per-channel量化">DeepSeek-R1-0528(含MTP层) W4A8 per-channel量化(非MTP层的路由专家采用w4a8 per-channel动态量化，其他线性层均采用w8a8动态量化)</span>
+##### <span id="deepseek-r1-0528-w4a8-per-channel量化">DeepSeek-R1-0528(含MTP层) W4A8 per-channel量化(非MTP层的路由专家采用w4a8 per-channel动态量化，其他线性层均采用w8a8动态量化)</span>
 
   ```shell
   msmodelslim quant \
@@ -381,7 +366,7 @@ python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_pat
    --trust_remote_code True
   ```
 
-#### <span id="deepseek-r1-0528-w4a8c8-per-channel量化">DeepSeek-R1-0528(含MTP层) W4A8C8 per-channel量化</span>
+##### <span id="deepseek-r1-0528-w4a8c8-per-channel量化">DeepSeek-R1-0528(含MTP层) W4A8C8 per-channel量化</span>
 
   ```shell
   msmodelslim quant \
@@ -392,10 +377,9 @@ python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_pat
    --trust_remote_code True
   ```
 
-#### <span id="deepseek-r1-0528-w8a8-混合量化--mtp-量化">DeepSeek-R1 0528 W8A8 混合量化 + MTP 量化</span>
+##### <span id="deepseek-r1-0528-w8a8-混合量化--mtp-量化">DeepSeek-R1 0528 W8A8 混合量化 + MTP 量化</span>
 
 - 生成DeepSeek-R1 0528模型 W8A8 混合量化 + MTP 量化
-
   ```shell
   python3 quant_deepseek_w8a8.py \
   --model_path ${model_path} \
@@ -409,10 +393,9 @@ python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_pat
   --trust_remote_code True
   ```
 
-#### <span id="deepseek-r1-0528-w8a8c8-混合量化--mtp-量化">DeepSeek-R1 0528 W8A8C8 混合量化 + MTP 量化</span>
+##### <span id="deepseek-r1-0528-w8a8c8-混合量化--mtp-量化">DeepSeek-R1 0528 W8A8C8 混合量化 + MTP 量化</span>
 
 - 生成DeepSeek-R1 0528模型 W8A8C8 混合量化 + MTP 量化
-
   ```shell
   python3 quant_deepseek_w8a8.py \
   --model_path ${model_path} \
@@ -427,7 +410,7 @@ python3 quant_deepseek_w8a8.py --model_path ${model_path} --save_path ${save_pat
   --trust_remote_code True
   ```
 
-#### DeepSeek-V3/R1量化QA
+##### DeepSeek-V3/R1量化QA
 
 - Q：报错 This modeling file requires the following packages that were not found in your environment： flash_attn. Run '
   pip install flash_attn'

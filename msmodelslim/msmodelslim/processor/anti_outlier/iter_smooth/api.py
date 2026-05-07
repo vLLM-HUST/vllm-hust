@@ -1,34 +1,30 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 from typing import Type, Tuple
 
 import torch
 
 from msmodelslim.ir.qal.qregistry import QFuncRegistry
-from msmodelslim.processor.anti_outlier.common.subgraph_type import (
+from msmodelslim.ir.qal.qtypes import (
+    Subgraph,
+    NormLinearSubgraph,
+    LinearLinearSubgraph,
+    OVSubgraph,
     UpDownSubgraph,
 )
-from msmodelslim.processor.anti_outlier.common.subgraph_type import LinearLinearSubgraph, NonFusionSubgraph, NormLinearSubgraph, OVSubgraph, Subgraph
-from msmodelslim.utils.logging import get_logger
 from ..common import (
     IterSmoothConfig,
     SmoothContext,
@@ -162,42 +158,3 @@ def iter_smooth_impl_norm_linear(subgraph: Subgraph, config: IterSmoothConfig, c
         shifts=shifts if shifts else None
     )
     return
-
-
-@torch.no_grad()
-@QFuncRegistry.register(dispatch_key=(NonFusionSubgraph, 1), api_name="iter_smooth")
-def iter_smooth_impl_non_fusion_linear(subgraph: Subgraph, config: IterSmoothConfig, context: SmoothContext):
-    """
-    Apply iter_smooth to a NonFusionSubgraph for outlier suppression.
-
-    Computes per-channel smooth scales from activation statistics (context.a_smooth_scale)
-    and weight statistics (per-output-channel max abs weight across subgraph linears).
-    Then applies fusion (weight/norm scaling) via SubgraphFusionFactory and registers
-    a forward_pre_hook (NonFusionSmoothQuantHookIR) on each linear so that smooth
-    scaling is applied at inference time.
-    """
-    
-    calculator = IterSmoothScaleCalculator(alpha=config.alpha, scale_min=config.scale_min)
-    a_scale = context.a_smooth_scale
-
-    if len(subgraph.linears) < 1:
-        raise ValueError("NonFusionSubgraph must have at least one linear layer")
-
-    w_scale = []
-    for linear in subgraph.linears:
-        stat = linear.weight.abs().max(dim=0, keepdim=True)[0]
-        w_scale.append(stat)
-    w_scale = torch.cat(w_scale, dim=0)
-    scales = calculator.compute_smooth_scale(a_scale, w_scale)
-    shifts = {}
-    if config.shift:
-        get_logger().warning(
-            "NonFusionSubgraphFusion does not support shifts; shifts will be ignored.",
-        )
-    SubgraphFusionFactory.apply_fusion_to_subgraph(
-        subgraph,
-        scales={'scales': scales},
-        shifts=shifts if shifts else None
-    )
-
-    return scales   

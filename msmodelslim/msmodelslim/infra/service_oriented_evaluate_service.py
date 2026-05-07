@@ -1,34 +1,27 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 from pathlib import Path
 from typing import Literal, List, Annotated
 
-from pydantic import AfterValidator, BaseModel, model_validator
+from pydantic import AfterValidator, BaseModel
 
 from msmodelslim.app.auto_tuning import EvaluateServiceInfra, EvaluateServiceConfig
 from msmodelslim.app.auto_tuning.evaluation_service_infra import EvaluateContext
 from msmodelslim.core.tune_strategy import EvaluateResult, EvaluateAccuracy, AccuracyExpectation
-from msmodelslim.infra.evaluation.aisbench_server import AisBenchServer, AisbenchServerConfig
+from msmodelslim.infra.aisbench_server import AisBenchServer, AisbenchServerConfig
 from msmodelslim.infra.vllm_ascend_server import VllmAscendServer, VllmAscendConfig
-from msmodelslim.utils.exception import SpecError, SchemaValidateError
+from msmodelslim.utils.exception import SpecError
 from msmodelslim.utils.logging import logger_setter
 from msmodelslim.utils.plugin import TypedConfig
 from msmodelslim.utils.validation.pydantic import at_least_one_element
@@ -43,28 +36,6 @@ class ServiceOrientedEvaluateServiceConfig(EvaluateServiceConfig):
     demand: EvaluateDemand
     evaluation: AisbenchServerConfig
     inference_engine: VllmAscendConfig
-    
-    @model_validator(mode='after')
-    def validate_datasets_exist(self):
-        """校验 expectations 中的所有 dataset 都在 evaluation.evaluation.datasets 中配置了"""
-        if not self.demand.expectations:
-            return self
-        
-        available_datasets = set(self.evaluation.datasets.keys())
-        missing_datasets = []
-        
-        for expectation in self.demand.expectations:
-            if expectation.dataset not in available_datasets:
-                missing_datasets.append(expectation.dataset)
-        
-        if missing_datasets:
-            raise SchemaValidateError(
-                f"Dataset(s) {missing_datasets} in expectations are not configured in evaluation.datasets. "
-                f"Available datasets: {list(available_datasets)}",
-                action="Please add the missing dataset(s) to evaluation.aisbench.datasets or remove them from expectations"
-            )
-        
-        return self
 
 
 @logger_setter()
@@ -132,12 +103,3 @@ def is_demand_satisfied(
             return False
 
     return True
-
-
-def get_plugin():
-    """
-    获取 service_oriented 评估服务插件（返回配置类与组件类，由框架完成注册）。
-    Returns:
-        (ServiceOrientedEvaluateServiceConfig, ServiceOrientedEvaluateService) 元组
-    """
-    return ServiceOrientedEvaluateServiceConfig, ServiceOrientedEvaluateService

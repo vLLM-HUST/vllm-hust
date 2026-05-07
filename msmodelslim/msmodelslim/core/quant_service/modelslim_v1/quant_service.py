@@ -1,32 +1,25 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 from pathlib import Path
 from typing import Optional, Literal, List
 
 import torch
 
-from msmodelslim.core.const import RunnerType, DeviceType
-from msmodelslim.core.context import ContextFactory, ContextManager, IContextFactory
+from msmodelslim.core.quant_service.base import BaseQuantService
 from msmodelslim.core.quant_service.dataset_loader_infra import DatasetLoaderInfra
-from msmodelslim.core.quant_service import KeyInfoPersistenceInfra
+from msmodelslim.core.const import RunnerType, DeviceType
 from msmodelslim.core.runner.layer_wise_runner import LayerWiseRunner
 from msmodelslim.core.runner.pipeline_interface import PipelineInterface
 from msmodelslim.core.runner.pipeline_parallel_runner import PPRunner
@@ -35,31 +28,15 @@ from msmodelslim.utils.exception import SchemaValidateError, UnsupportedError
 from msmodelslim.utils.logging import get_logger, logger_setter
 from msmodelslim.utils.seed import seed_all
 from .quant_config import ModelslimV1QuantConfig
-from ..interface import BaseQuantConfig, QuantServiceConfig, IQuantService
+from ..interface import BaseQuantConfig
 
 
-class ModelslimV1QuantServiceConfig(QuantServiceConfig):
-    """modelslim_v1 量化服务配置，用于插件选择与 QuantService 初始化。"""
-    apiversion: Literal["modelslim_v1"] = "modelslim_v1"
-
-
-@logger_setter(
-    prefix='msmodelslim.core.quant_service.modelslim_v1')  # 4-level: msmodelslim.core.quant_service.modelslim_v1
-class ModelslimV1QuantService(IQuantService):
+@logger_setter(prefix='msmodelslim.core.quant_service.modelslim_v1')  # 4-level: msmodelslim.core.quant_service.modelslim_v1
+class ModelslimV1QuantService(BaseQuantService):
     backend_name: str = "modelslim_v1"
 
-    def __init__(
-        self,
-        quant_service_config: ModelslimV1QuantServiceConfig,
-        dataset_loader: DatasetLoaderInfra,
-        context_factory: IContextFactory,
-        debug_info_persistence: Optional[KeyInfoPersistenceInfra] = None,
-        **kwargs,
-    ):
-        self.quant_service_config = quant_service_config
-        self.dataset_loader = dataset_loader
-        self.context_factory = context_factory
-        self.debug_info_persistence = debug_info_persistence
+    def __init__(self, dataset_loader: DatasetLoaderInfra):
+        super().__init__(dataset_loader)
 
     @staticmethod
     def _choose_runner_type(quant_config: ModelslimV1QuantConfig,
@@ -142,69 +119,39 @@ class ModelslimV1QuantService(IQuantService):
             # 如果使用npu进行量化需开启二进制编译，避免在线编译算子
             torch.npu.set_compile_mode(jit_compile=False)
 
+        get_logger().info(f"==========QUANTIZATION: Prepare Dataset==========")
+        dataset = self.dataset_loader.get_dataset_by_name(quant_config.spec.dataset)
+        get_logger().info(f"prepare dataset from {quant_config.spec.dataset} success")
+
+        final_process_cfg = quant_config.spec.process
         if save_path is not None:
             get_logger().info(f"==========QUANTIZATION: Prepare Persistence==========")
             for save_cfg in quant_config.spec.save:
                 save_cfg.set_save_directory(save_path)
+
+            # 注册处理器
+            final_process_cfg += quant_config.spec.save
             get_logger().info(f"prepare Persistence to {save_path} success")
 
+        get_logger().info(f"==========QUANTIZATION: Run Quantization==========")
+        # 选择 runner
         runner_type = self._choose_runner_type(quant_config, model_adapter, device_indices)
-        ctx = self.context_factory.create(is_distributed=(runner_type == RunnerType.DP_LAYER_WISE))
-
-        def _create_runner():
-            if runner_type == RunnerType.MODEL_WISE:
-                return PPRunner(adapter=model_adapter)
-            if runner_type == RunnerType.LAYER_WISE:
-                return LayerWiseRunner(adapter=model_adapter)
-            if runner_type == RunnerType.DP_LAYER_WISE:
-                from msmodelslim.core.runner.dp_layer_wise_runner import DPLayerWiseRunner
-                return DPLayerWiseRunner(adapter=model_adapter)
+        if runner_type == RunnerType.MODEL_WISE:
+            runner = PPRunner(adapter=model_adapter)
+        elif runner_type == RunnerType.LAYER_WISE:
+            runner = LayerWiseRunner(adapter=model_adapter)
+        elif runner_type == RunnerType.DP_LAYER_WISE:
+            # 延迟导入以避免循环依赖
+            from msmodelslim.core.runner.dp_layer_wise_runner import DPLayerWiseRunner
+            runner = DPLayerWiseRunner(adapter=model_adapter)
+        else:
             raise UnsupportedError("Invalid runner type",
                                    action="Please use RunnerType.MODEL_WISE or RunnerType.LAYER_WISE")
 
-        with ContextManager(ctx):
-            # 前置阶段：每阶段独立 process + dataset，结果通过 get_current_context() 传递到主阶段
-            for idx, prior_stage in enumerate(quant_config.spec.prior):
-                get_logger().info("==========QUANTIZATION: Prior Stage %s/%s==========", idx + 1, len(quant_config.spec.prior))
-                prior_dataset_name = prior_stage.dataset if prior_stage.dataset else quant_config.spec.dataset
-                if prior_stage.dataset:
-                    get_logger().info("Prior stage dataset specified, using dataset: %s", prior_dataset_name)
-                else:
-                    get_logger().info("Prior stage dataset not provided, fallback to spec.dataset: %s", prior_dataset_name)
-                prior_dataset = self.dataset_loader.get_dataset_by_name(prior_dataset_name)
-                get_logger().info("prepare dataset from %s success", prior_dataset_name)
-                runner = _create_runner()
-                for process_cfg in prior_stage.process:
-                    runner.add_processor(processor_cfg=process_cfg)
-                runner.run(calib_data=prior_dataset, device=device, device_indices=device_indices)
+        get_logger().info(f"Create runner {runner_type} success")
 
-            # 主阶段：process + save，使用 spec.dataset（可读取 prior 写入的 context）
-            get_logger().info(f"==========QUANTIZATION: Run Quantization==========")
-            dataset = self.dataset_loader.get_dataset_by_name(quant_config.spec.dataset)
-            get_logger().info(f"prepare dataset from {quant_config.spec.dataset} success")
-            get_logger().info(f"Create runner {runner_type} success")
-            runner = _create_runner()
-            for process_cfg in quant_config.spec.process:
-                runner.add_processor(processor_cfg=process_cfg)
-            if save_path is not None:
-                for save_cfg in quant_config.spec.save:
-                    runner.add_processor(processor_cfg=save_cfg)
-            runner.run(calib_data=dataset, device=device, device_indices=device_indices)
+        for process_cfg in final_process_cfg:
+            runner.add_processor(processor_cfg=process_cfg)
+
+        runner.run(calib_data=dataset, device=device, device_indices=device_indices)
         get_logger().info(f"==========QUANTIZATION: END==========")
-
-        # Save context if persistence is provided
-        if self.debug_info_persistence is not None:
-            get_logger().info(f"==========SAVE DEBUG INFO==========")
-            try:
-                self.debug_info_persistence.save_from_context(ctx=ctx)
-            except Exception as e:
-                get_logger().warning(f"Failed to save debug info: {e}")
-
-
-def get_plugin():
-    """
-    获取 modelslim_v1 量化服务插件（返回配置类与组件类，由框架完成注册）。
-    Returns:
-        (ModelslimV1QuantServiceConfig, ModelslimV1QuantService) 元组
-    """
-    return ModelslimV1QuantServiceConfig, ModelslimV1QuantService

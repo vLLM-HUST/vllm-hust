@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2024-2024 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 """Flex Smooth Quantization Processor (Refactored)"""
 
@@ -32,13 +26,11 @@ from msmodelslim.core.base.protocol import BatchProcessRequest
 from msmodelslim.processor.base import AutoSessionProcessor, AutoProcessorConfig
 from msmodelslim.core.quantizer.linear import LinearQConfig
 from msmodelslim.core.observer import MsMinMaxObserver, MinMaxObserverConfig
-from msmodelslim.utils.exception import SchemaValidateError
+from msmodelslim.utils.exception import UnsupportedError, SchemaValidateError
 from msmodelslim.utils.logging import get_logger, logger_setter
 from msmodelslim.utils.distributed.dist_ops import sync_gather_tensor_lists
 from msmodelslim.utils.distributed import DistHelper
 from msmodelslim.utils.validation.value import validate_normalized_value, is_string_list
-from msmodelslim.ir.non_fusion_smooth_quant_ir import NonFusionSmoothQuantHookIR
-from msmodelslim.processor.anti_outlier.common.subgraph_type import NonFusionSubgraph
 from ..common import (
     FlexSmoothQuantConfig,
     FlexAWQSSZConfig,
@@ -157,16 +149,14 @@ class FlexSmoothBaseProcessor(BaseSmoothProcessor):
         # 初始化分布式辅助类（延迟到preprocess时创建，因为需要prefix信息）
         self.dist_helper = None
 
-    def _validate_adapter_interface(self, adapter: object) -> None:
+    def _validate_adapter_interface(self, adapter: object):
         """Validate that the adapter implements FlexSmoothQuantInterface."""
         if not isinstance(adapter, FlexSmoothQuantInterface):
-            get_logger().warning(
-                '%s does not implement FlexSmoothQuantInterface. Fallback to default model adapter logic (hook-based auto-detect). '
-                'To use model-specific config, ensure %s inherits from FlexSmoothQuantInterface and implements the methods defined by the interface',
-                adapter.__class__.__name__,
-                adapter.__class__.__name__
+            raise UnsupportedError(
+                f'{adapter.__class__.__name__} does not implement FlexSmoothQuantInterface',
+                action=f'Please ensure {adapter.__class__.__name__} inherits from FlexSmoothQuantInterface '
+                       f'and implements the methods defined by the interface'
             )
-            self.is_defalut_adapter = True
 
 
 @QABCRegistry.register(dispatch_key=FlexSmoothQuantProcessorConfig, abc_class=AutoSessionProcessor)
@@ -207,12 +197,7 @@ class FlexSmoothQuantProcessor(FlexSmoothBaseProcessor):
                 subgraph_type
             )
             return
-        scales = flex_smooth_quant(subgraph_obj, config, smooth_context)
-        if scales is not None and isinstance(subgraph_obj, NonFusionSubgraph):
-            for linear_module in subgraph_obj.linears:
-                hook_ir = NonFusionSmoothQuantHookIR(scales)
-                hook_handle = linear_module.register_forward_pre_hook(hook_ir)
-                hook_ir.set_hook_handle(hook_handle)
+        flex_smooth_quant(subgraph_obj, config, smooth_context)
         get_logger().info(f"Successfully applied FlexSmoothQuant to {subgraph_type} subgraph")
 
     def _build_smooth_context(self, linear_names: List[str]) -> Optional[FlexSmoothQuantContext]:

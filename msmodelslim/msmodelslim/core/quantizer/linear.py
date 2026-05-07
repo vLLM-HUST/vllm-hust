@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 from typing import Optional
 
@@ -30,16 +24,11 @@ from torch import nn
 import msmodelslim.ir as qir
 from msmodelslim.ir.qal import QDType, QStorage
 from msmodelslim.utils.logging import logger_setter
-from .base import AutoActQuantizer, AutoWeightQuantizer, QConfig, QScope
+from .base import AutoActQuantizer, AutoWeightQuantizer, QConfig
 
 
 class LinearQConfig(BaseModel):
-    act: QConfig = QConfig(
-        dtype=QDType.FLOAT,
-        scope=QScope.PER_TENSOR,
-        symmetric=True,
-        method="none"
-    )
+    act: QConfig
     weight: QConfig
 
     model_config = ConfigDict(extra="forbid")
@@ -107,17 +96,3 @@ class LinearQuantizer(nn.Module):
         input_support = self.input_quantizer.support_distributed()
         weight_support = self.weight_quantizer.support_distributed()
         return input_support and weight_support
-
-    def is_data_free(self) -> bool:
-        """
-        判断是否是data free场景
-        通过检查 input_quantizer 和 weight_quantizer 是否都支持data free来判断
-        
-        Returns:
-            bool: 是否是data free场景
-        """
-        return self.input_quantizer.is_data_free() and self.weight_quantizer.is_data_free()
-
-    def validate_config(self):
-        self.input_quantizer.validate_ext_config()
-        self.weight_quantizer.validate_ext_config()

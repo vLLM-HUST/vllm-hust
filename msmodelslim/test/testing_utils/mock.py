@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2024-2024 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 
 import json
@@ -36,15 +30,6 @@ def _mock_json_safe_dump(obj, path, indent=None, extensions="json", check_user_s
 
 
 def _mock_get_valid_write_path(path: str, *args, **kwarg) -> str:
-    parent = os.path.dirname(path)
-    if parent and not os.path.exists(parent):
-        os.makedirs(parent, exist_ok=True)
-    # 若路径无扩展名或以分隔符结尾，视为目录并创建。Windows 上若 path 已存在且为文件，
-    # makedirs(path, exist_ok=True) 会触发 FileExistsError(WinError 183)，故仅在实际需要时创建。
-    base = os.path.basename(path)
-    if not base or not os.path.splitext(base)[1] or path.endswith(os.sep):
-        if not os.path.exists(path) or os.path.isdir(path):
-            os.makedirs(path, exist_ok=True)
     return path
 
 

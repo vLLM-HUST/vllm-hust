@@ -1,33 +1,29 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2024-2024 Huawei Technologies Co., Ltd.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, Callable, List
+from typing import Optional, Dict, Any, Callable
 from enum import Enum
 import torch.nn as nn
 
-from msmodelslim.processor.anti_outlier.common.subgraph_type import LinearLinearSubgraph, NonFusionSubgraph, NormLinearSubgraph, OVSubgraph
 from msmodelslim.utils.logging import get_logger
-from msmodelslim.processor.anti_outlier.common.subgraph_type import (
+from msmodelslim.ir.qal.qtypes import (
+    NormLinearSubgraph,
+    LinearLinearSubgraph,
+    OVSubgraph,
     UpDownSubgraph
 )
 
@@ -42,42 +38,29 @@ class StatKey(str, Enum):
     STAT_KEY_SMOOTH_SCALE = "smooth_scale"
     STAT_KEY_VARIANCE = "std"
     TENSOR = 'tensor'
-    STAT_KEY_MEAN = "mean"
-    STAT_KEY_ARGS_AND_KWARGS = "args_and_kwargs"
 
 
 class HookManager:   
     def __init__(self, model: nn.Module):
         self.model = model
-        self.hook_handles: List[Any] = []
+        self.hook_handles: Dict[str, any] = {}
     
     def install_hook(self, module_name: str, hook_fn: Callable, subgraph_type: str = None) -> bool:
         module = self.model.get_submodule(module_name)
         handle = module.register_forward_hook(hook_fn)
-        self.hook_handles.append(handle)
+        self.hook_handles[module_name] = handle
         get_logger().debug(
             f"Successfully installed hook for module {module_name}"
             + (f" (subgraph_type: {subgraph_type})" if subgraph_type else "")
         )
         return True
     
-    def install_pre_hook(self, module_name: str, hook_fn: Callable, subgraph_type: str = None, with_kwargs: bool = False) -> bool:
-        module = self.model.get_submodule(module_name)
-        handle = module.register_forward_pre_hook(hook_fn, with_kwargs=with_kwargs)
-        self.hook_handles.append(handle)
-        get_logger().debug(
-            f"Successfully installed pre-hook for module {module_name}"
-            + (f" (subgraph_type: {subgraph_type})" if subgraph_type else "")
-        )
-        return True
-    
     def remove_all_hooks(self) -> int:   
-        count = len(self.hook_handles)
-        for handle in self.hook_handles:
+        for module_name, handle in self.hook_handles.items():
             handle.remove()
+            get_logger().debug("Successfully removed hook for module %s", module_name)
         self.hook_handles.clear()
-        get_logger().debug("Removed %d hooks", count)
-        return count
+        return len(self.hook_handles)
 
 
 class StatsCollector(ABC):
@@ -97,8 +80,7 @@ class SubgraphRegistry:
         NormLinearSubgraph: "norm-linear",
         LinearLinearSubgraph: "linear-linear",
         OVSubgraph: "ov",
-        UpDownSubgraph: "up-down",
- 	    NonFusionSubgraph: "non-fusion"
+        UpDownSubgraph: "up-down"
     }
 
     NAME_TO_HANDLER = {

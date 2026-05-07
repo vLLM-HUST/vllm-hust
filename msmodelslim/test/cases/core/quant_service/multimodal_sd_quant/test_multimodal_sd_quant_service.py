@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 import functools
 from pathlib import Path
@@ -27,17 +21,12 @@ import pytest
 
 from msmodelslim.core.const import DeviceType
 from msmodelslim.core.quant_service.interface import BaseQuantConfig
-from msmodelslim.utils.exception import UnsupportedError
 from msmodelslim.core.quant_service.multimodal_sd_v1.quant_config import (
     MultimodalSDModelslimV1QuantConfig,
     MultimodalPipelineInterface,
-    SchemaValidateError,
+    SchemaValidateError
 )
-from msmodelslim.core.quant_service.multimodal_sd_v1.quant_service import (
-    MultimodalSDModelslimV1QuantService,
-    MultimodalSDModelslimV1QuantServiceConfig,
-)
-from msmodelslim.core.context import IContextFactory
+from msmodelslim.core.quant_service.multimodal_sd_v1.quant_service import MultimodalSDModelslimV1QuantService
 
 
 class TestQuantProcessComplete:
@@ -48,13 +37,14 @@ class TestQuantProcessComplete:
     def setup_method(self):
         # 基础服务与核心依赖
         self.dataset_loader = Mock()
+        self.service = MultimodalSDModelslimV1QuantService(self.dataset_loader)
 
         # 1. 简化配置层级：用MagicMock自动支持属性访问
         self.mock_quant_spec = MagicMock()
         # 量化配置核心属性
         self.mock_quant_spec.multimodal_sd_config.model_extra = {"model_config": "test_config"}
         self.mock_quant_spec.multimodal_sd_config.dump_config = MagicMock(
-            capture_mode='args', dump_data_dir="/test/dump", enable_dump=True
+            capture_mode='args', dump_data_dir="/test/dump"
         )
         # 处理/保存配置（2个实例，覆盖多配置场景）
         self.mock_quant_spec.process = [Mock(), Mock()]
@@ -63,17 +53,8 @@ class TestQuantProcessComplete:
 
         # 2. 只保留BaseQuantConfig的spec（推荐，符合实际类型约束）
         self.quant_config = Mock(spec=BaseQuantConfig)
-        self.quant_config.apiversion = "multimodal_sd_modelslim_v1"
         # 给quant_config添加spec属性，模拟原意图（关联mock_quant_spec）
         self.quant_config.spec = self.mock_quant_spec
-
-        # QuantService 初始化使用 QuantServiceConfig（仅 apiversion），不是 QuantConfig
-        self.quant_service_config = MultimodalSDModelslimV1QuantServiceConfig()
-        self.context_factory = Mock(spec=IContextFactory)
-        self.service = MultimodalSDModelslimV1QuantService(
-            self.quant_service_config, self.dataset_loader, 
-            self.context_factory
-        )
 
         # 模型适配器（保持原逻辑）
         self.model_adapter = Mock(spec=MultimodalPipelineInterface)
@@ -152,17 +133,16 @@ class TestQuantProcessComplete:
         # 模型配置与加载
         self.model_adapter.set_model_args.assert_called_once_with("test_config")
         self.model_adapter.load_pipeline.assert_called_once()
-        # 数据加载与设备转换（路径用 Path 规范化，避免 Windows/Unix 分隔符差异）
-        expected_pth_list = {'model1': Path('/test/dump/calib_data_mock_model1.pth'),
-                             'model2': Path('/test/dump/calib_data_mock_model2.pth')}
+        # 数据加载与设备转换
+        pth_file_path_list = {'model1': '/test/dump/calib_data_mock_model1.pth',
+                              'model2': '/test/dump/calib_data_mock_model2.pth'}
         model = {'model1': self.mock_model1, 'model2': self.mock_model2}
-        assert mock_load_cache.call_count == 1
-        call_kw = mock_load_cache.call_args[1]
-        actual_pth_list = {k: Path(v).as_posix() for k, v in call_kw["pth_file_path_list"].items()}
-        assert actual_pth_list == {k: Path(v).as_posix() for k, v in expected_pth_list.items()}
-        assert call_kw["generate_func"] == self.model_adapter.run_calib_inference
-        assert call_kw["models"] == model
-        assert call_kw["dump_config"] == self.mock_quant_spec.multimodal_sd_config.dump_config
+        mock_load_cache.assert_called_once_with(
+            pth_file_path_list=pth_file_path_list,
+            generate_func=self.model_adapter.run_calib_inference,
+            models=model,
+            dump_config=self.mock_quant_spec.multimodal_sd_config.dump_config
+        )
         mock_to_device.assert_called_once_with("raw_calib_data", self.device.value)
         # 保存配置与Runner处理
         expert_save_path1 = self.save_path.joinpath(f"{self.model_adapter.model_args.task_config}_model1")
@@ -204,16 +184,15 @@ class TestQuantProcessComplete:
         # 模型配置与加载
         self.model_adapter.set_model_args.assert_called_once_with("test_config")
         self.model_adapter.load_pipeline.assert_called_once()
-        # 数据加载与设备转换（路径用 Path 规范化，避免 Windows/Unix 分隔符差异）
-        expected_pth_list = {'': Path('/test/dump/calib_data__.pth')}
+        # 数据加载与设备转换
+        pth_file_path_list = {'': '/test/dump/calib_data__.pth'}
         model = {'': self.mock_model1}
-        assert mock_load_cache.call_count == 1
-        call_kw = mock_load_cache.call_args[1]
-        actual_pth_list = {k: Path(v).as_posix() for k, v in call_kw["pth_file_path_list"].items()}
-        assert actual_pth_list == {k: Path(v).as_posix() for k, v in expected_pth_list.items()}
-        assert call_kw["generate_func"] == self.model_adapter.run_calib_inference
-        assert call_kw["models"] == model
-        assert call_kw["dump_config"] == self.mock_quant_spec.multimodal_sd_config.dump_config
+        mock_load_cache.assert_called_once_with(
+            pth_file_path_list=pth_file_path_list,
+            generate_func=self.model_adapter.run_calib_inference,
+            models=model,
+            dump_config=self.mock_quant_spec.multimodal_sd_config.dump_config
+        )
         mock_to_device.assert_called_once_with("raw_calib_data", self.device.value)
         # 保存配置与Runner处理
         expert_save_path1 = self.save_path
@@ -283,47 +262,3 @@ class TestQuantProcessComplete:
         self.service.quant_process(self.quant_config, self.model_adapter, save_path=None, device=self.device)
         for save_cfg in scene3_save_cfgs:
             save_cfg.set_save_directory.assert_not_called()
-
-    @patch("builtins.input", return_value="y")
-    @patch("msmodelslim.core.quant_service.multimodal_sd_v1.quant_service.load_cached_data_for_models")
-    @patch("msmodelslim.core.quant_service.multimodal_sd_v1.quant_service.to_device")
-    @patch("msmodelslim.core.quant_service.multimodal_sd_v1.quant_service.LayerWiseRunner")
-    def test_quant_process_enable_dump_false(self, mock_runner_cls, mock_to_device, mock_load_cache, mock_input):
-        """enable_dump=False 时不调用 load_cached_data_for_models，calib_data 为各 expert 对应 None；需交互确认后继续"""
-        self.model_adapter.init_model.return_value = {"": self.mock_model1}
-        self.model_adapter.model_args.task_config = ""
-        self.mock_quant_spec.multimodal_sd_config.dump_config.enable_dump = False
-        mock_to_device.side_effect = lambda x, _: x  # 透传，便于断言 calib_data 内容
-        mock_runner_cls.return_value = Mock()
-
-        captured_config = []
-
-        def capture_config(config):
-            captured_config.append(config)
-
-        with patch.object(self.service, "quantize_multi_expert_models", side_effect=capture_config):
-            self.service.quant_process(self.quant_config, self.model_adapter, self.save_path, self.device)
-
-        mock_load_cache.assert_not_called()
-        mock_input.assert_called_once()
-        assert len(captured_config) == 1
-        assert captured_config[0].calib_data == {"": None}
-        mock_to_device.assert_called_once()
-        call_args = mock_to_device.call_args[0]
-        assert call_args[0] == {"": None}
-
-    @patch("builtins.input", return_value="n")
-    @patch("msmodelslim.core.quant_service.multimodal_sd_v1.quant_service.load_cached_data_for_models")
-    @patch("msmodelslim.core.quant_service.multimodal_sd_v1.quant_service.LayerWiseRunner")
-    def test_quant_process_enable_dump_false_user_declines(self, mock_runner_cls, mock_load_cache, mock_input):
-        """enable_dump=False 时用户输入非 y，应抛出 UnsupportedError 并退出"""
-        self.model_adapter.init_model.return_value = {"": self.mock_model1}
-        self.model_adapter.model_args.task_config = ""
-        self.mock_quant_spec.multimodal_sd_config.dump_config.enable_dump = False
-        mock_runner_cls.return_value = Mock()
-
-        with pytest.raises(UnsupportedError) as excinfo:
-            self.service.quant_process(self.quant_config, self.model_adapter, self.save_path, self.device)
-
-        assert "enable_dump" in str(excinfo.value) or "dump" in str(excinfo.value).lower()
-        mock_load_cache.assert_not_called()

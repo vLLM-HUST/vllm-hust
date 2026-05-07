@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 """
 类型化配置工具，提供基类和装饰器协作实现插件式数据类
 
@@ -34,7 +15,7 @@ from typing import Type, cast, Any, Annotated, get_args, get_origin, ClassVar
 from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
 from msmodelslim.utils.exception import ToDoError
-from msmodelslim.utils.plugin.plugin_utils import load_plugin_config_class
+from msmodelslim.utils.plugin.plugin_utils import load_plugin_class
 
 
 class TypedConfig(BaseModel):
@@ -166,12 +147,8 @@ class TypedConfig(BaseModel):
         if not plugin_type:
             return cast('TypedConfig', handler(value))
 
-        # 加载插件配置类（load_plugin_config_class 已经验证了配置类是 BaseModel 的子类，找不到会抛出异常）
-        plugin_class = load_plugin_config_class(entry_point_group, plugin_type)
-
-        # 若返回的就是当前类（如单测 mock 直接返回本类），直接走默认校验，避免递归
-        if plugin_class is cls:
-            return cast('TypedConfig', handler(value))
+        # 加载插件类（load_plugin_class 已经验证了插件类是基类的子类，找不到会抛出异常）
+        plugin_class = load_plugin_class(entry_point_group, plugin_type, cls)
 
         # 使用 TypeAdapter 来验证并创建插件类实例
         # TypeAdapter 可以处理 dict、BaseModel 等输入，并返回对应的实例

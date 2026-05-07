@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 
 from typing import Any, Literal, Annotated, Optional, List
@@ -30,6 +24,7 @@ from msmodelslim.core.base.protocol import BatchProcessRequest
 from msmodelslim.ir.norm_bias import RMSNormBias
 from msmodelslim.processor.base import AutoSessionProcessor, AutoProcessorConfig
 from msmodelslim.utils.config_map import ConfigSet
+from msmodelslim.utils.exception import UnsupportedError
 from msmodelslim.utils.logging import get_logger, logger_setter
 from msmodelslim.utils.validation.value import validate_normalized_value, is_boolean
 
@@ -66,6 +61,7 @@ class SmoothQuantProcessor(BaseSmoothProcessor):
         
         # 初始化分布式辅助类（延迟到preprocess时创建，因为需要prefix信息）
         self.dist_helper = None
+    
 
     def apply_smooth_algorithm(self, subgraph_obj: Any, linear_names: List[str]) -> None:
         subgraph_type = SubgraphRegistry.get_name(type(subgraph_obj))
@@ -209,10 +205,8 @@ class SmoothQuantProcessor(BaseSmoothProcessor):
     def _validate_adapter_interface(self, adapter: object) -> None:
         """Validate that the adapter implements SmoothQuantInterface."""
         if not isinstance(adapter, SmoothQuantInterface):
-            get_logger().warning(
-                '%s does not implement SmoothQuantInterface. Fallback to default model adapter logic (hook-based auto-detect). '
-                'To use model-specific config, ensure %s inherits from SmoothQuantInterface and implements the methods defined by the interface',
-                adapter.__class__.__name__,
-                adapter.__class__.__name__
+            raise UnsupportedError(
+                f'{adapter.__class__.__name__} does not implement SmoothQuantInterface',
+                action=f'Please ensure {adapter.__class__.__name__} inherits from SmoothQuantInterface '
+                       f'and implements the methods defined by the interface'
             )
-            self.is_defalut_adapter = True

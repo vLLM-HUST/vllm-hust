@@ -1,44 +1,22 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 from dataclasses import field
-from enum import Enum
-from typing import Dict, List, Optional
+from typing import List
 
 from pydantic import Field, BaseModel
 
 from msmodelslim.core.quant_service.interface import BaseQuantConfig
-
-
-class ScenarioTagMatch(str, Enum):
-    """
-    Scenario tag match result for practice selection.
-
-    - NO_MATCH: verified scenarios are absent or none matches requested tags
-    - MATCH: found a scenario that contains all requested tags
-    - STANDBY: there are verified scenarios, but none matches; can be used as standby config
-    """
-
-    NO_MATCH = "no_match"
-    MATCH = "match"
-    STANDBY = 'standby'
 
 
 class Metadata(BaseModel):
@@ -51,9 +29,6 @@ class Metadata(BaseModel):
     label: dict = Field(default_factory=dict)
     # verified model types, e.g., ['LLaMa3.1-70B', 'Qwen2.5-72B']
     verified_model_types: List[str] = field(default_factory=list)
-    # verified_tags: Dict[model_type, List[List[tags]]]
-    # key: model_type; value: list of scenarios, each scenario is a list of tags (e.g. ["MindIE","Atlas_A2_Inference"], ["vLLM-Ascend","Atlas_A3_Inference"])
-    verified_tags: Dict[str, List[List[str]]] = Field(default_factory=dict)
 
 
 class PracticeConfig(BaseQuantConfig):
@@ -61,26 +36,3 @@ class PracticeConfig(BaseQuantConfig):
 
     def extract_quant_config(self) -> BaseQuantConfig:
         return self
-
-    def matches_scenario_tags(self, model_type: str, scenario_tags: Optional[List[str]]) -> ScenarioTagMatch:
-        """
-        Match scenario tags against verified tags for a model.
-
-        Returns:
-            - ScenarioTagMatch.NO_MATCH: no verified scenarios are available for this model_type.
-            - ScenarioTagMatch.MATCH: at least one verified scenario contains all requested scenario_tags.
-            - ScenarioTagMatch.STANDBY: verified scenarios exist, but none match requested tags.
-        """
-        model_scenario = getattr(self.metadata, 'verified_tags', None) or {}
-        scenarios = model_scenario.get(model_type, [])
-        if not scenarios:
-            return ScenarioTagMatch.NO_MATCH
-        if not scenario_tags:
-            return ScenarioTagMatch.MATCH
-            
-        user_lower = [t.lower() for t in scenario_tags]
-        for scenario_tags_list in scenarios:
-            scenario_lower = [str(t).lower() for t in scenario_tags_list]
-            if all(ut in scenario_lower for ut in user_lower):
-                return ScenarioTagMatch.MATCH
-        return ScenarioTagMatch.STANDBY

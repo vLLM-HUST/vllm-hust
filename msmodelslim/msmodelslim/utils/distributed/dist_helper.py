@@ -1,51 +1,23 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 from enum import Enum
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-
-
-def is_rank_zero() -> bool:
-    """
-    判断当前进程是否是 rank 0
-
-    在多卡量化时，通常只需要 rank 0 进行信息提取、日志记录、模型保存等操作。
-
-    Returns:
-        bool: 如果是 rank 0 或未初始化分布式环境，返回 True；否则返回 False
-
-    Examples:
-        >>> if is_rank_zero():
-        >>>     # 只在 rank 0 上执行
-        >>>     print("Saving model...")
-        >>>     model.save()
-    """
-    if not dist.is_available():
-        return True
-    if not dist.is_initialized():
-        return True
-    return dist.get_rank() == 0
 
 
 class Scope(Enum):

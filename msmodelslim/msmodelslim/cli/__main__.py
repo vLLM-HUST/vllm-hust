@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 import argparse
 
 import msmodelslim # do NOT remove, to trigger the patches
@@ -27,7 +8,7 @@ from msmodelslim.utils.config import msmodelslim_config
 from msmodelslim.utils.logging import set_logger_level
 from msmodelslim.utils.validation.conversion import convert_to_bool
 
-FAQ_HOME = "gitcode repo: Ascend/msmodelslim, wiki"
+FAQ_HOME = "gitcode repo: Ascend/msit/msmodelslim, wiki"
 MIND_STUDIO_LOGO = "[Powered by MindStudio]"
 
 
@@ -55,8 +36,6 @@ def main():
                               help="Target device specification for quantization. "
                                    "Format: 'device_type' or 'device_type:index1,index2,...' "
                                    "(e.g., 'npu', 'npu:0,1,2,3', 'cpu'). "
-                                   "Note: Format 'device_type:index1,index2,...' is only supported "
-                                   "when apiversion is 'modelslim_v1'. "
                                    "Default: 'npu' (single device)")
     quant_parser.add_argument('--config_path', type=str,
                               help="Explicit path to quantization config file")
@@ -65,12 +44,6 @@ def main():
     quant_parser.add_argument('--trust_remote_code', type=convert_to_bool, default=False,
                               help="Trust custom code (bool type, must be True or False). "
                                    "Please ensure the security of the loaded custom code file.")
-    quant_parser.add_argument("--debug", action="store_true",
-                              help="Enable debug mode for context recording")
-    quant_parser.add_argument('--tag', nargs='*', default=None,
-                              help="Optional tag to match configs with verified scenario tags (e.g. mindie Atlas_A2_Inference, vllm cpu). "
-                                   "User can add multiple tags; matching requires all tags to appear in the same scenario."
-                                   "If user specifies this parameter but does not provide a hardware type tag, the current device type will be matched automatically.")
 
     # Analyze command
     analysis_parser = subparsers.add_parser('analyze', help='Model quantization sensitivity analyze tool')
@@ -88,7 +61,7 @@ def main():
                                  type=AnalysisMetrics,
                                  default=AnalysisMetrics.KURTOSIS,
                                  choices=AnalysisMetrics,
-                                 help='Analysis metrics to use: std, quantile, kurtosis, attention_mse, mse_model_wise (default: kurtosis)')
+                                 help='Analysis metrics to use: std, quantile, kurtosis (default: kurtosis)')
     analysis_parser.add_argument('--calib_dataset', type=str, default='boolq.jsonl',
                                  help='Calibration dataset file path or filename in lab_calib directory. '
                                       'Supports .json and .jsonl formats (default: boolq.jsonl)')
@@ -113,8 +86,6 @@ def main():
                               help="Target device specification for quantization. "
                                    "Format: 'device_type' or 'device_type:index1,index2,...' "
                                    "(e.g., 'npu', 'npu:0,1,2,3', 'cpu'). "
-                                   "Note: Format 'device_type:index1,index2,...' is only supported "
-                                   "when apiversion is 'modelslim_v1'. "
                                    "Default: 'npu' (single device)")
     tuning_parser.add_argument('--timeout', type=str, default=None,
                                help='Timeout for tuning, e.g. 1D, 2H, 3D4H')

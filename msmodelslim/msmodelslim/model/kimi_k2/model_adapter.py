@@ -1,28 +1,5 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-"""
--------------------------------------------------------------------------
-Copyright 2023 DeepSeek-AI and The HuggingFace Inc. team. All rights reserved.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-This code is based on EleutherAI's GPT-NeoX library and the GPT-NeoX
-and OPT implementations in this library. It has been modified from its
-original forms to accommodate minor architectural differences compared
-to GPT-NeoX and OPT used by the Meta AI team that trained the model.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
--------------------------------------------------------------------------
-"""
+# Copyright 2023 DeepSeek-AI and The HuggingFace Inc. team. All rights reserved.
+# Copyright 2023 DeepSeek-AI and The HuggingFace Inc. team
 
 import os.path
 from collections import defaultdict
@@ -37,12 +14,13 @@ from safetensors import safe_open
 from torch import distributed as dist
 from tqdm import tqdm
 
-from msmodelslim import ir as qir
 from msmodelslim.core.base.protocol import ProcessRequest
 from msmodelslim.core.const import DeviceType
 from msmodelslim.core.graph import AdapterConfig, MappingConfig, FusionConfig
 from msmodelslim.model.common.layer_wise_forward import generated_decoder_layer_visit_func, \
     TransformersForwardBreak
+from msmodelslim.model.common.transformers import TransformersModel
+from msmodelslim import ir as qir
 from msmodelslim.utils.exception import InvalidModelError
 from msmodelslim.utils.logging import logger_setter, get_logger
 from msmodelslim.utils.security import json_safe_load, json_safe_dump, get_valid_read_path, MAX_READ_FILE_SIZE_32G
@@ -50,7 +28,6 @@ from msmodelslim.utils.security.model import SafeGenerator
 from .convert_fp8_to_bf16 import auto_convert_module_fp8_to_bf16
 from .mtp_quant_module import get_mtp_layer, wrap_mtp_decoder
 from .quarot import get_ln_fuse_map, get_rotate_map
-from ..default.model_adapter import DefaultModelAdapter
 from ..interface_hub import ModelInfoInterface, ModelSlimPipelineInterfaceV1, IterSmoothInterface, \
     FlexSmoothQuantInterface, QuaRotInterface, AscendV1SaveInterface
 
@@ -67,14 +44,14 @@ def default_dtype(dtype):
 
 
 @logger_setter("msmodelslim.model.kimi_k2")
-class KimiK2ModelAdapter(DefaultModelAdapter,
-                         ModelInfoInterface,  # support naive quantization
-                         ModelSlimPipelineInterfaceV1,  # support modelslim v1
-                         IterSmoothInterface,  # support iter smooth
-                         FlexSmoothQuantInterface,  # support flex smooth quant
-                         QuaRotInterface,
-                         AscendV1SaveInterface,
-                         ):
+class KimiK2ModelAdapter(TransformersModel,
+                             ModelInfoInterface,  # support naive quantization
+                             ModelSlimPipelineInterfaceV1,  # support modelslim v1
+                             IterSmoothInterface,  # support iter smooth
+                             FlexSmoothQuantInterface,  # support flex smooth quant
+                             QuaRotInterface,
+                             AscendV1SaveInterface,
+                             ):
     def get_model_type(self) -> str:
         return self.model_type
 

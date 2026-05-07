@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 from typing import Optional
 
@@ -49,12 +43,7 @@ class ActPerTensorMinmax(AutoActQuantizer):
     def __init__(self, config: QConfig):
         super().__init__()
         self.config = config
-        aggregation_type = config.ext.get("aggregation_type", "max")
-        minmax_config = MinMaxObserverConfig(
-            dim=[],
-            keepdim=False,
-            aggregation_type=aggregation_type
-        )
+        minmax_config = MinMaxObserverConfig.model_validate({})
         self.minmax_observer = MsMinMaxObserver(minmax_config)
         self.q_param: Optional[QParam] = None
 
@@ -90,11 +79,7 @@ class ActPerTokenMinmax(AutoActQuantizer):
     def __init__(self, config: QConfig):
         super().__init__()
         self.config = config
-        minmax_config = MinMaxObserverConfig(
-            dim=[],
-            keepdim=False,
-            aggregation_type="max"
-        )
+        minmax_config = MinMaxObserverConfig.model_validate({})
         self.minmax_observer = MsMinMaxObserver(minmax_config)
         self.q_param: Optional[QParam] = None
 
@@ -112,12 +97,6 @@ class ActPerTokenMinmax(AutoActQuantizer):
             symmetric=self.config.symmetric,
         )
         return fake_quantize(QStorage(dtype=QDType.FLOAT, value=x), self.q_param).value.reshape(x_shape)
-
-    def is_data_free(self) -> bool:
-        """
-        激活值按照per_token量化时返回True
-        """
-        return True
 
     def get_q_param(self) -> QParam:
         if self.q_param is None:
@@ -137,12 +116,7 @@ class ActPerChannelMinmax(AutoActQuantizer):
     def __init__(self, config: QConfig):
         super().__init__()
         self.config = config
-        aggregation_type = config.ext.get("aggregation_type", "max")
-        minmax_config = MinMaxObserverConfig(
-            dim=[0],
-            keepdim=False,
-            aggregation_type=aggregation_type
-        )
+        minmax_config = MinMaxObserverConfig(dim=0, keepdim=False)
         self.minmax_observer = MsMinMaxObserver(minmax_config)
         self.q_param: Optional[QParam] = None
 
@@ -179,19 +153,9 @@ class ActPDMixMinmax(AutoActQuantizer):
     def __init__(self, config: QConfig):
         super().__init__()
         self.config = config
-        aggregation_type = config.ext.get("aggregation_type", "max")
-        prefilling_config = MinMaxObserverConfig(
-            dim=[],
-            keepdim=False,
-            aggregation_type="max"
-        )
-        decoding_config = MinMaxObserverConfig(
-            dim=[],
-            keepdim=False,
-            aggregation_type=aggregation_type
-        )
-        self.prefilling_observer = MsMinMaxObserver(prefilling_config)
-        self.decoding_observer = MsMinMaxObserver(decoding_config)
+        minmax_config = MinMaxObserverConfig.model_validate({})
+        self.prefilling_observer = MsMinMaxObserver(minmax_config)
+        self.decoding_observer = MsMinMaxObserver(minmax_config)
         self.q_param: Optional[QParam] = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -231,6 +195,7 @@ class ActPDMixMinmax(AutoActQuantizer):
     dispatch_key=[
         (qir.int8_per_channel_sym, "minmax"),
         (qir.int4_per_channel_sym, "minmax"),
+        (qir.int4_per_channel_sym, "minmax"),
         (qir.fp8_e4m3_per_channel_sym, "minmax"),
     ],
     abc_type=AutoWeightQuantizer
@@ -239,11 +204,7 @@ class ActPDMixMinmax(AutoActQuantizer):
 class WeightPerChannelMinmax(AutoWeightQuantizer):
     def __init__(self, config: QConfig):
         super().__init__()
-        minmax_config = MinMaxObserverConfig(
-            dim=[0],
-            keepdim=False,
-            aggregation_type="max"
-        )
+        minmax_config = MinMaxObserverConfig(dim=0, keepdim=False)
         self.config = config
         self.minmax_observer = MsMinMaxObserver(minmax_config)
         self.weight: Optional[QStorage] = None
@@ -387,9 +348,3 @@ class MXActPerBlockMinmax(AutoActQuantizer):
         if self.q_param is None:
             return QParam(scheme=self.config.to_scheme())
         return self.q_param
-    
-    def is_data_free(self) -> bool:
-        """
-        mxfp8、mxfp4的per_block量化为data free场景
-        """
-        return True

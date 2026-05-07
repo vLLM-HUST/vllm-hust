@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright Huawei Technologies Co., Ltd. 2023-2024. All rights reserved.
 import os
 import json
 import shutil
@@ -25,8 +6,8 @@ import stat
 import torch
 import torch.utils.data
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from msmodelslim.pytorch.llm_ptq.anti_outlier import AntiOutlier, AntiOutlierConfig
-from msmodelslim.pytorch.llm_ptq.llm_ptq_tools import Calibrator, QuantConfig
+from modelslim.pytorch.llm_ptq.anti_outlier import AntiOutlier, AntiOutlierConfig
+from modelslim.pytorch.llm_ptq.llm_ptq_tools import Calibrator, QuantConfig
 
 IN_MODEL_PATH = f"{os.environ['PROJECT_PATH']}/resource/llm_ptq/llama2_7b/"
 OUT_MODEL_PATH = f"{os.environ['PROJECT_PATH']}/output/llm_ptq_bf16"

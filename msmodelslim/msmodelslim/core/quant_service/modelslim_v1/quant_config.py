@@ -1,26 +1,19 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 from pydantic import BaseModel, Field
-from typing import List, Optional
 from typing_extensions import Self
 
 from msmodelslim.core.const import RunnerType
@@ -29,15 +22,8 @@ from .save.saver import AutoSaverConfigList
 from ..interface import BaseQuantConfig
 
 
-class PriorStageConfig(BaseModel):
-    """前置阶段配置：仅 process + dataset，用于如 adapt_rotation stage1 等先验阶段。"""
-    process: AutoProcessorConfigList = Field(default_factory=list, description="该阶段处理器列表")
-    dataset: Optional[str] = Field(default=None, description="该阶段数据集名称，不提供则使用 spec.dataset")
-
-
 class ModelslimV1ServiceConfig(BaseModel):
     runner: RunnerType = RunnerType.AUTO
-    prior: List[PriorStageConfig] = Field(default_factory=list, description="前置阶段列表，每阶段含 process 与 dataset")
     process: AutoProcessorConfigList = Field(default_factory=list)
     save: AutoSaverConfigList = Field(default_factory=list)
     dataset: str = Field(default='mix_calib.jsonl')

@@ -1,29 +1,17 @@
-"""
-Copyright (c) Microsoft Corporation.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-Licensed under the MIT License.
-
-Name:    mx_ops.py
-
-Pytorch methods for MX quantization.
-
-Usage Notes:
- - Use the "Exposed Methods" below to implement autograd functions
- - Use autograd functions to then implement torch.nn.Module(s)
- - Do *not* use methods in this file in Modules, they have no defined
-   backwards pass and will block gradient computation.
- - Avoid importing internal function if at all possible.
-
-Exposed Methods:
-    quantize_mx_op - quantizes a tensor to MX format.
-
-Internal Methods:
-    _safe_lshift, _safe_rshift - fp16 compatible shifts
-    _shared_exponents - Returns MX shared exponent for the passed tensor
-    _reshape_to_blocks - tiles a tensor by splitting one dim into two
-    _undo_reshape_to_blocks - undos the above reshaping
-    _quantize_mx - quantizes a tensor to MX format
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 import torch
 from msmodelslim.utils.exception import SchemaValidateError

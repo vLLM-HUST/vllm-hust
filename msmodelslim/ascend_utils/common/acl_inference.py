@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright Huawei Technologies Co., Ltd. 2022-2022. All rights reserved.
 
 import time
 from collections import namedtuple
@@ -137,12 +118,6 @@ class AclInference:
             _check_ret("acl.rt.create_context", ret)
             logger.info(f"end to create_context")
 
-        except Exception as e:
-            logger.error("Failed to create ACL runtime context: %s", e)
-            self.release_resource()
-            raise
-
-        try:
             self.model_id, ret = acl.mdl.load_from_file(self.model_path)
             _check_ret("acl.mdl.load_from_file", ret)
 
@@ -160,6 +135,11 @@ class AclInference:
             if any([ii.shape is None for ii in self.outputs]):
                 raise ValueError("model dynamic input or output currently not supported")
 
+            self.input_data_buffer = self._init_input_device_buffer()
+            self.output_data_buffer = self._init_output_device_buffer()
+            self.output_host_bytes_data, self.output_host_buffer = self._init_output_host_buffer()
+            self.execute_time_ms = 0  # Recording the latest executing time
+            self._init_success = True
 
         except Exception as e:
             # -------------------------- 异常时提示，由finally释放已分配资源 --------------------------
@@ -171,12 +151,6 @@ class AclInference:
             if not self._init_success:
                 # 释放内存资源（后分配先释放）
                 self.release_resource()
-
-        self.input_data_buffer = self._init_input_device_buffer()
-        self.output_data_buffer = self._init_output_device_buffer()
-        self.output_host_bytes_data, self.output_host_buffer = self._init_output_host_buffer()
-        self.execute_time_ms = 0  # Recording the latest executing time
-        self._init_success = True
 
     def __call__(self, input_data):
         acl.rt.set_context(self.context)

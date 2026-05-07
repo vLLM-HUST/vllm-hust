@@ -1,37 +1,31 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
-
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 from typing import List, Optional, Literal
 
-from pydantic import Field, ConfigDict, model_validator
-from torch import distributed as dist
+from pydantic import Field, ConfigDict
 from torch import nn
+from torch import distributed as dist
 
-from msmodelslim.core.base.protocol import BatchProcessRequest
-from msmodelslim.core.quantizer.linear import LinearQuantizer, LinearQConfig
+from msmodelslim.ir.qal import QScope, QDType
 from msmodelslim.ir.qal.qregistry import QABCRegistry
+from msmodelslim.core.base.protocol import BatchProcessRequest
 from msmodelslim.processor.base import AutoSessionProcessor, AutoProcessorConfig
+from msmodelslim.core.quantizer.linear import LinearQuantizer, LinearQConfig
 from msmodelslim.utils.config_map import ConfigSet
-from msmodelslim.utils.distributed import DistHelper
 from msmodelslim.utils.logging import get_logger, logger_setter
+from msmodelslim.utils.distributed import DistHelper
 
 
 class LinearProcessorConfig(AutoProcessorConfig):
@@ -41,12 +35,6 @@ class LinearProcessorConfig(AutoProcessorConfig):
     exclude: List[str] = Field(default_factory=lambda: [], description="排除的模块名称")
 
     model_config = ConfigDict(extra="forbid")
-
-    @model_validator(mode='after')
-    def validate_qconfig(self) -> 'LinearProcessorConfig':
-        """校验qconfig字段中的量化配置"""
-        LinearQuantizer(self.qconfig).validate_config()
-        return self
 
 
 def _warning_unmatched_pattern(name: str, config_set: ConfigSet) -> None:
@@ -70,18 +58,19 @@ class LinearQuantProcessor(AutoSessionProcessor):
         self.config = config
         self.include = ConfigSet(config.include)
         self.exclude = ConfigSet(config.exclude)
-
+        
         self.dist_helper = None
 
     def is_data_free(self) -> bool:
-        """
-        判断是否是data free场景
-        通过检查 LinearQuantizer 是否data free场景
-        
-        Returns:
-            bool: 是否data free场景
-        """
-        return LinearQuantizer(self.config.qconfig).is_data_free()
+        if self.config.qconfig.act.scope == QScope.PER_TOKEN:
+            return True
+        elif (
+            self.config.qconfig.act.dtype in [QDType.MXFP8, QDType.MXFP4]
+            and self.config.qconfig.act.scope == QScope.PER_BLOCK
+        ):
+            return True
+        else:
+            return False 
 
     def support_distributed(self) -> bool:
         """
@@ -142,10 +131,10 @@ class LinearQuantProcessor(AutoSessionProcessor):
             module: 线性层模块
         """
         quantizer = LinearQuantizer(self.config.qconfig)
-
+        
         # 判断是否需要启用同步操作
         if self.dist_helper is not None and self.dist_helper.is_shared(full_name):
             quantizer.enable_sync()
-
+        
         quantizer.setup(module)
-        self.model.set_submodule(full_name, quantizer)
+        self.model.set_submodule(full_name, quantizer)  

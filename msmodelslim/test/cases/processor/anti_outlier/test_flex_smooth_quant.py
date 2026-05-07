@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# -*- coding: utf-8 -*-
+# Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 # 标准库导入
 from unittest.mock import Mock
@@ -26,12 +20,14 @@ from unittest.mock import Mock
 import torch
 
 # 应用程序自定义模块导入
-from msmodelslim.processor.anti_outlier.common.subgraph_type import (
+from msmodelslim.ir.qal.qtypes import (
+    LinearLinearSubgraph,
+    NormLinearSubgraph,
+    OVSubgraph,
     UpDownSubgraph,
 )
 from msmodelslim.processor.anti_outlier.common.smooth_types import FlexSmoothQuantConfig
 from msmodelslim.processor.anti_outlier.common import SmoothContext
-from msmodelslim.processor.anti_outlier.common.subgraph_type import LinearLinearSubgraph, NormLinearSubgraph, OVSubgraph
 from msmodelslim.processor.anti_outlier.flex_smooth.alpha_beta_search import (
     FlexSmoothAlphaBetaSearcher,
     quant_int8asym,
@@ -476,7 +472,6 @@ class TestFlexSmoothImplNormLinear:
         subgraph = Mock(spec=NormLinearSubgraph)
         subgraph.norm = Mock()
         subgraph.linears = [Mock(), Mock()]  # 多个线性层
-        subgraph.linear_names = ["name0", "name1"]
         
         # 设置权重
         for linear in subgraph.linears:

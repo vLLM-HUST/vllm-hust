@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# -*- coding: utf-8 -*-
+# Copyright (c) 2024-2024 Huawei Technologies Co., Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from typing import List
 
@@ -25,7 +19,6 @@ import pytest
 import torch.nn as nn
 
 from msmodelslim.core.graph.adapter_types import AdapterConfig, MappingConfig, FusionConfig
-from msmodelslim.core.base.protocol import BatchProcessRequest
 from msmodelslim.processor.anti_outlier.iter_smooth import IterSmoothProcessor, IterSmoothProcessorConfig
 from msmodelslim.processor.anti_outlier.iter_smooth.interface import IterSmoothInterface
 from msmodelslim.utils.exception import SchemaValidateError, UnsupportedError
@@ -52,7 +45,7 @@ class MockAdapterWithIncompleteConfig(IterSmoothInterface):
 
     def get_adapter_config_for_subgraph(self) -> List[AdapterConfig]:
         # 缺少subgraph_type
-        return [AdapterConfig(subgraph_type=None, mapping=MappingConfig(targets=["layer2"], source="layer1"))]
+        return [AdapterConfig(subgraph_type=None, mapping=MappingConfig("layer1", ["layer2"]))]
 
 
 class MockAdapterWithoutMapping(IterSmoothInterface):
@@ -71,7 +64,7 @@ class MockAdapterWithIncompleteFusion(IterSmoothInterface):
         fusion_config = FusionConfig(fusion_type="qkv", num_attention_heads=None, num_key_value_heads=None)
         return [AdapterConfig(
             subgraph_type="norm-linear",
-            mapping=MappingConfig(targets=["layer2"], source="layer1"),
+            mapping=MappingConfig("layer1", ["layer2"]),
             fusion=fusion_config
         )]
 
@@ -85,10 +78,12 @@ class TestIterSmoothProcessor:
         config = IterSmoothProcessorConfig()
         adapter = MockAdapterWithoutInterface()
 
-        # 现在行为：不再抛出异常，而是记录警告并回退到默认适配器逻辑
-        processor = IterSmoothProcessor(model, config, adapter)
-        assert isinstance(processor, IterSmoothProcessor)
-        assert processor.is_defalut_adapter is True
+        # 在__init__时就会检查adapter是否实现IterSmoothInterface
+        with pytest.raises(UnsupportedError) as exc_info:
+            processor = IterSmoothProcessor(model, config, adapter)
+
+        assert "MockAdapterWithoutInterface does not implement IterSmoothInterface" in str(exc_info.value)
+        assert "Please ensure MockAdapterWithoutInterface inherits from IterSmoothInterface" in str(exc_info.value)
 
     def test_adapter_missing_subgraph_type(self):
         """测试用例2：用户adapter不配置subgraph_type"""
@@ -96,9 +91,11 @@ class TestIterSmoothProcessor:
         config = IterSmoothProcessorConfig()
         adapter = MockAdapterWithIncompleteConfig()
 
-        # 现在 AdapterConfig 在构造阶段就会校验 subgraph_type，并抛出 ValueError
+        processor = IterSmoothProcessor(model, config, adapter)
+
+        # 在pre_run时调用adapter.get_adapter_config_for_subgraph()会触发AdapterConfig验证
         with pytest.raises(ValueError) as exc_info:
-            _ = adapter.get_adapter_config_for_subgraph()
+            processor.pre_run()
 
         assert "subgraph_type is required" in str(exc_info.value)
 
@@ -123,9 +120,11 @@ class TestIterSmoothProcessor:
         config = IterSmoothProcessorConfig()
         adapter = MockAdapterWithIncompleteFusion()
 
-        # FusionConfig 在构造阶段会校验必要字段，并抛出 ValueError
+        processor = IterSmoothProcessor(model, config, adapter)
+
+        # 在pre_run时调用adapter.get_adapter_config_for_subgraph()会触发FusionConfig验证
         with pytest.raises(ValueError) as exc_info:
-            _ = adapter.get_adapter_config_for_subgraph()
+            processor.pre_run()
 
         assert "QKV融合类型必须提供num_attention_heads和num_key_value_heads" in str(exc_info.value)
 
@@ -271,23 +270,6 @@ class TestIterSmoothProcessor:
         # 检查错误信息
         error_str = str(exc_info.value)
         assert "exclude" in error_str.lower() or "string" in error_str.lower()
-
-    def test_adapter_config_valid_for_subgraph_types(self):
-        """AdapterConfig 可正常创建，子图处理顺序由 BaseSmoothProcessor.SUBGRAPH_PRIORITY 决定。"""
-        for subgraph_type in ["up-down", "ov", "norm-linear", "linear-linear"]:
-            config = AdapterConfig(
-                subgraph_type=subgraph_type,
-                mapping=MappingConfig(targets=["layer1"], source="layer0"),
-            )
-            assert config.subgraph_type == subgraph_type
-            assert config.mapping.targets == ["layer1"]
-            assert config.mapping.source == "layer0"
-
-    def test_mapping_config_source_optional(self):
-        """MappingConfig.source 可选，非融合场景下为 None（仅配置 targets）。"""
-        mapping = MappingConfig(targets=["layer1", "layer2"], source=None)
-        assert mapping.source is None
-        assert mapping.targets == ["layer1", "layer2"]
 
 
 if __name__ == "__main__":

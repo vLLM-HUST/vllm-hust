@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright Huawei Technologies Co., Ltd. 2025. All rights reserved.
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -68,8 +49,7 @@ class YamlDatabase:
                                       action='Please make sure the key is a string')
 
         if isinstance(value, BaseModel):
-            # mode='json'：Decimal 等在 PyYAML safe_dump 中会 RepresenterError
-            value = value.model_dump(mode="json")
+            value = value.model_dump()
 
         value_file = self.config_dir / f"{key}.yaml"
         yaml_safe_dump(value, str(value_file))

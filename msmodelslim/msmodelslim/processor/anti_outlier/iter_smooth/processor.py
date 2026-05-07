@@ -1,23 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2024-2024 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 
 from typing import Callable, Any, Literal, Annotated, Optional, List, Dict
@@ -29,13 +23,11 @@ from pydantic import AfterValidator, Field
 from msmodelslim.ir.qal.qregistry import QABCRegistry
 from msmodelslim.core.base.protocol import BatchProcessRequest
 from msmodelslim.ir.norm_bias import RMSNormBias
-from msmodelslim.ir.rms_norm import RMSNorm
 from msmodelslim.processor.base import AutoSessionProcessor, AutoProcessorConfig
 from msmodelslim.core.observer import MsMinMaxObserver, MinMaxObserverConfig
 from msmodelslim.utils.distributed import DistHelper
+from msmodelslim.utils.exception import UnsupportedError
 from msmodelslim.utils.logging import get_logger, logger_setter
-from msmodelslim.ir.non_fusion_smooth_quant_ir import NonFusionSmoothQuantHookIR
-from msmodelslim.processor.anti_outlier.common.subgraph_type import NonFusionSubgraph
 from msmodelslim.utils.validation.value import validate_normalized_value, is_boolean, is_string_list
 
 from ..common import (
@@ -181,13 +173,7 @@ class IterSmoothProcessor(BaseSmoothProcessor):
             )
             return
 
-        scales = iter_smooth(subgraph_obj, iter_smooth_cfg, smooth_context)
-        if scales is not None and isinstance(subgraph_obj, NonFusionSubgraph):
-            for linear_module in subgraph_obj.linears:
-                hook_ir = NonFusionSmoothQuantHookIR(scales)
-                hook_handle = linear_module.register_forward_pre_hook(hook_ir)
-                hook_ir.set_hook_handle(hook_handle)
-        
+        iter_smooth(subgraph_obj, iter_smooth_cfg, smooth_context)
         get_logger().info(
             "Successfully applied IterSmooth to %s subgraph (shift=%s)", subgraph_type, shift_value
         )
@@ -259,38 +245,37 @@ class IterSmoothProcessor(BaseSmoothProcessor):
 
     def _replace_norm_modules(self) -> None:
         for adapter_config in self.adapter_config:
-            if adapter_config.subgraph_type != "norm-linear":
-                continue
-            norm_name = adapter_config.mapping.source
-            norm_module = self.model.get_submodule(norm_name) if norm_name else None
-            if not norm_name or norm_module is None:
-                continue
-            if not hasattr(norm_module, 'weight'):
-                get_logger().warning("Norm module %s does not have weight attribute", norm_name)
-                continue
-            try:
-                hidden_size = norm_module.weight.shape[-1]
-                need_bias = not self.config.symmetric or hasattr(norm_module, 'bias')
-
-                norm_bias = RMSNormBias(hidden_size) if need_bias else RMSNorm(hidden_size)
-                norm_bias.weight.data.copy_(norm_module.weight.data)
-                norm_bias.weight.data = norm_bias.weight.data.type(norm_module.weight.data.dtype)
-                if hasattr(norm_module, 'bias') and norm_module.bias is not None:
-                    norm_bias.bias.data.copy_(norm_module.bias.data)
-                    norm_bias.bias.data = norm_bias.bias.data.type(norm_module.weight.data.dtype)
-                norm_bias.to(norm_module.weight.data.device)
-                self.model.set_submodule(norm_name, norm_bias)
-                get_logger().debug("%s: %s -> %s", norm_name, type(norm_module), type(norm_bias))
-            except Exception as e:
-                get_logger().warning("Failed to replace norm module %s: %s", norm_name, e)
+            if adapter_config.subgraph_type == "norm-linear":
+                norm_name = adapter_config.mapping.source
+                norm_module = self.model.get_submodule(
+                    norm_name) if norm_name else None
+                if norm_name and norm_module is not None:
+                    try:
+                        if hasattr(norm_module, 'weight'):
+                            norm_bias = RMSNormBias(
+                                norm_module.weight.shape[-1])
+                            norm_bias.weight.data.copy_(
+                                norm_module.weight.data)
+                            norm_bias.weight.data = norm_bias.weight.data.type(
+                                norm_module.weight.data.dtype)
+                            if hasattr(norm_module, 'bias') and norm_module.bias is not None:
+                                norm_bias.bias.data.copy_(
+                                    norm_module.bias.data)
+                                norm_bias.bias.data = norm_bias.bias.data.type(
+                                    norm_module.weight.data.dtype)
+                            norm_bias.to(norm_module.weight.data.device)
+                            self.model.set_submodule(norm_name, norm_bias)
+                            get_logger().debug("%s: %s -> %s", norm_name, type(norm_module), type(norm_bias))
+                        else:
+                            get_logger().warning("Norm module %s does not have weight attribute", norm_name)
+                    except Exception as e:
+                        get_logger().warning("Failed to replace norm module %s: %s", norm_name, e)
 
     def _validate_adapter_interface(self, adapter: object) -> None:
         """Validate that the adapter implements IterSmoothInterface."""
         if not isinstance(adapter, IterSmoothInterface):
-            get_logger().warning(
-                '%s does not implement IterSmoothInterface. Fallback to default model adapter logic (hook-based auto-detect). '
-                'To use model-specific config, ensure %s inherits from IterSmoothInterface and implements the methods defined by the interface',
-                adapter.__class__.__name__,
-                adapter.__class__.__name__
+            raise UnsupportedError(
+                f'{adapter.__class__.__name__} does not implement IterSmoothInterface',
+                action=f'Please ensure {adapter.__class__.__name__} inherits from IterSmoothInterface '
+                       f'and implements the methods defined by the interface'
             )
-            self.is_defalut_adapter = True

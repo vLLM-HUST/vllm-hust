@@ -1,23 +1,16 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 import json
 import time
@@ -30,28 +23,21 @@ from pydantic import BaseModel, Field, AfterValidator
 from msmodelslim.app.auto_tuning.evaluation_service_infra import EvaluateContext
 from msmodelslim.utils.exception import ConfigError
 from msmodelslim.utils.logging import logger_setter, get_logger
+from msmodelslim.utils.plugin import TypedConfig
 from msmodelslim.utils.security import AsyncProcess, build_safe_url, safe_get
 from msmodelslim.utils.validation.pydantic import (
     is_safe_host,
     is_safe_endpoint,
     is_port,
     greater_than_zero,
-    non_empty_string,
-    validate_str_length,
 )
+
+
 class VllmAscendConfig(BaseModel):
-    type: Literal['vllm-ascend'] = 'vllm-ascend'
-    entrypoint: Annotated[
-        str,
-        AfterValidator(non_empty_string),
-        AfterValidator(validate_str_length())
-    ] = "vllm.entrypoints.openai.api_server"
+    type: TypedConfig.TypeField = Literal['vllm-ascend']
+    entrypoint: str = "vllm.entrypoints.openai.api_server"
     env_vars: Dict = Field(default_factory=dict)
-    served_model_name: Annotated[
-        str,
-        AfterValidator(non_empty_string),
-        AfterValidator(validate_str_length())
-    ] = 'served_model_name'
+    served_model_name: str = 'served_model_name'
     host: Annotated[str, AfterValidator(is_safe_host)] = "localhost"
     port: Annotated[int, AfterValidator(is_port)] = 1234
     health_check_endpoint: Annotated[
@@ -166,7 +152,6 @@ class VllmAscendServer:
         options = {
             "-m": self.config.entrypoint,
             "--model": str(self.model_path),
-            "--host": self.config.host,
             "--port": str(self.config.port)
         }
 

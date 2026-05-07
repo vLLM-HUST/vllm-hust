@@ -1,30 +1,23 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 """
 msmodelslim.utils.yaml_database 模块的单元测试
 """
 from pathlib import Path
 import yaml
 import pytest
-from unittest.mock import patch
 
 from msmodelslim.utils.exception import (
     SchemaValidateError,
@@ -103,38 +96,6 @@ def test_yaml_database_setitem_invalid_key_type(tmp_path: Path):
         db[123] = {"key": "value"}  # 使用整数作为键
 
     assert exc_info.value.action == "Please make sure the key is a string"
-
-
-def test_yaml_database_setitem_pass_json_safe_dict_to_yaml_dump_when_basemodel_has_decimal_field(
-    tmp_path: Path,
-):
-    """
-    Python 模式 model_dump 会保留 Decimal，直接 yaml_safe_dump 会 RepresenterError；
-    __setitem__ 应先转为 JSON 兼容 dict（float）再交给 yaml_safe_dump。
-    不调用真实 yaml_safe_dump，避免 Windows 下 tmp 路径反斜杠与 get_valid_path 白名单冲突。
-    """
-    from decimal import Decimal
-
-    from msmodelslim.utils.yaml_database import YamlDatabase
-    from pydantic import BaseModel
-
-    class DecimalRecord(BaseModel):
-        """BaseModel 须在 import msmodelslim（含 patch_pydantic）之后绑定。"""
-        score: Decimal
-
-    captured: dict = {}
-
-    def _capture_dump(obj, path, *args, **kwargs):
-        captured["payload"] = obj
-        captured["path"] = path
-
-    with patch("msmodelslim.utils.yaml_database.yaml_safe_dump", side_effect=_capture_dump):
-        db = YamlDatabase(config_dir=tmp_path, read_only=False)
-        db["record"] = DecimalRecord(score=Decimal("0.95"))
-
-    # Pydantic v2：Decimal 在 mode='json' 中通常为字符串，避免 float 精度丢失
-    assert captured["payload"] == {"score": "0.95"}
-    yaml.safe_dump(captured["payload"])  # 断言：载荷无 Decimal，PyYAML 可接受
 
 
 # ------------------------------ 测试__contains__方法 ------------------------------

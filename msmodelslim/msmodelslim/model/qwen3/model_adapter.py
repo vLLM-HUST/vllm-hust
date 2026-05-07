@@ -1,55 +1,28 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
-
-from typing import List, Any, Generator, Dict
+from typing import List, Any, Generator
 
 from torch import nn
 
 from msmodelslim.core.base.protocol import ProcessRequest
 from msmodelslim.core.const import DeviceType
 from msmodelslim.core.graph.adapter_types import AdapterConfig, MappingConfig
-from msmodelslim.processor.anti_outlier.awq.interface import AWQInterface
 from msmodelslim.processor.kv_smooth import KVSmoothFusedType, KVSmoothFusedUnit
 from msmodelslim.processor.quarot import (
     QuaRotInterface,
-    LAOSOnlineRotationInterface
+    QuaRotOnlineInterface
 )
 from msmodelslim.utils.exception import InvalidModelError
 from msmodelslim.utils.logging import logger_setter, get_logger
 from ..common.layer_wise_forward import generated_decoder_layer_visit_func, transformers_generated_forward_func
-from ..default.model_adapter import DefaultModelAdapter
+from ..common.transformers import TransformersModel
 from ..interface_hub import ModelInfoInterface, ModelSlimPipelineInterfaceV0, ModelSlimPipelineInterfaceV1, \
     AnalyzePipelineInterface, KVSmoothFusedInterface, SmoothQuantInterface, IterSmoothInterface, \
-    FlexSmoothQuantInterface, AdaptRotationInterface
-
-from msmodelslim.processor.flat_quant import FlatQuantInterface
-from msmodelslim.processor.flat_quant.flat_quant_utils.structure_pair import(
-    AttnNormLinearPair, 
-    AttnLinearLinearPair, 
-    MLPNormLinearPair, 
-    MLPLinearLinearPair)
+    FlexSmoothQuantInterface
 
 
 @logger_setter()
-class Qwen3ModelAdapter(DefaultModelAdapter,
+class Qwen3ModelAdapter(TransformersModel,
                         ModelInfoInterface,
                         ModelSlimPipelineInterfaceV0,
                         ModelSlimPipelineInterfaceV1,
@@ -58,47 +31,9 @@ class Qwen3ModelAdapter(DefaultModelAdapter,
                         SmoothQuantInterface,
                         IterSmoothInterface,
                         FlexSmoothQuantInterface,
-                        AdaptRotationInterface,
-                        LAOSOnlineRotationInterface,
-                        FlatQuantInterface,
-                        AWQInterface
+                        QuaRotInterface,
+                        QuaRotOnlineInterface
                         ):
-    def get_flatquant_subgraph(self) ->  List[Dict[str, object]]:
-        """分析Qwen模型结构并注册所有相关的结构对。"""
-        attn_norm_linear_names = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
-        attn_linear_linear_names = ["self_attn.o_proj"]
-        mlp_norm_linear_names = ["mlp.gate_proj", "mlp.up_proj"]
-        mlp_linear_linear_names = ["mlp.down_proj"]
-        head_dim = getattr(self.config, "head_dim", self.config.hidden_size // self.config.num_attention_heads)
-        num_attention_heads = self.config.num_attention_heads
-        structure_configs = [
-            {
-                "source": "input_layernorm",
-                "targets": attn_norm_linear_names,
-                "pair_class": AttnNormLinearPair
-            },
-            {
-                "source": "self_attn.v_proj",
-                "targets": attn_linear_linear_names,
-                "pair_class": AttnLinearLinearPair,
-                "extra_config": {
-                    'head_dim': head_dim,
-                    'num_attention_heads': num_attention_heads
-                }
-            },
-            {
-                "source": "post_attention_layernorm",
-                "targets": mlp_norm_linear_names,
-                "pair_class": MLPNormLinearPair
-            },
-            {
-                "source": "mlp.up_proj",
-                "targets": mlp_linear_linear_names,
-                "pair_class": MLPLinearLinearPair
-            }
-        ]
-        return structure_configs
-
     def get_model_type(self) -> str:
         return self.model_type
 

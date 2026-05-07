@@ -1,34 +1,12 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-"""
--------------------------------------------------------------------------
-Copyright 2023 DeepSeek-AI and The HuggingFace Inc. team. All rights reserved.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
+# Copyright 2023 DeepSeek-AI and The HuggingFace Inc. team. All rights reserved.
+# Copyright 2023 DeepSeek-AI and The HuggingFace Inc. team
 
-This code is based on EleutherAI's GPT-NeoX library and the GPT-NeoX
-and OPT implementations in this library. It has been modified from its
-original forms to accommodate minor architectural differences compared
-to GPT-NeoX and OPT used by the Meta AI team that trained the model.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
--------------------------------------------------------------------------
-"""
 import os.path
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import lru_cache
 from importlib import import_module
-from typing import Any, List, Optional, Tuple, Generator, Dict, Union, Callable
+from typing import Any, List, Optional, Tuple, Generator, Dict, Union
 from unittest.mock import patch
 
 import torch
@@ -43,6 +21,7 @@ from msmodelslim.core.const import DeviceType
 from msmodelslim.core.graph import AdapterConfig, MappingConfig, FusionConfig
 from msmodelslim.model.common.layer_wise_forward import generated_decoder_layer_visit_func, \
     TransformersForwardBreak
+from msmodelslim.model.common.transformers import TransformersModel
 from msmodelslim.utils.exception import InvalidModelError
 from msmodelslim.utils.logging import logger_setter, get_logger
 from msmodelslim.utils.security import json_safe_load, json_safe_dump, get_valid_read_path, MAX_READ_FILE_SIZE_32G
@@ -50,10 +29,8 @@ from msmodelslim.utils.security.model import SafeGenerator
 from .convert_fp8_to_bf16 import auto_convert_module_fp8_to_bf16
 from .mtp_quant_module import remove_zero_and_shift, get_mtp_layer, wrap_mtp_decoder
 from .quarot import get_ln_fuse_map, get_rotate_map
-from ..default.model_adapter import DefaultModelAdapter
 from ..interface_hub import ModelInfoInterface, ModelSlimPipelineInterfaceV1, IterSmoothInterface, \
-    FlexSmoothQuantInterface, FA3QuantAdapterInterface, FA3QuantPlaceHolder, QuaRotInterface, AscendV1SaveInterface, \
-    AttentionAnalysisInterface
+    FlexSmoothQuantInterface, FA3QuantAdapterInterface, FA3QuantPlaceHolder, QuaRotInterface, AscendV1SaveInterface
 
 
 @contextmanager
@@ -68,8 +45,7 @@ def default_dtype(dtype):
 
 
 @logger_setter("msmodelslim.model.deepseek_v3")
-class DeepSeekV3ModelAdapter(DefaultModelAdapter,
-                             AttentionAnalysisInterface,
+class DeepSeekV3ModelAdapter(TransformersModel,
                              ModelInfoInterface,  # support naive quantization
                              ModelSlimPipelineInterfaceV1,  # support modelslim v1
                              IterSmoothInterface,  # support iter smooth
@@ -90,9 +66,6 @@ class DeepSeekV3ModelAdapter(DefaultModelAdapter,
             self.config.num_hidden_layers += 1
             origin_layers = self.config.num_hidden_layers
             get_logger().info(f"Model with {origin_layers} layers totally")
-
-            if dist.is_initialized():
-                self.config.ep_size = dist.get_world_size()
 
             # 临时设置为1层进行初始化
             self.config.num_hidden_layers = 1
@@ -236,10 +209,6 @@ class DeepSeekV3ModelAdapter(DefaultModelAdapter,
 
     def get_adapter_config_for_subgraph(self) -> List[AdapterConfig]:
         adapter_config = []
-        if hasattr(self.config, 'num_experts'):
-            expert_num = self.config.num_experts
-        elif hasattr(self.config, 'n_routed_experts') and hasattr(self.config, 'n_shared_experts'):
-            expert_num = self.config.n_routed_experts
         # mtp layer does not apply smooth due to the compatible with pre-refactor
         for layer_idx in range(self.config.num_hidden_layers - 1):
             # OKV_b融合的映射配置：o_proj -> kv_b_proj
@@ -288,51 +257,6 @@ class DeepSeekV3ModelAdapter(DefaultModelAdapter,
                     mapping=norm_linear_mapping_config2
                 ),
             ])
-
-            # 添加up-down的FFN配置
-            if layer_idx < self.config.first_k_dense_replace:
-                # Dense FFN 层
-                up_proj = 'model.layers.' + str(layer_idx) + '.mlp.up_proj'
-                down_proj = 'model.layers.' + str(layer_idx) + '.mlp.down_proj'
-                up_down_mapping_config = MappingConfig(
-                    source=up_proj,  # 上投影层
-                    targets=[down_proj]  # 下投影层
-                )
-                adapter_config.extend([
-                    AdapterConfig(
-                        subgraph_type="up-down",
-                        mapping=up_down_mapping_config
-                    ),
-                ])
-            else:
-                # MOE FFN 层：Shared Experts
-                expert_up_proj = 'model.layers.' + str(layer_idx) + '.mlp.shared_experts.up_proj'
-                expert_down_proj = 'model.layers.' + str(layer_idx) + '.mlp.shared_experts.down_proj'
-                up_down_mapping_config_shared = MappingConfig(
-                    source=expert_up_proj,
-                    targets=[expert_down_proj]
-                )
-                adapter_config.extend([
-                    AdapterConfig(
-                        subgraph_type="up-down",
-                        mapping=up_down_mapping_config_shared
-                    )
-                ])
-
-                # MOE FFN 层：Routed Experts
-                for expert in range(expert_num):
-                    up_proj = 'model.layers.' + str(layer_idx) + '.mlp.experts.' + str(expert) + '.up_proj'
-                    down_proj = 'model.layers.' + str(layer_idx) + '.mlp.experts.' + str(expert) + '.down_proj'
-                    up_down_mapping_config_expert = MappingConfig(
-                        source=up_proj,
-                        targets=[down_proj]
-                    )
-                    adapter_config.extend([
-                        AdapterConfig(
-                            subgraph_type="up-down",
-                            mapping=up_down_mapping_config_expert
-                        )
-                    ])
 
         return adapter_config
 
@@ -561,13 +485,3 @@ class DeepSeekV3ModelAdapter(DefaultModelAdapter,
             json_safe_dump(config_data, config_file, indent=2, check_user_stat=False)
 
         return
-
-    def get_attention_module_cls(self) -> str:
-        return "DeepseekV3Attention"
-
-    def get_attention_output_extractor(self) -> Callable[[Union[tuple, torch.Tensor]], torch.Tensor]:
-        """
-        DeepseekV3Attention.forward 返回 (attn_output, attn_weights, past_key_value)
-        注意力结构的敏感分析需要使用attn_output，因此返回lambda x: x[0]
-        """
-        return lambda x: x[0]

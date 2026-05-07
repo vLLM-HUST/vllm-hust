@@ -1,41 +1,21 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Tuple
-
-import torch
+from typing import Optional
 import torch.nn as nn
-
-
-class AscendV1GlobalModelDtypeInterface(ABC):
-    """Interface for adapters that expose the global model torch dtype (e.g. for Saver to decide deq_scale int64)."""
-
-    @abstractmethod
-    def get_global_model_torch_dtype(self) -> torch.dtype:
-        """
-        Return the global torch dtype used for model loading/calibration.
-        Used by Saver and other components to infer precision (e.g. whether bfloat16).
-        """
-        ...
 
 
 class AscendV1SaveInterface(ABC):
@@ -47,12 +27,6 @@ class AscendV1SaveInterface(ABC):
         """
         pass
 
-    def ascendv1_save_module_preprocess(self, prefix: str, module: nn.Module, model: nn.Module) -> Tuple[str, nn.Module]:
-        """
-        在保存模块前，对模块进行预处理，返回新的前缀和模块
-        @param prefix: 模块的前缀路径
-        @param module: 待处理的模块
-        @param model: 模型
-        @return: 返回(prefix, module)
-        """
+    def ascendv1_save_module_preprocess(self, prefix: str, module: nn.Module, model: nn.Module) -> Optional[nn.Module]:
         pass
+        

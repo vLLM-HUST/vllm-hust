@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright Huawei Technologies Co., Ltd. 2022-2022. All rights reserved.
 
 import re
 from collections import namedtuple
@@ -181,24 +162,12 @@ def decompose_weight_4d_tucker(source_input, hidden_out: int, hidden_in: int, in
     source_input = source_input.astype("float32")
     ranks = (hidden_out, hidden_in)
     if input_data is not None:
-        result = data_aware_decompose_4d(source_input, input_data=input_data, ranks=ranks)
-        if not isinstance(result, tuple) or len(result) != 2:
-            raise RuntimeError("data_aware_decompose_4d returned an unexpected result format.")
-
-        core, factors = result
-        if not isinstance(factors, (list, tuple)) or len(factors) != 2:
-            raise RuntimeError("Expected two factor matrices from data_aware_decompose_4d.")
-        last, first = factors
+        try:
+            core, [last, first] = data_aware_decompose_4d(source_input, input_data=input_data, ranks=ranks)
+        except Exception as e:
+            raise Exception("Error from decompose_weight_4d_tucker function.", e) from e
     else:
-        result = tucker(source_input, ranks=ranks, modes=[0, 1])
-        if not isinstance(result, tuple) or len(result) != 2:
-            raise RuntimeError("tucker decomposition returned an unexpected result format.")
-
-        core, factors = result
-        if not isinstance(factors, (list, tuple)) or len(factors) != 2:
-            raise RuntimeError("Expected two factor matrices from tucker decomposition.")
-        last, first = factors
-
+        core, [last, first] = tucker(source_input, ranks=ranks, modes=[0, 1])
     first = first.T[:, :, None, None]
     last = last[:, :, None, None]
     actual_hidden_out, actual_hidden_in = core.shape[0], core.shape[1]

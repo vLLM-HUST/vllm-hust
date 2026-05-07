@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 import sys
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -67,7 +48,6 @@ class PluginModelFactory(IModelFactory):
             trust_remote_code: bool = False,
     ) -> IModel:
         model_map = self._get_model_map()
-        model_name = model_type
 
         if model_type not in model_map:
             if DEFAULT in model_map:
@@ -86,7 +66,7 @@ class PluginModelFactory(IModelFactory):
         self._check_plugin_require_packages(model_type, adapter_class)
 
         adapter_instance = adapter_class(
-            model_type=model_name,
+            model_type=model_type,
             model_path=model_path,
             trust_remote_code=trust_remote_code,
         )

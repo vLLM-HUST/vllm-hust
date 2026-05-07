@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 from typing import Any, List
 
 from msmodelslim.utils.exception import SchemaValidateError, SecurityError
@@ -35,21 +16,9 @@ def greater_than_zero(v: Any, param_name: str = "value") -> Any:
     """
     校验数值是否大于 0，不强制区分类型（int/float 均可）。
     """
-    if not isinstance(v, (float, int)) or v <= 0:
+    if v <= 0:
         raise SchemaValidateError(
-            f"{param_name} must be int or float, and value need greater than 0",
-            action=f"Please check the numeric {param_name}",
-        )
-    return v
-
-
-def int_greater_than_zero(v: Any, param_name: str = "value") -> Any:
-    """
-    校验数值是否是int，且数值是否大于 0。
-    """
-    if not isinstance(v, int) or v <= 0:
-        raise SchemaValidateError(
-            f"{param_name} must be int, and value need greater than 0",
+            f"{param_name} must be greater than 0",
             action=f"Please check the numeric {param_name}",
         )
     return v
@@ -89,17 +58,17 @@ def is_string_list(v: Any, param_name="value") -> List[str]:
     return v
 
 
-def validate_str_length(input_str, str_name="string", max_len=300):
+def validate_str_length(input_str, str_name="string", max_len=4096):
     """
     校验输入字符串的长度是否在允许范围内
 
-    检查字符串长度是否超过指定的最大限制，默认最大长度为100字符。
+    检查字符串长度是否超过指定的最大限制，默认最大长度为4096字符。
     支持自定义字符串名称，报错信息将动态显示该名称，适配各类使用场景。
 
     参数:
         input_str: 需要进行长度校验的字符串
         str_name: 字符串的自定义名称，用于生成精准报错信息
-        max_len: 允许的最大长度（正整数，默认300）
+        max_len: 允许的最大长度（正整数，默认4096）
 
     异常:
         SecurityError: 当max_len不是正整数时抛出

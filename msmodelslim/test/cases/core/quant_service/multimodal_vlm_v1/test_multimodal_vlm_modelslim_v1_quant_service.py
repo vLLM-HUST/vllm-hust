@@ -1,23 +1,18 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+#! /usr/bin/env python3
+#  -*- coding: utf-8 -*-
+#  Copyright (c) 2025-2025 Huawei Technologies Co., Ltd.
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#  http://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 """
 Unit tests for `multimodal_vlm_v1.quant_service`.
@@ -35,17 +30,15 @@ from unittest.mock import Mock, MagicMock, patch, call
 
 import pytest
 
-from msmodelslim.core.const import RunnerType, DeviceType
 from msmodelslim.core.quant_service.interface import BaseQuantConfig
-from msmodelslim.core.quant_service.multimodal_vlm_v1.quant_config import MultimodalVLMModelslimV1QuantConfig
 from msmodelslim.core.quant_service.multimodal_vlm_v1.quant_service import (
     MultimodalVLMModelslimV1QuantService,
-    MultimodalVLMModelslimV1QuantServiceConfig,
+    MultimodalVLMModelslimV1QuantConfig,
 )
+from msmodelslim.core.const import RunnerType, DeviceType
 from msmodelslim.core.runner.pipeline_interface import PipelineInterface
-from msmodelslim.core.runner.optional_interface import LayerWiseOffloadOptionalInterface
 from msmodelslim.utils.exception import SchemaValidateError
-from msmodelslim.core.context import IContextFactory
+
 
 class TestMultimodalVLMModelslimV1QuantService:
     """测试 `MultimodalVLMModelslimV1QuantService` 的关键行为。"""
@@ -55,13 +48,7 @@ class TestMultimodalVLMModelslimV1QuantService:
         self.dataset_loader = Mock()
         self.dataset_loader.get_dataset_by_name.return_value = "mock_dataset"
 
-        # QuantService 初始化使用 QuantServiceConfig（仅 apiversion），不是 QuantConfig
-        self.quant_service_config = MultimodalVLMModelslimV1QuantServiceConfig()
-        self.context_factory = Mock(spec=IContextFactory)
-        self.service = MultimodalVLMModelslimV1QuantService(
-            self.quant_service_config, self.dataset_loader, 
-            self.context_factory
-        )
+        self.service = MultimodalVLMModelslimV1QuantService(self.dataset_loader)
 
         # 模型适配器使用 PipelineInterface 的 spec，确保类型检查分支可被命中
         self.model_adapter = Mock(spec=PipelineInterface)
@@ -78,36 +65,36 @@ class TestMultimodalVLMModelslimV1QuantService:
         "case_name, quant_cfg, model_adap, save_p, device, expected_msg",
         [
             (
-                    "invalid_quant_config",
-                    Mock(),  # 非 BaseQuantConfig
-                    Mock(spec=PipelineInterface),
-                    Path("test"),
-                    DeviceType.NPU,
-                    "task is not a BaseTask",
+                "invalid_quant_config",
+                Mock(),  # 非 BaseQuantConfig
+                Mock(spec=PipelineInterface),
+                Path("test"),
+                DeviceType.NPU,
+                "task is not a BaseTask",
             ),
             (
-                    "invalid_model_adapter",
-                    Mock(spec=BaseQuantConfig),
-                    Mock(),  # 非 PipelineInterface
-                    Path("test"),
-                    DeviceType.NPU,
-                    "model_adapter must be a PipelineInterface",
+                "invalid_model_adapter",
+                Mock(spec=BaseQuantConfig),
+                Mock(),  # 非 PipelineInterface
+                Path("test"),
+                DeviceType.NPU,
+                "model_adapter must be a PipelineInterface",
             ),
             (
-                    "invalid_save_path",
-                    Mock(spec=BaseQuantConfig),
-                    Mock(spec=PipelineInterface),
-                    "not-a-path",  # type: ignore[arg-type]
-                    DeviceType.NPU,
-                    "save_path must be a Path or None",
+                "invalid_save_path",
+                Mock(spec=BaseQuantConfig),
+                Mock(spec=PipelineInterface),
+                "not-a-path",  # type: ignore[arg-type]
+                DeviceType.NPU,
+                "save_path must be a Path or None",
             ),
             (
-                    "invalid_device",
-                    Mock(spec=BaseQuantConfig),
-                    Mock(spec=PipelineInterface),
-                    Path("test"),
-                    "invalid-device",  # type: ignore[arg-type]
-                    "device must be a DeviceType",
+                "invalid_device",
+                Mock(spec=BaseQuantConfig),
+                Mock(spec=PipelineInterface),
+                Path("test"),
+                "invalid-device",  # type: ignore[arg-type]
+                "device must be a DeviceType",
             ),
         ],
     )
@@ -170,11 +157,11 @@ class TestMultimodalVLMModelslimV1QuantService:
     @patch("msmodelslim.core.quant_service.multimodal_vlm_v1.quant_service.torch")
     @patch("msmodelslim.core.quant_service.multimodal_vlm_v1.quant_service.seed_all")
     def test_quant_process_full_flow_with_save_path_and_npu(
-            self,
-            mock_seed_all,
-            mock_torch,
-            mock_runner_cls,
-            mock_get_logger,
+        self,
+        mock_seed_all,
+        mock_torch,
+        mock_runner_cls,
+        mock_get_logger,
     ):
         """
         完整流程测试（带 save_path & NPU 设备）：
@@ -229,7 +216,7 @@ class TestMultimodalVLMModelslimV1QuantService:
             save_cfg.set_save_directory.assert_called_once_with(self.save_path)
 
         # Runner 创建与 Processor 注册
-        mock_runner_cls.assert_called_once_with(adapter=self.model_adapter, offload_device="cpu")
+        mock_runner_cls.assert_called_once_with(adapter=self.model_adapter)
         expected_calls = [call(processor_cfg=cfg) for cfg in process_cfgs + save_cfgs]
         runner.add_processor.assert_has_calls(expected_calls, any_order=False)
 
@@ -242,10 +229,10 @@ class TestMultimodalVLMModelslimV1QuantService:
     @patch("msmodelslim.core.quant_service.multimodal_vlm_v1.quant_service.LayerWiseRunner")
     @patch("msmodelslim.core.quant_service.multimodal_vlm_v1.quant_service.seed_all")
     def test_quant_process_without_save_path_and_non_layerwise_runner(
-            self,
-            mock_seed_all,
-            mock_runner_cls,
-            mock_get_logger,
+        self,
+        mock_seed_all,
+        mock_runner_cls,
+        mock_get_logger,
     ):
         """
         测试以下组合场景：
@@ -287,7 +274,7 @@ class TestMultimodalVLMModelslimV1QuantService:
             save_cfg.set_save_directory.assert_not_called()
 
         # Runner 仍然需要创建并执行
-        mock_runner_cls.assert_called_once_with(adapter=self.model_adapter, offload_device="cpu")
+        mock_runner_cls.assert_called_once_with(adapter=self.model_adapter)
         runner.add_processor.assert_has_calls(
             [call(processor_cfg=cfg) for cfg in process_cfgs],
             any_order=False,
@@ -297,100 +284,3 @@ class TestMultimodalVLMModelslimV1QuantService:
         # 非 layer_wise 的 runner 应触发 warning 日志
         mock_logger = mock_get_logger.return_value
         mock_logger.warning.assert_called_once()
-
-    @staticmethod
-    def _make_quant_config_for_offload_case():
-        spec = Mock()
-        spec.dataset = "cpu_dataset"
-        spec.default_text = "cpu prompt"
-        spec.process = []
-        spec.save = []
-        spec.runner = "layer_wise"
-
-        quant_cfg = Mock()
-        quant_cfg.spec = spec
-        return quant_cfg
-
-    @staticmethod
-    def _make_adapter_for_offload_case(preferred_offload=None, with_optional_interface=True):
-        def handle_dataset(*_args, **_kwargs):
-            return []
-
-        def init_model(*_args, **_kwargs):
-            return Mock()
-
-        def generate_model_visit(*_args, **_kwargs):
-            yield from ()
-
-        def generate_model_forward(*_args, **_kwargs):
-            yield from ()
-
-        def enable_kv_cache(*_args, **_kwargs):
-            return None
-
-        attrs = {
-            "model_type": property(lambda self: "test_model"),
-            "model_path": property(lambda self: Path("/tmp/test_model")),
-            "trust_remote_code": property(lambda self: False),
-            "handle_dataset": handle_dataset,
-            "init_model": init_model,
-            "generate_model_visit": generate_model_visit,
-            "generate_model_forward": generate_model_forward,
-            "enable_kv_cache": enable_kv_cache,
-        }
-        if with_optional_interface:
-            attrs["get_layer_wise_offload_device"] = lambda self: preferred_offload
-
-        bases = (PipelineInterface, LayerWiseOffloadOptionalInterface) if with_optional_interface else (PipelineInterface,)
-        adapter_cls = type("AdapterForOffloadCase", bases, attrs)
-        return adapter_cls()
-
-    @pytest.mark.parametrize(
-        "preferred_offload, with_optional_interface, expected_offload, expect_invalid_warning",
-        [
-            ("meta", True, "meta", False),
-            ("gpu", True, "cpu", True),
-            ("", True, "cpu", False),
-            (None, False, "cpu", False),
-        ],
-    )
-    @patch("msmodelslim.core.quant_service.multimodal_vlm_v1.quant_service.get_logger")
-    @patch("msmodelslim.core.quant_service.multimodal_vlm_v1.quant_service.LayerWiseRunner")
-    @patch("msmodelslim.core.quant_service.multimodal_vlm_v1.quant_service.seed_all")
-    def test_quant_process_when_model_adapter_offload_setting_changes_then_runner_uses_expected_device(
-            self,
-            mock_seed_all,
-            mock_runner_cls,
-            mock_get_logger,
-            preferred_offload,
-            with_optional_interface,
-            expected_offload,
-            expect_invalid_warning,
-    ):
-        quant_cfg = self._make_quant_config_for_offload_case()
-        adapter = self._make_adapter_for_offload_case(
-            preferred_offload=preferred_offload,
-            with_optional_interface=with_optional_interface,
-        )
-
-        runner = Mock()
-        mock_runner_cls.return_value = runner
-
-        self.service.quant_process(
-            quant_config=quant_cfg,
-            model_adapter=adapter,
-            save_path=None,
-            device=DeviceType.CPU,
-            device_indices=None,
-        )
-
-        mock_seed_all.assert_called_once()
-        mock_runner_cls.assert_called_once()
-        assert mock_runner_cls.call_args.kwargs["offload_device"] == expected_offload
-
-        mock_logger = mock_get_logger.return_value
-        has_invalid_warning = any(
-            "Invalid offload device" in str(args[0])
-            for args, _ in mock_logger.warning.call_args_list
-        )
-        assert has_invalid_warning is expect_invalid_warning

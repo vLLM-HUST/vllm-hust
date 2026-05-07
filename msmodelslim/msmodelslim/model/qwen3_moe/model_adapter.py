@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 
 from typing import List, Any, Generator
 
@@ -29,28 +10,25 @@ from msmodelslim.core.graph import AdapterConfig, MappingConfig
 from msmodelslim.processor.quarot import QuaRotInterface
 from msmodelslim.utils.logging import logger_setter
 from ..common.layer_wise_forward import generated_decoder_layer_visit_func, transformers_generated_forward_func
-from ..default.model_adapter import DefaultModelAdapter
+from ..common.transformers import TransformersModel
 from ..interface_hub import ModelInfoInterface, ModelSlimPipelineInterfaceV0, ModelSlimPipelineInterfaceV1, \
-    IterSmoothInterface, FlexSmoothQuantInterface, AdaptRotationInterface
+    IterSmoothInterface, FlexSmoothQuantInterface
 
 
 @logger_setter()
-class Qwen3MoeModelAdapter(DefaultModelAdapter,
+class Qwen3MoeModelAdapter(TransformersModel,
                            ModelInfoInterface,
                            ModelSlimPipelineInterfaceV0,
                            ModelSlimPipelineInterfaceV1,
                            IterSmoothInterface,
                            FlexSmoothQuantInterface,
-                           AdaptRotationInterface,
+                           QuaRotInterface,
                            ):
     def get_model_type(self) -> str:
         return self.model_type
 
     def get_model_pedigree(self) -> str:
         return 'qwen3_moe'
-
-    def get_hidden_dim(self):
-        return self.config.hidden_size
 
     def load_model(self, device: DeviceType = DeviceType.NPU) -> nn.Module:
         return self._load_model(device)

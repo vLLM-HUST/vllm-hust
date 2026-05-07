@@ -1,9 +1,5 @@
 # HunyuanVideo 量化使用说明
 
-## 使用前准备
-
-- 安装 msModelSlim 工具，详情请参见[《msModelSlim工具安装指南》](https://msmodelslim.readthedocs.io/zh-cn/latest/zh/getting_started/install_guide/)。
-
 ## 支持的模型版本与量化策略
 
 | 模型系列 | 模型版本 | HuggingFace链接 | W8A8 | W8A16 | W4A16 | W4A4 | 稀疏量化 | KV Cache | Attention | 时间步量化 | FA3量化 | 异常值抑制量化 | 量化命令 |
@@ -11,14 +7,11 @@
 | **HunyuanVideo** | HunyuanVideo-T2V-720P | [HunyuanVideo](https://huggingface.co/tencent/HunyuanVideo) | ✅ | | | | | | | ✅ | ✅ | ✅ | [时间步量化](#hunyuanvideo-时间步量化) / [FA3量化](#hunyuanvideo-fa3-量化) / [异常值抑制量化](#hunyuanvideo-异常值抑制量化) |
 
 **说明：**
-
 - ✅ 表示该量化策略已通过msModelSlim官方验证，功能完整、性能稳定，建议优先采用。
 - 空格表示该量化策略暂未通过msModelSlim官方验证，用户可根据实际需求进行配置尝试，但量化效果和功能稳定性无法得到官方保证。
 - 点击量化命令列中的链接可跳转到对应的具体量化命令
 
-## 使用示例
-
-### <span id="hunyuanvideo-时间步量化">HunyuanVideo 时间步量化</span>
+## <span id="hunyuanvideo-时间步量化">HunyuanVideo 时间步量化</span>
 
 **注意**: 在模型pipeline的去噪循环中，需要在每个timestep开始时调用`TimestepManager.set_timestep_idx()`来设置当前的时间步。
 
@@ -34,9 +27,7 @@ for step_id, t in enumerate(timesteps):
     model_output = pipeline(...)
     ...
 ```
-
 例如在hunyuan_video/hyvideo/diffusion/pipelines/pipeline_hunyuan_video.py的HunyuanVideoPipeline类的__call__函数中，添加如下代码：
-
 ```python
 with self.progress_bar(total=num_inference_steps) as progress_bar:
     for i,t in enumerate(timesteps):
@@ -52,6 +43,8 @@ with self.progress_bar(total=num_inference_steps) as progress_bar:
             else latents
         )
 ```
+
+### 量化命令和示例代码
 
 #### 量化启动命令
 
@@ -176,24 +169,11 @@ with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=True):
 
 ```
 
-### <span id="hunyuanvideo-fa3-量化">HunyuanVideo fa3 量化</span>
+## <span id="hunyuanvideo-fa3-量化">HunyuanVideo fa3 量化</span>
 
-该模型的FA3+W8A8动态量化已经集成至一键量化。
+### 量化命令和示例代码
 
-#### 使用config_path参数指定配置文件进行一键量化
-
-```bash
-msmodelslim quant \
-    --model_path /path/to/hunyuan_float_weights \
-    --save_path /path/to/hunyuan_quantized_weights \
-    --device npu \
-    --model_type hunyuan_video \
-    --config_path /lab_practice/hunyuan_video/hunyuan_video_w8a8f8_mxfp.yaml \
-    --trust_remote_code True
-```
-
-#### 脚本量化启动命令
-
+#### 量化启动命令
 **注意：** 
 Atlas 800I A2(8*64G)推理设备：支持4卡量化、6卡量化、8卡量化。
 
@@ -315,7 +295,9 @@ session_cfg.model_validate(session_cfg)
 quant_model(model, session_cfg)
 ```
 
-### <span id="hunyuanvideo-异常值抑制量化">HunyuanVideo 异常值抑制量化</span>
+## <span id="hunyuanvideo-异常值抑制量化">HunyuanVideo 异常值抑制量化</span>
+
+### 量化命令和示例代码
 
 #### 量化启动命令
 
@@ -439,10 +421,7 @@ session_cfg.model_validate(session_cfg)
 quant_model(model, session_cfg)
 ```
 
-## 附录
-
-### 运行参数说明
-
+## 运行参数说明
 以下是使用[HunYuanVideo/sample_video.py](./sample_video.py)进行HunyuanVideo模型推理量化时的参数说明。量化启动命令未涉及参数对应的说明请见HunyuanVideo推理工程仓[MindIE/hunyuan_video](https://modelers.cn/models/MindIE/hunyuan_video)
 
 | 参数名 | 含义 | 使用限制 |

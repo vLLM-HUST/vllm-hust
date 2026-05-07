@@ -1,23 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-
-"""
--------------------------------------------------------------------------
-This file is part of the MindStudio project.
-Copyright (c) 2025 Huawei Technologies Co.,Ltd.
-
-MindStudio is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-
-         http://license.coscl.org.cn/MulanPSL2
-
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details.
--------------------------------------------------------------------------
-"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2012-2020. All rights reserved.
 
 from dataclasses import dataclass, fields, replace
 import multiprocessing
@@ -209,25 +190,21 @@ class DitCacheSearcher:
         baseline_paths = self.generate_videos(self.config, self.pipeline)
 
         # 2. 根据期望加速比计算最小的cache len
+        ratio = 1 / self.config.cache_ratio
         start = cache_start_step_list[-1]
         avail_step = self.config.num_sampling_steps - start
-        update_steps = avail_step // self.config.cache_step_interval
-        reuse_steps = avail_step - update_steps
-
-        if avail_step <= 0 and reuse_steps <= 0:
+        if avail_step <= 0:
             raise ValueError(
                 f"Cache ratio not possible with cache start step list: {cache_start_step_list}. "
                 f"Num sampling steps is too small!"
             )
-
-        min_l = int(
-            self.config.dit_block_num * (1 - (
-                    self.config.num_sampling_steps / self.config.cache_ratio - start - update_steps) / reuse_steps)
-        )
-
+        min_l = int((
+                            self.config.dit_block_num * start +
+                            2 * self.config.dit_block_num * avail_step // self.config.cache_step_interval -
+                            self.config.dit_block_num * self.config.num_sampling_steps * ratio) / (
+                            avail_step // self.config.cache_step_interval)) - 1
         logger_debug(f"min_l: {min_l}")
-
-        if min_l <= 0 or min_l >= self.config.dit_block_num:
+        if min_l > self.config.dit_block_num:
             raise ValueError(
                 f"Cache ratio not possible with cache start step list: {cache_start_step_list}. "
                 f"Cache ratio may be too large, num sampling steps may be too small, or cache step interval may be too "

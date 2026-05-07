@@ -1,18 +1,21 @@
-/* -------------------------------------------------------------------------
- * This file is part of the MindStudio project.
- * Copyright (c) 2025 Huawei Technologies Co.,Ltd.
+/**
+ * Copyright (c) Huawei Technologies Co., Ltd. 2023-2024. All rights reserved.
+ * Description: graph_utils.h for weight compression
+ * Author: Huawei
+ * Create: 2023-09-21
  *
- * MindStudio is licensed under Mulan PSL v2.
- * You can use this software according to the terms and conditions of the Mulan PSL v2.
- * You may obtain a copy of Mulan PSL v2 at:
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *          http://license.coscl.org.cn/MulanPSL2
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PSL v2 for more details.
- * ------------------------------------------------------------------------- */
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #include "graph_utils.h"
 
@@ -36,45 +39,45 @@ void GetDataSizeFromShape(vector<int64_t> shape, int64_t &size)
     }
 }
 
-bool GetDataFromBin(std::string input_path, std::vector<int64_t> shapes, uint8_t *&data, int data_type_size)
+bool GetDataFromBin(string input_path, vector<int64_t> shapes, uint8_t **data, int data_type_size)
 {
-    std::ifstream inFile(input_path, std::ios::binary);
+    ifstream inFile(input_path.c_str(), std::ios::in | std::ios::binary);
     if (!inFile.is_open()) {
-        std::cout << "Failed to open: " << input_path << std::endl;
+        std::cout << "Failed to open" << input_path.c_str() << std::endl;
         return false;
     }
-
-    inFile.seekg(0, std::ios::end);
-    auto fileSize = inFile.tellg();
-    inFile.seekg(0, std::ios::beg);
+    inFile.seekg(0, ios_base::end);
+    istream::pos_type fileSize = inFile.tellg();
+    inFile.seekg(0, ios_base::beg);
 
     int64_t size = 1;
     GetDataSizeFromShape(shapes, size);
-    uint64_t dataLen = static_cast<uint64_t>(size) * data_type_size;
-
+    uint64_t dataLen = size * data_type_size;
     if (dataLen != static_cast<uint64_t>(fileSize)) {
-        std::cout << "Invalid param: expected len=" << dataLen
-                  << ", but file size=" << fileSize << std::endl;
+        std::cout << "Invalid Param.len:" << dataLen << " is not equal with binary size." << fileSize << ")\n";
+        inFile.close();
         return false;
     }
-
-    uint8_t* heapData = new (std::nothrow) uint8_t[dataLen];
-    if (!heapData) {
-        std::cout << "Failed to allocate memory." << std::endl;
+    char *pdata = new (std::nothrow) char[dataLen];
+    if (pdata == nullptr) {
+        std::cout << "Invalid pdata ptr.\n";
+        inFile.close();
         return false;
     }
-
-    inFile.read(reinterpret_cast<char*>(heapData), dataLen);
-    inFile.close();
-
+    inFile.read(reinterpret_cast<char *>(pdata), dataLen);
+    *data = reinterpret_cast<uint8_t *>(pdata);
     if (inFile.fail()) {
-        delete[] heapData;
-        heapData = nullptr;
-        std::cout << "Read file failed." << std::endl;
+        std::cout << "Read file failed.\n";
         return false;
     }
 
-    data = heapData;
+    // destroy pdata
+    pdata = nullptr;
+
+    if (*data == nullptr) {
+        std::cout << "Invalid data ptr.\n";
+        return false;
+    }
     return true;
 }
 
