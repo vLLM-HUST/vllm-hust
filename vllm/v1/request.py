@@ -274,6 +274,15 @@ class Request:
             )
         )
 
+    def is_exact_kv_reuse_candidate(self, other: "Request | None") -> bool:
+        return (
+            other is not None
+            and self.shared_execution is not None
+            and self.shared_execution.is_exact_kv_reuse_candidate(
+                other.shared_execution,
+            )
+        )
+
     def is_finished(self) -> bool:
         return RequestStatus.is_finished(self.status)
 

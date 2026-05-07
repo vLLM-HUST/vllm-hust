@@ -152,6 +152,33 @@ def test_schedule_groups_requests_with_same_canonical_prefix():
     assert [req.req_id for req in output.scheduled_new_reqs] == ["0", "2", "1"]
 
 
+@pytest.mark.skip_global_cleanup
+def test_schedule_does_not_group_cross_tenant_prefix_match():
+    scheduler = create_scheduler(max_num_seqs=3)
+    requests = create_requests(num_requests=3, num_tokens=8)
+    requests[0].shared_execution = SharedExecutionMetadata(
+        tenant="tenant-a",
+        canonical_prefix_key="prefix-a",
+        stage_id="retrieval",
+    )
+    requests[1].shared_execution = SharedExecutionMetadata(
+        tenant="tenant-b",
+        canonical_prefix_key="prefix-a",
+        stage_id="retrieval",
+    )
+    requests[2].shared_execution = SharedExecutionMetadata(
+        tenant="tenant-a",
+        canonical_prefix_key="prefix-b",
+        stage_id="retrieval",
+    )
+
+    for request in requests:
+        scheduler.add_request(request)
+
+    output = scheduler.schedule()
+    assert [req.req_id for req in output.scheduled_new_reqs] == ["0", "1", "2"]
+
+
 def test_async_scheduling_pp_allows_rescheduling_with_output_placeholders():
     """Async scheduling + PP: allow multi-step in-flight scheduling per request"""
     scheduler = create_scheduler(async_scheduling=True, pipeline_parallel_size=2)

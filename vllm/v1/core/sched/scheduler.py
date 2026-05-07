@@ -302,8 +302,7 @@ class Scheduler(SchedulerInterface):
             return
 
         anchor = self.running[-1]
-        anchor_prefix_key = anchor.canonical_prefix_key
-        if anchor_prefix_key is None:
+        if anchor.canonical_prefix_key is None:
             return
 
         for request in itertools.islice(
@@ -311,7 +310,7 @@ class Scheduler(SchedulerInterface):
             1,
             SHARED_EXECUTION_REORDER_WINDOW,
         ):
-            if request.canonical_prefix_key != anchor_prefix_key:
+            if not request.is_exact_kv_reuse_candidate(anchor):
                 continue
             request_queue.remove_request(request)
             request_queue.prepend_request(request)
