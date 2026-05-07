@@ -1,0 +1,54 @@
+apiversion: modelslim_v1
+
+# meta data
+metadata:
+  config_id: qwen2.5-7b-w8a8
+  score: 90
+  verified_model_types:
+    - Qwen2.5-7B-Instruct
+  label:
+    w_bit: 8
+    a_bit: 8
+    is_sparse: False
+    kv_cache: False
+
+spec:
+  calibration:
+    dataset: "c4"  
+    num_samples: 128
+    seq_len: 2048
+  process:
+    - type: "iter_smooth"
+      alpha: 0.25
+      scale_min: 1e-5
+      symmetric: True
+      # subgraph optimize
+      enable_subgraph_type:
+        - 'norm-linear'
+        - 'linear-linear'
+        - 'ov'
+        - 'up-down'
+      include:
+        - "*"
+
+    # linear quantization
+    - type: "linear_quant"
+      qconfig:
+        act:
+          scope: "per_token"
+          dtype: "int8"
+          symmetric: True
+          method: "minmax"
+        # static per_channel
+        weight:
+          scope: "per_channel"
+          dtype: "int8"
+          symmetric: True
+          method: "minmax"
+      include: [ "*" ]
+      exclude:
+        - 'lm_head'
+
+  save:
+    - type: "ascendv1_saver"
+      part_file_size: 4
