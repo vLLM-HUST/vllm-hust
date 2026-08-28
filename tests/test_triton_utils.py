@@ -3,9 +3,28 @@
 
 import sys
 import types
+from types import SimpleNamespace
 from unittest import mock
 
+from vllm.triton_utils import importing
 from vllm.triton_utils.importing import TritonLanguagePlaceholder, TritonPlaceholder
+
+
+def test_active_out_of_tree_triton_driver_is_supported(monkeypatch):
+    active_driver = SimpleNamespace(is_active=lambda: True)
+    fake_triton = SimpleNamespace(
+        runtime=SimpleNamespace(driver=SimpleNamespace(active=active_driver))
+    )
+    monkeypatch.setattr(importing.current_platform, "is_out_of_tree", lambda: True)
+    monkeypatch.setitem(sys.modules, "triton", fake_triton)
+
+    assert importing._has_active_out_of_tree_triton_driver()
+
+
+def test_in_tree_platform_does_not_use_out_of_tree_driver(monkeypatch):
+    monkeypatch.setattr(importing.current_platform, "is_out_of_tree", lambda: False)
+
+    assert not importing._has_active_out_of_tree_triton_driver()
 
 
 def test_triton_placeholder_is_module():

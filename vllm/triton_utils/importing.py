@@ -12,6 +12,28 @@ from vllm.utils.math_utils import cdiv
 
 logger = init_logger(__name__)
 
+
+def _has_active_out_of_tree_triton_driver() -> bool:
+    """Detect Triton distributions whose backend registry is not upstream-shaped.
+
+    Some out-of-tree platforms, notably Triton-Ascend, expose their active
+    driver through ``triton.runtime.driver`` but do not export the
+    ``triton.backends.backends`` mapping used by upstream Triton.  Treating
+    that layout as "no Triton" replaces every ``@triton.jit`` kernel with a
+    plain Python function and makes later ``kernel[grid]`` launches fail.
+    """
+    if not current_platform.is_out_of_tree():
+        return False
+
+    try:
+        import triton
+
+        active_driver = triton.runtime.driver.active
+        return bool(active_driver and active_driver.is_active())
+    except Exception:
+        return False
+
+
 HAS_TRITON = (
     find_spec("triton") is not None
     or find_spec("pytorch-triton-xpu") is not None  # Not compatible
@@ -70,11 +92,17 @@ if HAS_TRITON:
     except ImportError:
         # This can occur if Triton is partially installed or triton.backends
         # is missing.
-        logger.warning(
-            "Triton is installed, but `triton.backends` could not be imported. "
-            "Disabling Triton."
-        )
-        HAS_TRITON = False
+        if _has_active_out_of_tree_triton_driver():
+            logger.info(
+                "Using the active out-of-tree Triton driver because "
+                "`triton.backends.backends` is unavailable."
+            )
+        else:
+            logger.warning(
+                "Triton is installed, but `triton.backends` could not be imported. "
+                "Disabling Triton."
+            )
+            HAS_TRITON = False
     except Exception as e:
         # Catch any other unexpected errors during the check.
         logger.warning(
