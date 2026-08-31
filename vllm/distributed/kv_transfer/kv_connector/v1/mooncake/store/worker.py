@@ -1203,20 +1203,43 @@ class MooncakeStoreWorker:
 
     def register_kv_caches(
         self,
-        kv_caches: dict[str, torch.Tensor | list[torch.Tensor]],
+        kv_caches: dict[
+            str,
+            torch.Tensor
+            | list[torch.Tensor]
+            | tuple[torch.Tensor | None, ...],
+        ],
     ) -> None:
         """Register KV cache tensors and start transfer threads."""
         if not kv_caches:
             logger.warning("No KV caches to offload.")
             return
 
-        # Resolve each entry to a representative tensor for storage
-        # deduplication. For attention layers the value is already a tensor;
-        # for Mamba layers it is a list of tensors that all share the same
-        # underlying raw storage, so we take the first one.
-        def _repr_tensor(v: torch.Tensor | list[torch.Tensor]) -> torch.Tensor:
-            assert isinstance(v, torch.Tensor | list)
-            return v if isinstance(v, torch.Tensor) else v[0]
+        # Resolve each cache entry to its physical storage tensors. Mamba uses
+        # a list of views backed by one raw allocation, so its first tensor is
+        # representative. Some host backends (notably vLLM Ascend) expose
+        # attention cache components as a tuple backed by separate allocations
+        # (K, V, and optional sparse-cache tensors); every non-None tuple member
+        # must therefore be registered and transferred.
+        def _storage_tensors(
+            value: torch.Tensor
+            | list[torch.Tensor]
+            | tuple[torch.Tensor | None, ...],
+        ) -> tuple[torch.Tensor, ...]:
+            if isinstance(value, torch.Tensor):
+                return (value,)
+            if isinstance(value, list):
+                if not value:
+                    raise ValueError("KV cache tensor list must not be empty")
+                return (value[0],)
+            if isinstance(value, tuple):
+                tensors = tuple(tensor for tensor in value if tensor is not None)
+                if not tensors:
+                    raise ValueError("KV cache tensor tuple must contain a tensor")
+                if not all(isinstance(tensor, torch.Tensor) for tensor in tensors):
+                    raise TypeError("KV cache tensor tuple contains a non-tensor value")
+                return tensors
+            raise TypeError(f"Unsupported KV cache value type: {type(value).__name__}")
 
         assert self.cache_config.num_gpu_blocks is not None
         self.num_blocks = self.cache_config.num_gpu_blocks
@@ -1226,42 +1249,44 @@ class MooncakeStoreWorker:
         block_lens: list[int] = []
 
         for value in kv_caches.values():
-            cache = _repr_tensor(value)
-            cache_storage = cache.untyped_storage()
-            base_addr = cache_storage.data_ptr()
-            if base_addr in seen_ptrs:
-                continue
-            seen_ptrs.add(base_addr)
-            region_len = cache_storage.nbytes()
+            for cache in _storage_tensors(value):
+                cache_storage = cache.untyped_storage()
+                base_addr = cache_storage.data_ptr()
+                if base_addr in seen_ptrs:
+                    continue
+                seen_ptrs.add(base_addr)
+                region_len = cache_storage.nbytes()
 
-            ret = self.store.register_buffer(base_addr, region_len)
-            if ret != 0:
-                logger.error(
-                    "register_buffer failed for addr %#x len %d: %d",
-                    base_addr,
-                    region_len,
-                    ret,
-                )
+                ret = self.store.register_buffer(base_addr, region_len)
+                if ret != 0:
+                    logger.error(
+                        "register_buffer failed for addr %#x len %d: %d",
+                        base_addr,
+                        region_len,
+                        ret,
+                    )
 
-            # Detect layout via stride: a dim whose byte-stride exceeds
-            # page_size_bytes is an outer segment dim (e.g. the K/V dim of
-            # FlashAttn's (2, num_blocks, ...)). FlashInfer/MLA's blocks-
-            # outermost layout has no such dim and yields a single segment.
-            el = cache.element_size()
-            page_size_bytes = region_len // self.num_blocks
-            outer_dims = [
-                d for d in range(cache.ndim) if cache.stride(d) * el > page_size_bytes
-            ]
-            if not outer_dims:
-                # Blocks-first layout (FlashInfer / MLA): one segment.
-                addrs.append(base_addr)
-                block_lens.append(page_size_bytes)
-            else:
-                # K/V-first layout (FlashAttn / ROCm): split segments.
-                seg_stride = cache.stride(outer_dims[0]) * el
-                for idx in range(cache.shape[outer_dims[0]]):
-                    addrs.append(base_addr + idx * seg_stride)
-                    block_lens.append(seg_stride // self.num_blocks)
+                # Detect layout via stride: a dim whose byte-stride exceeds
+                # page_size_bytes is an outer segment dim (e.g. the K/V dim of
+                # FlashAttn's (2, num_blocks, ...)). FlashInfer/MLA's blocks-
+                # outermost layout has no such dim and yields a single segment.
+                el = cache.element_size()
+                page_size_bytes = region_len // self.num_blocks
+                outer_dims = [
+                    d
+                    for d in range(cache.ndim)
+                    if cache.stride(d) * el > page_size_bytes
+                ]
+                if not outer_dims:
+                    # Blocks-first layout (FlashInfer / MLA): one segment.
+                    addrs.append(base_addr)
+                    block_lens.append(page_size_bytes)
+                else:
+                    # K/V-first layout (FlashAttn / ROCm): split segments.
+                    seg_stride = cache.stride(outer_dims[0]) * el
+                    for idx in range(cache.shape[outer_dims[0]]):
+                        addrs.append(base_addr + idx * seg_stride)
+                        block_lens.append(seg_stride // self.num_blocks)
 
         logger.info(
             "Registered KV caches: num_groups=%d, num_segments=%d, num_blocks=%d",

@@ -9,7 +9,7 @@ import sys
 import threading
 import types
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import torch
@@ -1540,7 +1540,12 @@ def _auto_set_ready_event(*args, **kwargs):
 
 def _register_with_mocked_threads(
     worker: mooncake_store_worker.MooncakeStoreWorker,
-    kv_caches: dict[str, torch.Tensor],
+    kv_caches: dict[
+        str,
+        torch.Tensor
+        | list[torch.Tensor]
+        | tuple[torch.Tensor | None, ...],
+    ],
 ) -> None:
     """Call register_kv_caches with the I/O transfer threads mocked out."""
     prefix = "vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.worker."
@@ -1805,6 +1810,57 @@ def test_register_kv_caches_kv_first_two_segments():
     base = tensor.untyped_storage().data_ptr()
     assert db.kv_caches_base_addr == [base, base + seg_stride]
     assert db.block_len == [seg_stride // num_blocks] * 2
+
+
+def test_register_kv_caches_separate_kv_tuple_two_segments():
+    """Ascend-style separate K/V allocations are both registered in order."""
+    num_blocks = 10
+    worker = _make_bare_worker(num_gpu_blocks=num_blocks)
+    k_cache = torch.zeros(num_blocks, 16, 4, 8, dtype=torch.float16)
+    v_cache = torch.zeros(num_blocks, 16, 4, 8, dtype=torch.float16)
+
+    _register_with_mocked_threads(worker, {"layer0": (k_cache, v_cache)})
+
+    db = worker.token_dbs[0]
+    expected_addrs = [
+        k_cache.untyped_storage().data_ptr(),
+        v_cache.untyped_storage().data_ptr(),
+    ]
+    expected_lens = [
+        k_cache.untyped_storage().nbytes() // num_blocks,
+        v_cache.untyped_storage().nbytes() // num_blocks,
+    ]
+    assert db.kv_caches_base_addr == expected_addrs
+    assert db.block_len == expected_lens
+    assert worker.store.register_buffer.call_args_list == [
+        call(expected_addrs[0], k_cache.untyped_storage().nbytes()),
+        call(expected_addrs[1], v_cache.untyped_storage().nbytes()),
+    ]
+
+
+def test_register_kv_caches_sparse_tuple_skips_none_and_deduplicates():
+    """Optional sparse tuple members are registered once per physical storage."""
+    num_blocks = 10
+    worker = _make_bare_worker(num_gpu_blocks=num_blocks)
+    k_cache = torch.zeros(num_blocks, 64, dtype=torch.float16)
+    sparse_raw = torch.zeros(num_blocks, 32, dtype=torch.int8)
+    sparse_view = sparse_raw.view(num_blocks, 4, 8)
+
+    _register_with_mocked_threads(
+        worker,
+        {"layer0": (k_cache, None, sparse_raw, sparse_view)},
+    )
+
+    db = worker.token_dbs[0]
+    assert db.kv_caches_base_addr == [
+        k_cache.untyped_storage().data_ptr(),
+        sparse_raw.untyped_storage().data_ptr(),
+    ]
+    assert db.block_len == [
+        k_cache.untyped_storage().nbytes() // num_blocks,
+        sparse_raw.untyped_storage().nbytes() // num_blocks,
+    ]
+    assert worker.store.register_buffer.call_count == 2
 
 
 def test_register_kv_caches_cross_layer_single_segment():
