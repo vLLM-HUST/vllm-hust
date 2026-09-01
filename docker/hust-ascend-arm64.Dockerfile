@@ -18,9 +18,15 @@ COPY vllm/distributed/kv_transfer/kv_connector/factory.py \
      /vllm-workspace/vllm/vllm/distributed/kv_transfer/kv_connector/factory.py
 COPY vllm/v1/core/sched/victim_selector.py \
      /vllm-workspace/vllm/vllm/v1/core/sched/victim_selector.py
+COPY vllm/v1/core/sched/scheduler.py \
+     /vllm-workspace/vllm/vllm/v1/core/sched/scheduler.py
 
 RUN test "$(uname -m)" = "aarch64" && \
     grep -q 'vllm.scheduler.policy.v1' \
       /vllm-workspace/vllm/vllm/plugins/contracts.py && \
     grep -q '_materialize_typed_victim_selector' \
-      /vllm-workspace/vllm/vllm/v1/core/sched/victim_selector.py
+      /vllm-workspace/vllm/vllm/v1/core/sched/victim_selector.py && \
+    grep -q 'get_victim_selector' \
+      /vllm-workspace/vllm/vllm/v1/core/sched/scheduler.py && \
+    grep -q 'self.victim_selector.pick_victim' \
+      /vllm-workspace/vllm/vllm/v1/core/sched/scheduler.py

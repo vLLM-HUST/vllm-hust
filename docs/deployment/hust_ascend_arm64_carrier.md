@@ -2,8 +2,9 @@
 
 The HUST carrier is a narrow overlay on the official vLLM Ascend image. The
 official image continues to own CANN, torch-npu, compiled extensions, and the
-platform runtime. The overlay installs only the generic extension admission
-and typed scheduler-policy host files maintained by this fork.
+platform runtime. The overlay installs only the generic extension admission,
+typed scheduler-policy materialization, and scheduler invocation sites
+maintained by this fork.
 
 Build from a reviewed vLLM-HUST commit:
 
