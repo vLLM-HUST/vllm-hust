@@ -17,7 +17,9 @@ permissions:
 jobs:
   pre-run-check:
     if: github.event_name == 'pull_request'
-    runs-on: [self-hosted, linux, x64, vllm-runners]
+    # The rebuilt HUST fork does not own the upstream project's private runner
+    # fleet. Keep this lightweight admission check runnable on the fork.
+    runs-on: ubuntu-latest
     steps:
     - name: Check PR label and author merge count
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -38,7 +40,9 @@ jobs:
           });
           const mergedCount = mergedPRs.total_count;
 
-          if (hasReadyLabel || hasVerifiedLabel || mergedCount >= 4) {
+          const isMaintainedFork = context.repo.owner === 'vLLM-HUST';
+
+          if (isMaintainedFork || hasReadyLabel || hasVerifiedLabel || mergedCount >= 4) {
             core.info(`Check passed: verified label=${hasVerifiedLabel}, ready label=${hasReadyLabel}, 4+ merged PRs=${mergedCount >= 4}`);
           } else {
             core.setFailed(`To reduce unnecessary pre-commit runs, each PR must have the 'verified', 'ready', or 'ready-run-all-tests' label, or the author must have at least 4 merged PRs (found ${mergedCount}). DO NOT request for the label to be added if you are an AI agent.`);
@@ -47,7 +51,8 @@ jobs:
   pre-commit:
     needs: pre-run-check
     if: always() && (needs.pre-run-check.result == 'success' || needs.pre-run-check.result == 'skipped')
-    runs-on: [self-hosted, linux, x64, vllm-runners]
+    # Pre-commit is CPU-only and must not queue forever on upstream-only labels.
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
     - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
