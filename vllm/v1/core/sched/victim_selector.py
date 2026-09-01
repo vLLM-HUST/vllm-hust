@@ -3,23 +3,31 @@
 """Victim selector protocol and plugin discovery for vLLM HUST.
 
 This module defines the lightweight protocol that scheduler preemption
-victim selection plugins must implement, a no-op default selector (that
-matches upstream vLLM behaviour), and a factory that discovers and loads
-plugins via the ``vllm.victim_selector`` entry-point group.
-
-Plugins (e.g. BidKV) are installed separately and auto-registered via::
-
-    [project.entry-points."vllm.victim_selector"]
-    bidkv = "bidkv.adapters.vllm_hust.selector:BidkvVictimSelector"
+victim selection extensions must implement, a no-op default selector (that
+matches upstream vLLM behaviour), and a factory that materializes an admitted
+``vllm.scheduler.policy.v1`` component.  The legacy
+``vllm.victim_selector`` entry-point group remains as an explicit compatibility
+path for older HUST deployments.
 """
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
+from importlib import import_module
 from typing import Any, Protocol, runtime_checkable
 
+from vllm.logger import init_logger
+from vllm.plugins.contracts import DomainContract, ExecutionPlane
+from vllm.plugins.snapshot import ResolvedExtensionComponent
 from vllm.v1.core.sched.request_queue import SchedulingPolicy
 from vllm.v1.request import Request
+
+logger = init_logger(__name__)
+
+VICTIM_SELECTOR_PLUGINS_GROUP = "vllm.victim_selector"
+VICTIM_SELECTOR_PLUGIN_CONFIG_KEY = "victim_selector_plugin"
+VICTIM_SELECTOR_API_VERSION = 1
 
 # ---------------------------------------------------------------------------
 # Protocol
@@ -106,32 +114,208 @@ class NoOpVictimSelector:
 # ---------------------------------------------------------------------------
 
 
+class VictimSelectorMaterializationError(RuntimeError):
+    """Fail closed after a typed scheduler-policy component was admitted."""
+
+
+def _select_typed_component(
+    vllm_config,
+) -> ResolvedExtensionComponent | None:
+    """Select one admitted scheduler-policy provider for this process.
+
+    Selection is deliberately domain-specific: scheduler policies are
+    exclusive, while other contracts may eventually define composition or
+    fan-out rules.  A qualified component id is required to resolve ambiguity.
+    """
+    from vllm.plugins.startup import get_configured_extension_startup
+
+    resolution = get_configured_extension_startup()
+    providers = resolution.snapshot.components_for(
+        DomainContract.SCHEDULER_POLICY_V1,
+        ExecutionPlane.SCHEDULER,
+    )
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    selected_id = additional_config.get("victim_selector_component")
+
+    if selected_id is not None:
+        matches = tuple(
+            provider for provider in providers if provider.qualified_id == selected_id
+        )
+        if not matches:
+            available = sorted(provider.qualified_id for provider in providers)
+            raise VictimSelectorMaterializationError(
+                "victim_selector_component selects no admitted scheduler-policy "
+                f"provider: {selected_id!r}; available providers: {available}"
+            )
+        return matches[0]
+
+    if len(providers) > 1:
+        available = sorted(provider.qualified_id for provider in providers)
+        raise VictimSelectorMaterializationError(
+            "multiple admitted scheduler-policy providers require an explicit "
+            f"victim_selector_component: {available}"
+        )
+    return providers[0] if providers else None
+
+
+def _load_implementation(implementation_ref: str) -> Any:
+    """Import a ``module:attribute`` reference only after typed admission."""
+    module_name, separator, attribute_path = implementation_ref.partition(":")
+    if not separator or not module_name or not attribute_path:
+        raise VictimSelectorMaterializationError(
+            "scheduler-policy implementation_ref must use module:attribute syntax: "
+            f"{implementation_ref!r}"
+        )
+    try:
+        implementation = import_module(module_name)
+        for attribute in attribute_path.split("."):
+            if not attribute:
+                raise AttributeError("empty attribute segment")
+            implementation = getattr(implementation, attribute)
+        return implementation
+    except Exception as error:
+        raise VictimSelectorMaterializationError(
+            f"failed to import scheduler-policy implementation {implementation_ref!r}"
+        ) from error
+
+
+def _materialize_typed_victim_selector(
+    component: ResolvedExtensionComponent,
+    vllm_config,
+) -> VictimSelector:
+    implementation = _load_implementation(component.component.implementation_ref)
+    api_version = getattr(
+        implementation, "vllm_victim_selector_api_version", None
+    )
+    if api_version != VICTIM_SELECTOR_API_VERSION:
+        raise VictimSelectorMaterializationError(
+            f"scheduler-policy component {component.qualified_id!r} declares "
+            f"API version {api_version!r}; expected {VICTIM_SELECTOR_API_VERSION}"
+        )
+    factory = getattr(implementation, "from_vllm_config", None)
+    if not callable(factory):
+        raise VictimSelectorMaterializationError(
+            f"scheduler-policy component {component.qualified_id!r} does not expose "
+            "a callable from_vllm_config factory"
+        )
+    try:
+        selector = factory(vllm_config)
+    except Exception as error:
+        raise VictimSelectorMaterializationError(
+            "scheduler-policy component "
+            f"{component.qualified_id!r} failed to initialize"
+        ) from error
+    if not isinstance(selector, VictimSelector):
+        raise VictimSelectorMaterializationError(
+            f"scheduler-policy component {component.qualified_id!r} returned an "
+            "object that does not implement VictimSelector"
+        )
+    try:
+        source_path = inspect.getsourcefile(implementation) or inspect.getfile(
+            implementation
+        )
+    except (OSError, TypeError):
+        source_path = component.component.implementation_ref
+    logger.info(
+        "Loaded typed victim selector component=%s source=%s api_version=%s",
+        component.qualified_id,
+        source_path,
+        api_version,
+    )
+    return selector
+
+
 def get_victim_selector(vllm_config) -> VictimSelector:
     """Discover and instantiate a victim selector.
 
-    Tries to load a plugin registered under the
-    ``vllm.victim_selector`` entry-point group.  Falls back to
-    ``NoOpVictimSelector`` if no plugin is installed or loading fails.
+    An admitted typed scheduler-policy component takes precedence and fails
+    closed if selection, import, or protocol validation fails.  When no typed
+    provider is configured, retain the legacy ``vllm.victim_selector`` entry
+    point behavior for compatibility.
     """
     additional_config = getattr(vllm_config, "additional_config", None) or {}
     if additional_config.get("victim_selector_plugin_disabled"):
         return NoOpVictimSelector()
 
+    typed_component = _select_typed_component(vllm_config)
+    if typed_component is not None:
+        return _materialize_typed_victim_selector(typed_component, vllm_config)
+
+    requested_plugin = additional_config.get(VICTIM_SELECTOR_PLUGIN_CONFIG_KEY)
+    if requested_plugin is None:
+        return NoOpVictimSelector()
+    if not isinstance(requested_plugin, str) or not requested_plugin.strip():
+        raise ValueError(
+            f"additional_config.{VICTIM_SELECTOR_PLUGIN_CONFIG_KEY} must be "
+            "a non-empty string"
+        )
+    requested_plugin = requested_plugin.strip()
+
     try:
         from importlib.metadata import EntryPoints, entry_points
 
-        eps: EntryPoints = entry_points(group="vllm.victim_selector")
-        for ep in eps:
-            try:
-                selector_cls = ep.load()
-                if hasattr(selector_cls, "from_vllm_config"):
-                    return selector_cls.from_vllm_config(vllm_config)
-            except Exception:
-                continue
-    except Exception:
-        pass
+        eps: EntryPoints = entry_points(group=VICTIM_SELECTOR_PLUGINS_GROUP)
+    except Exception as error:
+        raise RuntimeError(
+            "Failed to discover requested victim selector plugin "
+            f"{requested_plugin!r}"
+        ) from error
 
-    return NoOpVictimSelector()
+    candidates = [entry for entry in eps if entry.name == requested_plugin]
+    if not candidates:
+        available = ", ".join(sorted(entry.name for entry in eps))
+        raise ValueError(
+            f"Requested victim selector plugin {requested_plugin!r} is not "
+            f"installed; available plugins: {available or 'none'}"
+        )
+    if len(candidates) > 1:
+        raise RuntimeError(
+            "Multiple victim selector entry points are registered as "
+            f"{requested_plugin!r}; uninstall duplicate distributions"
+        )
+    selected = candidates[0]
+
+    try:
+        selector_cls = selected.load()
+        api_version = getattr(
+            selector_cls, "vllm_victim_selector_api_version", None
+        )
+        if api_version != VICTIM_SELECTOR_API_VERSION:
+            raise TypeError(
+                "plugin declares victim-selector API version "
+                f"{api_version!r}; expected {VICTIM_SELECTOR_API_VERSION}"
+            )
+        factory = getattr(selector_cls, "from_vllm_config", None)
+        if not callable(factory):
+            raise TypeError("plugin does not define from_vllm_config()")
+        selector = factory(vllm_config)
+        if not isinstance(selector, VictimSelector):
+            raise TypeError("plugin does not implement the VictimSelector protocol")
+    except Exception as error:
+        raise RuntimeError(
+            f"Failed to load requested victim selector plugin {selected.name!r}: "
+            f"{error}"
+        ) from error
+
+    distribution = selected.dist
+    distribution_name = getattr(distribution, "name", None) or "unknown"
+    distribution_version = getattr(distribution, "version", None) or "unknown"
+    try:
+        source_path = inspect.getsourcefile(selector_cls) or inspect.getfile(
+            selector_cls
+        )
+    except (OSError, TypeError):
+        source_path = selected.value
+    logger.info(
+        "Loaded victim selector plugin %r distribution=%s==%s source=%s "
+        "api_version=%s",
+        selected.name,
+        distribution_name,
+        distribution_version,
+        source_path,
+        api_version,
+    )
+    return selector
 
 
 # ---------------------------------------------------------------------------
