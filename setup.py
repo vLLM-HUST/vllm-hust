@@ -1028,24 +1028,26 @@ def get_vllm_version() -> str:
     return version
 
 
+def _read_requirements(filename: str) -> list[str]:
+    """Read a requirements file, recursively expanding ``-r`` includes."""
+    requirements_dir = ROOT_DIR / "requirements"
+    with open(requirements_dir / filename) as f:
+        requirements = f.read().strip().split("\n")
+    resolved_requirements = []
+    for line in requirements:
+        if line.startswith("-r "):
+            resolved_requirements += _read_requirements(line.split()[1])
+        elif (
+            not line.startswith("--")
+            and not line.startswith("#")
+            and line.strip() != ""
+        ):
+            resolved_requirements.append(line)
+    return resolved_requirements
+
+
 def get_requirements() -> list[str]:
     """Get Python package dependencies from requirements.txt."""
-    requirements_dir = ROOT_DIR / "requirements"
-
-    def _read_requirements(filename: str) -> list[str]:
-        with open(requirements_dir / filename) as f:
-            requirements = f.read().strip().split("\n")
-        resolved_requirements = []
-        for line in requirements:
-            if line.startswith("-r "):
-                resolved_requirements += _read_requirements(line.split()[1])
-            elif (
-                not line.startswith("--")
-                and not line.startswith("#")
-                and line.strip() != ""
-            ):
-                resolved_requirements.append(line)
-        return resolved_requirements
 
     if _no_device():
         requirements = _read_requirements("common.txt")
@@ -1223,7 +1225,7 @@ setup(
             "soundfile",
             "mistral_common[audio]",
         ],  # Required for audio processing
-        "video": [],  # Kept for backwards compatibility
+        "video": _read_requirements("video.txt"),
         "flashinfer": [],  # Kept for backwards compatibility
         # Optional deps for Helion kernel development
         # NOTE: When updating helion version, also update CI files:
