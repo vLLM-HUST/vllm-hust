@@ -18,10 +18,11 @@ COPY vllm/distributed/kv_transfer/kv_connector/factory.py \
      /vllm-workspace/vllm/vllm/distributed/kv_transfer/kv_connector/factory.py
 COPY vllm/v1/core/sched/victim_selector.py \
      /vllm-workspace/vllm/vllm/v1/core/sched/victim_selector.py
-COPY vllm/v1/core/sched/scheduler.py \
-     /vllm-workspace/vllm/vllm/v1/core/sched/scheduler.py
+COPY docker/patch_ascend_v023_scheduler.py /tmp/patch_ascend_v023_scheduler.py
 
-RUN test "$(uname -m)" = "aarch64" && \
+RUN python3 /tmp/patch_ascend_v023_scheduler.py && \
+    rm /tmp/patch_ascend_v023_scheduler.py && \
+    test "$(uname -m)" = "aarch64" && \
     grep -q 'vllm.scheduler.policy.v1' \
       /vllm-workspace/vllm/vllm/plugins/contracts.py && \
     grep -q '_materialize_typed_victim_selector' \
