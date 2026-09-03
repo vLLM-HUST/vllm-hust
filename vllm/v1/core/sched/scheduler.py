@@ -1433,6 +1433,7 @@ class Scheduler(SchedulerInterface):
             EventBus.emit(
                 RequestPreempted(
                     request_id=request.request_id,
+                    session_id=request.session_id,
                     freed_blocks=request.num_kv_blocks if hasattr(request,
                                                                   "num_kv_blocks") else 0,
                     reason="preempt",
@@ -2533,6 +2534,7 @@ class Scheduler(SchedulerInterface):
             EventBus.emit(
                 RequestFinished(
                     request_id=request.request_id,
+                    session_id=request.session_id,
                     total_tokens=total_tokens,
                     kv_blocks=request.num_kv_blocks if hasattr(request,
                                                                "num_kv_blocks") else 0,

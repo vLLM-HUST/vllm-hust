@@ -36,13 +36,15 @@ class SchedulerEvent:
 class RequestFinished(SchedulerEvent):
     """A request finished decoding (stopped or aborted).
 
-    payload: request id, cumulative input+output tokens, and the number of
-    KV blocks the request occupied at finish. Consumers use this to learn
-    that one turn of a long conversation completed and how large its KV
-    footprint was.
+    payload: request id, optional session id (vllm-hust session-scoped
+    requests), cumulative input+output tokens, and the number of KV blocks
+    the request occupied at finish. Consumers use this to learn that one
+    turn of a long conversation completed and how large its KV footprint
+    was.
     """
 
     request_id: str
+    session_id: str | None
     total_tokens: int
     kv_blocks: int
     finished_reason: str
@@ -52,12 +54,13 @@ class RequestFinished(SchedulerEvent):
 class RequestPreempted(SchedulerEvent):
     """KV state of a running request was reclaimed (preempted/evicted).
 
-    payload: request id and the number of KV blocks freed. Consumers use
-    this to observe KV pressure and react (e.g. trigger context
-    compaction) before latency degrades.
+    payload: request id, optional session id, and the number of KV blocks
+    freed. Consumers use this to observe KV pressure and react (e.g.
+    trigger context compaction) before latency degrades.
     """
 
     request_id: str
+    session_id: str | None
     freed_blocks: int
     reason: str
 
