@@ -145,14 +145,6 @@ class ChatCompletionResponse(OpenAIBaseModel):
     ec_transfer_params: dict[str, Any] | None = Field(
         default=None, description="ECTransfer parameters."
     )
-    predicted_length: int | None = Field(
-        default=None,
-        description=(
-            "Predicted total output length in tokens. When present, DLA-style "
-            "prediction-aware scheduling reserves/admits accordingly."
-        ),
-        ge=0,
-    )
     metrics: PerRequestMetrics | None = None
 
 
@@ -495,6 +487,15 @@ class ChatCompletionRequest(OpenAIBaseModel):
         description=(
             "ECTransfer parameters used for encoder-cache disaggregated serving."
         ),
+    )
+
+    predicted_length: int | None = Field(
+        default=None,
+        description=(
+            "Predicted total output length in tokens. When present, DLA-style "
+            "prediction-aware scheduling reserves/admits accordingly."
+        ),
+        ge=0,
     )
 
     vllm_xargs: dict[str, str | int | float | list[str | int | float]] | None = Field(
