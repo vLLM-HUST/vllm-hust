@@ -157,6 +157,10 @@ class EngineCoreRequest(
 
     session_id: str | None = None
 
+    # Predicted total output length (tokens), if an external length
+    # predictor supplied one before admission. None = no prediction.
+    predicted_length: int | None = None
+
     @property
     def params(self) -> SamplingParams | PoolingParams:
         """Return the processed params (sampling or pooling)."""

@@ -53,6 +53,10 @@ from vllm.v1.core.sched.request_queue import (
     create_request_queue,
 )
 from vllm.v1.core.sched.utils import check_stop, remove_all
+from vllm.v1.core.sched.victim_selector import (
+    get_victim_selector,
+    infer_kv_utilization_from_scheduler,
+)
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 from vllm.v1.metrics.perf import ModelMetrics, PerfStats
@@ -199,6 +203,11 @@ class Scheduler(SchedulerInterface):
         # requests skipped in waiting flow due async deps or constraints.
         self.skipped_waiting = create_request_queue(self.policy)
         self.running: list[Request] = []
+
+        # Victim selector (pluggable via vllm.victim_selector entry point).
+        # Falls back to the no-op selector whose behaviour matches upstream
+        # vLLM (PRIORITY -> highest priority, otherwise last in running).
+        self.victim_selector = get_victim_selector(self.vllm_config)
 
         # The request IDs that are finished in between the previous and the
         # current steps. This is used to notify the workers about the finished
@@ -674,43 +683,44 @@ class Scheduler(SchedulerInterface):
                         break
 
                     # The request cannot be scheduled.
-                    # Preempt the lowest-priority request.
-                    if self.policy == SchedulingPolicy.PRIORITY:
-                        preempted_req = max(
-                            self.running,
-                            key=lambda r: (r.priority, r.arrival_time),
-                        )
-                        # Record the index of the preemption victim to
-                        # maintain accurate loop state.
-                        victim_index = self.running.index(preempted_req)
-                        del self.running[victim_index]
-                        # Decrement the loop cursor if the removed request
-                        # preceded the current iteration, preventing the
-                        # silent omission of the subsequent request.
-                        if victim_index < req_index:
-                            req_index -= 1
+                    # Preempt a victim via the pluggable victim selector
+                    # (default no-op selector matches upstream behaviour:
+                    # highest priority, or the last request in running).
+                    preempted_req = self.victim_selector.pick_victim(
+                        self.running,
+                        self.policy,
+                        kv_utilization=infer_kv_utilization_from_scheduler(self),
+                        now_s=scheduled_timestamp,
+                    )
+                    # Record the index of the preemption victim to
+                    # maintain accurate loop state.
+                    victim_index = self.running.index(preempted_req)
+                    del self.running[victim_index]
+                    # Decrement the loop cursor if the removed request
+                    # preceded the current iteration, preventing the
+                    # silent omission of the subsequent request.
+                    if victim_index < req_index:
+                        req_index -= 1
 
-                        if preempted_req in scheduled_running_reqs:
-                            preempted_req_id = preempted_req.request_id
-                            scheduled_running_reqs.remove(preempted_req)
-                            restored = num_scheduled_tokens.pop(preempted_req_id)
-                            token_budget += restored
-                            input_budget += restored + draft_slots
-                            req_to_new_blocks.pop(preempted_req_id)
-                            scheduled_spec_decode_tokens.pop(preempted_req_id, None)
-                            preempted_encoder_inputs = scheduled_encoder_inputs.pop(
-                                preempted_req_id, None
+                    if preempted_req in scheduled_running_reqs:
+                        preempted_req_id = preempted_req.request_id
+                        scheduled_running_reqs.remove(preempted_req)
+                        restored = num_scheduled_tokens.pop(preempted_req_id)
+                        token_budget += restored
+                        input_budget += restored + draft_slots
+                        req_to_new_blocks.pop(preempted_req_id)
+                        scheduled_spec_decode_tokens.pop(preempted_req_id, None)
+                        preempted_encoder_inputs = scheduled_encoder_inputs.pop(
+                            preempted_req_id, None
+                        )
+                        if preempted_encoder_inputs:
+                            # Restore encoder compute budget if the preempted
+                            # request had encoder inputs scheduled in this step.
+                            num_embeds_to_restore = sum(
+                                preempted_req.get_num_encoder_embeds(i)
+                                for i in preempted_encoder_inputs
                             )
-                            if preempted_encoder_inputs:
-                                # Restore encoder compute budget if the preempted
-                                # request had encoder inputs scheduled in this step.
-                                num_embeds_to_restore = sum(
-                                    preempted_req.get_num_encoder_embeds(i)
-                                    for i in preempted_encoder_inputs
-                                )
-                                encoder_compute_budget += num_embeds_to_restore
-                    else:
-                        preempted_req = self.running.pop()
+                            encoder_compute_budget += num_embeds_to_restore
 
                     self._preempt_request(
                         preempted_req,
@@ -1389,6 +1399,11 @@ class Scheduler(SchedulerInterface):
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
+
+        if preempted_reqs:
+            self.victim_selector.emit_observability_log(
+                logger, self.__class__.__name__
+            )
         return scheduler_output
 
     def _build_kv_connector_meta(
