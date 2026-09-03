@@ -415,6 +415,13 @@ class InputProcessor:
                     )
                 )
 
+        # Client-supplied decode-length prediction (DLA length-aware sched).
+        # Travelling inside sampling_params.extra_args so the field is
+        # preserved through the msgspec request channel.
+        predicted_length: int | None = None
+        if sampling_params is not None and sampling_params.extra_args:
+            predicted_length = sampling_params.extra_args.get("predicted_length")
+
         return EngineCoreRequest(
             request_id=request_id,
             prompt_token_ids=prompt_token_ids,
@@ -431,6 +438,7 @@ class InputProcessor:
             trace_headers=trace_headers,
             resumable=resumable,
             session_id=session_id,
+            predicted_length=predicted_length,
         )
 
     def _validate_prompt_len(

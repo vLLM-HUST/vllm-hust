@@ -199,6 +199,16 @@ class Request:
         # predictor before admission. None = no prediction available; the
         # scheduler then behaves exactly as upstream vLLM.
         self.predicted_length = predicted_length
+        # Client-supplied prediction via sampling_params.extra_args (OpenAI
+        # extra_body) is honoured when no explicit value was passed in.
+        if (
+            self.predicted_length is None
+            and sampling_params is not None
+            and sampling_params.extra_args is not None
+        ):
+            self.predicted_length = sampling_params.extra_args.get(
+                "predicted_length"
+            )
 
         # True if this request is scheduled as a non-final prefill chunk.
         self.is_prefill_chunk = False
