@@ -116,6 +116,11 @@ class TestNoOpVictimSelector:
 class TestGetVictimSelector:
     def test_falls_back_to_noop_when_no_plugin(self, monkeypatch):
         # No entry points installed in this environment -> NoOp.
+        # (Explicitly empty so a locally-installed legacy plugin such as
+        # vllm-hust-dla cannot leak into this test.)
+        from importlib import metadata
+
+        monkeypatch.setattr(metadata, "entry_points", lambda *, group: [])
         sel = get_victim_selector(_FakeVllmConfig())
         assert isinstance(sel, NoOpVictimSelector)
 
