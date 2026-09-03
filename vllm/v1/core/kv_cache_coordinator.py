@@ -403,6 +403,97 @@ class KVCacheCoordinator(ABC):
             for manager in self.single_type_managers
         )
 
+    def truncate_request_tail_blocks(
+        self,
+        request_id: str,
+        num_blocks_to_keep: int,
+        expected_block_ids: tuple[tuple[int, ...], ...],
+    ) -> tuple[int, ...]:
+        """Release a single cache group's contiguous request tail."""
+        if len(self.single_type_managers) != 1:
+            raise ValueError(
+                "KV cache compression currently requires exactly one cache group"
+            )
+        if len(expected_block_ids) != 1:
+            raise ValueError(
+                "KV cache compression plan must contain exactly one block table"
+            )
+        return self.single_type_managers[0].truncate_request_tail_blocks(
+            request_id,
+            num_blocks_to_keep,
+            expected_block_ids[0],
+        )
+
+    def validate_request_tail_truncation(
+        self,
+        request_id: str,
+        num_blocks_to_keep: int,
+        expected_block_ids: tuple[tuple[int, ...], ...],
+    ) -> None:
+        """Validate a single cache group's tail transaction without mutation."""
+        if len(self.single_type_managers) != 1:
+            raise ValueError(
+                "KV cache compression currently requires exactly one cache group"
+            )
+        if len(expected_block_ids) != 1:
+            raise ValueError(
+                "KV cache compression plan must contain exactly one block table"
+            )
+        self.single_type_managers[0].validate_request_tail_truncation(
+            request_id,
+            num_blocks_to_keep,
+            expected_block_ids[0],
+        )
+
+    def validate_request_block_replacement(
+        self,
+        request_id: str,
+        num_destination_blocks: int,
+        expected_source_block_ids: tuple[tuple[int, ...], ...],
+        destination_blocks: Sequence[KVCacheBlock],
+    ) -> None:
+        """Validate a single-group out-of-place compression transaction."""
+        if len(self.single_type_managers) != 1:
+            raise ValueError(
+                "KV cache compression currently requires exactly one cache group"
+            )
+        if len(expected_source_block_ids) != 1:
+            raise ValueError(
+                "KV cache compression plan must contain exactly one block table"
+            )
+        self.single_type_managers[0].validate_request_block_replacement(
+            request_id,
+            num_destination_blocks,
+            expected_source_block_ids[0],
+            destination_blocks,
+        )
+
+    def replace_request_blocks(
+        self,
+        request_id: str,
+        num_destination_blocks: int,
+        expected_source_block_ids: tuple[tuple[int, ...], ...],
+        destination_blocks: list[KVCacheBlock],
+    ) -> tuple[
+        tuple[int, ...],
+        tuple[int, ...],
+        tuple[int, ...],
+        tuple[int, ...],
+    ]:
+        """Install one private destination table for a compression plan."""
+        self.validate_request_block_replacement(
+            request_id,
+            num_destination_blocks,
+            expected_source_block_ids,
+            destination_blocks,
+        )
+        return self.single_type_managers[0].replace_request_blocks(
+            request_id,
+            num_destination_blocks,
+            expected_source_block_ids[0],
+            destination_blocks,
+        )
+
     @abstractmethod
     def find_longest_cache_hit(
         self,

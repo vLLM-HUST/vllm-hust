@@ -13,6 +13,7 @@ import torch
 from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.utils.torch_utils import PIN_MEMORY
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.kv_cache_compression import KVCacheCompressionPlan
 
 if TYPE_CHECKING:
     from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorWorkerMetadata
@@ -343,6 +344,10 @@ class ModelRunnerOutput:
     # generated in the current step. It can be different for
     # each request due to speculative/jump decoding.
     sampled_token_ids: list[list[int]] = field(default_factory=list)
+
+    # Worker-to-scheduler cache compression transactions. ``None`` on the
+    # disabled/default path.
+    kv_cache_compression_plans: list[KVCacheCompressionPlan] | None = None
 
     # [num_reqs, max_num_logprobs + 1]
     # [num_reqs, max_num_logprobs + 1]

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorBase_V1
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.engine import EngineCoreOutputs
+    from vllm.v1.kv_cache_compression import KVCacheCompressionRuntimeSpec
     from vllm.v1.kv_cache_interface import KVCacheConfig
     from vllm.v1.metrics.stats import SchedulerStats
     from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
@@ -36,6 +37,8 @@ class PauseState(enum.IntEnum):
 
 
 class SchedulerInterface(ABC):
+    available_kv_cache_memory_bytes: int | None
+
     @abstractmethod
     def __init__(
         self,
@@ -47,6 +50,9 @@ class SchedulerInterface(ABC):
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
         include_finished_set: bool = False,
         log_stats: bool = False,
+        kv_cache_compression_runtime_spec: (
+            "KVCacheCompressionRuntimeSpec | None"
+        ) = None,
     ) -> None:
         raise NotImplementedError
 
