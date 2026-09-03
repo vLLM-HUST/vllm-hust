@@ -1433,7 +1433,8 @@ class Scheduler(SchedulerInterface):
             EventBus.emit(
                 RequestPreempted(
                     request_id=request.request_id,
-                    session_id=request.session_id,
+                    # session_id exists only on session-scoped forks.
+                    session_id=getattr(request, "session_id", None),
                     freed_blocks=request.num_kv_blocks if hasattr(request,
                                                                   "num_kv_blocks") else 0,
                     reason="preempt",
@@ -2534,7 +2535,8 @@ class Scheduler(SchedulerInterface):
             EventBus.emit(
                 RequestFinished(
                     request_id=request.request_id,
-                    session_id=request.session_id,
+                    # session_id exists only on session-scoped forks.
+                    session_id=getattr(request, "session_id", None),
                     total_tokens=total_tokens,
                     kv_blocks=request.num_kv_blocks if hasattr(request,
                                                                "num_kv_blocks") else 0,
