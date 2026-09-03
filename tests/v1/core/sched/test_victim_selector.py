@@ -4,10 +4,11 @@ sys.modules stubbing technique (see vllm-plugin-authoring skill): the module
 under test only needs `vllm.v1.core.sched.request_queue.SchedulingPolicy` and
 `vllm.v1.request.Request`, which we stub here.
 """
+
 import enum
 import sys
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Stub the vllm module tree BEFORE importing the module under test
 # ---------------------------------------------------------------------------
+
 
 def _make_module(name, path=None, **attrs):
     m = types.ModuleType(name)
@@ -37,9 +39,12 @@ def _install_stubs():
     # repo root = tests/v1/core/sched -> up 3 = tests -> up 4 = repo
     repo = Path(__file__).resolve().parent.parents[3]
     vllm_root = repo / "vllm"
-    for name, sub in [("vllm", vllm_root), ("vllm.v1", vllm_root / "v1"),
-                      ("vllm.v1.core", vllm_root / "v1" / "core"),
-                      ("vllm.v1.core.sched", vllm_root / "v1" / "core" / "sched")]:
+    for name, sub in [
+        ("vllm", vllm_root),
+        ("vllm.v1", vllm_root / "v1"),
+        ("vllm.v1.core", vllm_root / "v1" / "core"),
+        ("vllm.v1.core.sched", vllm_root / "v1" / "core" / "sched"),
+    ]:
         if name not in sys.modules:
             _make_module(name, path=[str(sub)])
 
@@ -71,6 +76,7 @@ class _FakeVllmConfig:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestNoOpVictimSelector:
     def test_fcfs_picks_last_running(self):
         sel = NoOpVictimSelector()
@@ -80,6 +86,7 @@ class TestNoOpVictimSelector:
             _StubRequest(request_id="c", arrival_time=3.0),
         ]
         from vllm.v1.core.sched.request_queue import SchedulingPolicy
+
         victim = sel.pick_victim(running, SchedulingPolicy.FCFS)
         assert victim.request_id == "c"  # last in running == upstream pop()
 
@@ -90,6 +97,7 @@ class TestNoOpVictimSelector:
             _StubRequest(request_id="high", priority=3, arrival_time=1.0),
         ]
         from vllm.v1.core.sched.request_queue import SchedulingPolicy
+
         victim = sel.pick_victim(running, SchedulingPolicy.PRIORITY)
         assert victim.request_id == "high"
 
@@ -100,12 +108,14 @@ class TestNoOpVictimSelector:
             _StubRequest(request_id="new", priority=1, arrival_time=9.0),
         ]
         from vllm.v1.core.sched.request_queue import SchedulingPolicy
+
         victim = sel.pick_victim(running, SchedulingPolicy.PRIORITY)
         assert victim.request_id == "new"
 
     def test_empty_running_raises(self):
         sel = NoOpVictimSelector()
         from vllm.v1.core.sched.request_queue import SchedulingPolicy
+
         with pytest.raises(ValueError):
             sel.pick_victim([], SchedulingPolicy.FCFS)
 
@@ -127,6 +137,7 @@ class TestGetVictimSelector:
     def test_respects_disabled_flag(self, monkeypatch):
         class FakeCfg:
             additional_config = {"victim_selector_plugin_disabled": True}
+
         sel = get_victim_selector(FakeCfg())
         assert isinstance(sel, NoOpVictimSelector)
 

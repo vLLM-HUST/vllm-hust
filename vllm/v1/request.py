@@ -206,9 +206,7 @@ class Request:
             and sampling_params is not None
             and sampling_params.extra_args is not None
         ):
-            self.predicted_length = sampling_params.extra_args.get(
-                "predicted_length"
-            )
+            self.predicted_length = sampling_params.extra_args.get("predicted_length")
 
         # True if this request is scheduled as a non-final prefill chunk.
         self.is_prefill_chunk = False

@@ -1,10 +1,9 @@
 """Unit tests for vllm.v1.core.length_prediction (runs WITHOUT vllm installed)."""
+
 import sys
 import types
 from dataclasses import dataclass
 from pathlib import Path
-
-import pytest
 
 
 def _make_module(name, path=None, **attrs):
@@ -35,8 +34,11 @@ class _StubRequest:
 def _install_stubs():
     repo = Path(__file__).resolve().parent.parent.parent.parent  # tests/v1/core -> repo
     vllm_root = repo / "vllm"
-    for name, sub in [("vllm", vllm_root), ("vllm.v1", vllm_root / "v1"),
-                      ("vllm.v1.core", vllm_root / "v1" / "core")]:
+    for name, sub in [
+        ("vllm", vllm_root),
+        ("vllm.v1", vllm_root / "v1"),
+        ("vllm.v1.core", vllm_root / "v1" / "core"),
+    ]:
         if name not in sys.modules:
             _make_module(name, path=[str(sub)])
     _make_module("vllm.v1.request", Request=_StubRequest)

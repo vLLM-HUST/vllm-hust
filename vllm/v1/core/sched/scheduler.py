@@ -1403,9 +1403,7 @@ class Scheduler(SchedulerInterface):
             self._update_after_schedule(scheduler_output)
 
         if preempted_reqs:
-            self.victim_selector.emit_observability_log(
-                logger, self.__class__.__name__
-            )
+            self.victim_selector.emit_observability_log(logger, self.__class__.__name__)
         return scheduler_output
 
     def _build_kv_connector_meta(
