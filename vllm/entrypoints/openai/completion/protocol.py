@@ -221,6 +221,15 @@ class CompletionRequest(OpenAIBaseModel):
         ),
     )
 
+    predicted_length: int | None = Field(
+        default=None,
+        description=(
+            "Predicted total output length in tokens. When present, DLA-style "
+            "prediction-aware scheduling reserves/admits accordingly."
+        ),
+        ge=0,
+    )
+
     vllm_xargs: dict[str, str | int | float | list[str | int | float]] | None = Field(
         default=None,
         description=(
@@ -366,6 +375,9 @@ class CompletionRequest(OpenAIBaseModel):
         if self.ec_transfer_params:
             # Pass in ec_transfer_params via extra_args
             extra_args["ec_transfer_params"] = self.ec_transfer_params
+        if self.predicted_length is not None:
+            # Pass in predicted_length via extra_args (DLA length-aware sched)
+            extra_args["predicted_length"] = self.predicted_length
         return SamplingParams.from_optional(
             n=self.n,
             presence_penalty=self.presence_penalty,

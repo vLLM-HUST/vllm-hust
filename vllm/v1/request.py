@@ -78,6 +78,7 @@ class Request:
         reasoning_ended: bool | None = None,
         reasoning_parser_kwargs: dict[str, Any] | None = None,
         abort_immediately: bool = False,
+        predicted_length: int | None = None,
     ) -> None:
         self.request_id = request_id
         self.client_index = client_index
@@ -194,6 +195,19 @@ class Request:
         self.trace_headers = trace_headers
         self.session_id = session_id
 
+        # Predicted total output length (tokens), set by an external length
+        # predictor before admission. None = no prediction available; the
+        # scheduler then behaves exactly as upstream vLLM.
+        self.predicted_length = predicted_length
+        # Client-supplied prediction via sampling_params.extra_args (OpenAI
+        # extra_body) is honoured when no explicit value was passed in.
+        if (
+            self.predicted_length is None
+            and sampling_params is not None
+            and sampling_params.extra_args is not None
+        ):
+            self.predicted_length = sampling_params.extra_args.get("predicted_length")
+
         # True if this request is scheduled as a non-final prefill chunk.
         self.is_prefill_chunk = False
 
@@ -260,6 +274,7 @@ class Request:
             reasoning_ended=request.reasoning_ended,
             reasoning_parser_kwargs=request.reasoning_parser_kwargs,
             abort_immediately=request.abort_immediately,
+            predicted_length=request.predicted_length,
         )
 
     def append_output_token_ids(
