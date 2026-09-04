@@ -31,6 +31,7 @@ from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.multimodal.encoder_budget import MultiModalBudget
 from vllm.multimodal.utils import get_mm_features_in_window
+from vllm.v1.events import EventBus, RequestFinished, RequestPreempted
 from vllm.v1.core.encoder_cache_manager import (
     EncoderCacheManager,
     EncoderDecoderCacheManager,
@@ -1425,6 +1426,20 @@ class Scheduler(SchedulerInterface):
         assert request.status == RequestStatus.RUNNING, (
             "Only running requests can be preempted"
         )
+
+        # Default-off typed event: KV state reclaimed for a running request.
+        if EventBus.enabled:
+            EventBus.emit(
+                RequestPreempted(
+                    request_id=request.request_id,
+                    # session_id exists only on session-scoped forks.
+                    session_id=getattr(request, "session_id", None),
+                    freed_blocks=request.num_kv_blocks if hasattr(request,
+                                                                  "num_kv_blocks") else 0,
+                    reason="preempt",
+                )
+            )
+
         self._free_request_blocks(request)
         self.encoder_cache_manager.free(request)
         self._inflight_prefills.discard(request)
@@ -2535,7 +2550,24 @@ class Scheduler(SchedulerInterface):
         if not delay_free_blocks:
             self._free_blocks(request)
 
-        return kv_xfer_params, ec_xfer_params
+        # Default-off typed event: a request finished (normal stop or abort).
+        # Payload carries only generic request metrics; consumers decide
+        # whether this matters (e.g. a long-conversation lifecycle plugin).
+        if EventBus.enabled:
+            total_tokens = request.num_computed_tokens + len(request.output_token_ids)
+            EventBus.emit(
+                RequestFinished(
+                    request_id=request.request_id,
+                    # session_id exists only on session-scoped forks.
+                    session_id=getattr(request, "session_id", None),
+                    total_tokens=total_tokens,
+                    kv_blocks=request.num_kv_blocks if hasattr(request,
+                                                               "num_kv_blocks") else 0,
+                    finished_reason=str(request.get_finished_reason()),
+                )
+            )
+
+        return kv_xfer_params, ec_transfer_params
 
     def _free_blocks(self, request: Request):
         assert request.is_finished()
