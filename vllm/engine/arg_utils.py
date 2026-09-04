@@ -45,6 +45,7 @@ from vllm.config import (
     EPLBConfig,
     FaultToleranceConfig,
     KernelConfig,
+    KVCacheCompressionConfig,
     KVEventsConfig,
     KVTransferConfig,
     LoadConfig,
@@ -700,6 +701,7 @@ class EngineArgs:
 
     kv_transfer_config: KVTransferConfig | None = None
     kv_events_config: KVEventsConfig | None = None
+    kv_cache_compression_config: KVCacheCompressionConfig | None = None
 
     ec_transfer_config: ECTransferConfig | None = None
     ec_manager_config: EncoderCacheManagerConfig = get_field(
@@ -1675,6 +1677,10 @@ class EngineArgs:
         )
         vllm_group.add_argument("--kv-events-config", **vllm_kwargs["kv_events_config"])
         vllm_group.add_argument(
+            "--kv-cache-compression-config",
+            **vllm_kwargs["kv_cache_compression_config"],
+        )
+        vllm_group.add_argument(
             "--ec-transfer-config", **vllm_kwargs["ec_transfer_config"]
         )
         vllm_group.add_argument(
@@ -2581,6 +2587,7 @@ class EngineArgs:
             compilation_config=compilation_config,
             kv_transfer_config=self.kv_transfer_config,
             kv_events_config=self.kv_events_config,
+            kv_cache_compression_config=self.kv_cache_compression_config,
             ec_transfer_config=self.ec_transfer_config,
             ec_manager_config=self.ec_manager_config,
             reasoning_config=self.reasoning_config,

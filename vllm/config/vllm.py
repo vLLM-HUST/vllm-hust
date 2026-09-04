@@ -35,6 +35,7 @@ from .diffusion import DiffusionConfig
 from .ec_manager_config import EncoderCacheManagerConfig
 from .ec_transfer import ECTransferConfig
 from .kernel import KernelConfig
+from .kv_cache_compression import KVCacheCompressionConfig
 from .kv_events import KVEventsConfig
 from .kv_transfer import KVTransferConfig
 from .load import LoadConfig
@@ -403,6 +404,8 @@ class VllmConfig:
     """The configurations for distributed KV cache transfer."""
     kv_events_config: KVEventsConfig | None = None
     """The configurations for event publishing."""
+    kv_cache_compression_config: KVCacheCompressionConfig | None = None
+    """Optional KV cache compression provider configuration."""
     ec_transfer_config: ECTransferConfig | None = None
     """The configurations for distributed EC cache transfer."""
     ec_manager_config: EncoderCacheManagerConfig = Field(
@@ -532,6 +535,10 @@ class VllmConfig:
             vllm_factors.append(self.kv_transfer_config.compute_hash())
         else:
             vllm_factors.append("None")
+        # Preserve the historical disabled hash. Compression changes model
+        # execution only when it is explicitly configured.
+        if self.kv_cache_compression_config is not None:
+            vllm_factors.append(self.kv_cache_compression_config.compute_hash())
         if self.ec_transfer_config:
             vllm_factors.append(self.ec_transfer_config.compute_hash())
         else:

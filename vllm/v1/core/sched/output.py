@@ -280,6 +280,22 @@ class SchedulerOutput:
     ec_connector_metadata: ECConnectorMetadata | None = None
     # EC Cache Manager metadata
     ec_manager_metadata: EncoderCacheManagerMetadata | None = None
+
+    # Full block-table replacements committed by the scheduler after KV cache
+    # compression. ``None`` on the disabled/default path.
+    kv_cache_compression_block_table_updates: (
+        dict[str, tuple[list[int], ...]] | None
+    ) = None
+
+    # Exclusive, unhashed target tables for final compression prefill steps.
+    kv_cache_compression_destination_block_ids: (
+        dict[str, tuple[list[int], ...]] | None
+    ) = None
+
+    # Final-prefill compression transactions started by this scheduler step.
+    # IDs correlate async model outputs without changing the provider plan.
+    kv_cache_compression_transaction_ids: dict[str, int] | None = None
+
     # Block IDs freshly allocated from the pool during this scheduling step.
     # The worker zeros the corresponding GPU memory before the blocks are used,
     # preventing stale NaN/data from corrupting attention or SSM computation.

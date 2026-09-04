@@ -20,6 +20,7 @@ from vllm.v1.attention.backends.utils import (
     get_supported_kv_cache_layouts,
     record_kv_cache_layout,
 )
+from vllm.v1.kv_cache_compression import KVCacheCompressionCompatibility
 from vllm.v1.kv_cache_interface import KVCacheSpec
 
 if TYPE_CHECKING:
@@ -112,6 +113,38 @@ class WorkerBase:
     def set_kv_cache_layout(self, kv_cache_layout: str) -> None:
         """Adopt the KV cache layout resolved by the engine core."""
         record_kv_cache_layout(self.vllm_config.cache_config, kv_cache_layout)
+
+    def validate_kv_cache_compression(self) -> KVCacheCompressionCompatibility:
+        """Validate enabled KV cache compression before KV allocation.
+
+        Device workers override this method to resolve and validate their
+        platform provider. The base implementation never imports a provider.
+        """
+        config = self.vllm_config.kv_cache_compression_config
+        if config is None:
+            return KVCacheCompressionCompatibility(
+                schema_version=1,
+                provider="",
+                supported=True,
+                reasons=(),
+                platform=self.current_platform.device_type,
+            )
+
+        factory = self.current_platform.get_kv_cache_compression_provider_factory()
+        if factory is None:
+            reasons = (
+                "platform does not declare a KV cache compression provider factory",
+            )
+        else:
+            reasons = ("worker does not implement KV cache compression validation",)
+        return KVCacheCompressionCompatibility(
+            schema_version=config.schema_version,
+            provider=config.provider,
+            supported=False,
+            reasons=reasons,
+            platform=self.current_platform.device_type,
+            provider_factory=factory,
+        )
 
     def compile_or_warm_up_model(self) -> CompilationTimes:
         """Prepare model for execution through compilation/warmup.

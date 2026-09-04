@@ -559,6 +559,16 @@ class Platform:
         pass
 
     @classmethod
+    def get_kv_cache_compression_provider_factory(cls) -> str | None:
+        """Return a lazy KV cache compression provider factory qualname.
+
+        Querying platform capabilities must not import a provider or probe a
+        device. Platforms without compression support keep the default
+        ``None``.
+        """
+        return None
+
+    @classmethod
     def apply_config_platform_defaults(cls, vllm_config: "VllmConfig") -> None:
         """
         Apply the platform-specific default values to the config.
