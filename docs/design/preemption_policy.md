@@ -1,7 +1,7 @@
 # Request preemption policy extension
 
 V1 can delegate the choice of a request to preempt without exposing mutable
-scheduler objects. Configure `--preemption-policy package.module:PolicyClass`.
+scheduler objects. Configure `--preemption-policy package.module.PolicyClass`.
 The class must implement:
 
 ```python
