@@ -82,6 +82,9 @@ DEFAULT_BREAKABLE_CUDAGRAPH_ARCHITECTURES = frozenset(
         "DeepSeekV4MTPModel",
         "Dots3NoteForCausalLM",
         "Dots3NoteMTPModel",
+        "Glm5NextForCausalLM",
+        "Glm5NextForConditionalGeneration",
+        "Glm5NextMTPModel",
         "GlmMoeDsaForCausalLM",
         "HYV4ForCausalLM",
         "HYV4MTPModel",
@@ -2620,6 +2623,9 @@ class VllmConfig:
         if self.cache_config.kv_sharing_fast_prefill:
             # Will be added by https://github.com/vllm-project/vllm/pull/35045
             unsupported.append("KV sharing fast prefill")
+
+        if self.cache_config.mamba_cache_mode == "all":
+            unsupported.append("mamba cache mode 'all'")
 
         return unsupported
 
