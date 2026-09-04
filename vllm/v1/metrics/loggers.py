@@ -568,6 +568,23 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             gauge_kv_cache_usage, per_engine_labelvalues
         )
 
+        self.gauge_preemption_policy_events = self._gauge_cls(
+            name="vllm:preemption_policy_events",
+            documentation=(
+                "Cumulative preemption-policy events by policy and event kind."
+            ),
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames + ["policy", "event"],
+        )
+        self.gauge_preemption_policy_enabled = self._gauge_cls(
+            name="vllm:preemption_policy_enabled",
+            documentation=(
+                "Whether the configured external preemption policy remains enabled."
+            ),
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames + ["policy"],
+        )
+
         if envs.VLLM_COMPUTE_NANS_IN_LOGITS:
             counter_corrupted_requests = self._counter_cls(
                 name="vllm:corrupted_requests",
@@ -1131,6 +1148,22 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 scheduler_stats.num_skipped_waiting_reqs
             )
             self.gauge_kv_cache_usage[engine_idx].set(scheduler_stats.kv_cache_usage)
+            if (policy_stats := scheduler_stats.preemption_policy_stats) is not None:
+                labels = self.per_engine_labelvalues[engine_idx]
+                policy = str(policy_stats["policy_name"])
+                self.gauge_preemption_policy_enabled.labels(*labels, policy).set(
+                    int(bool(policy_stats["enabled"]))
+                )
+                for event in (
+                    "calls",
+                    "selections",
+                    "abstentions",
+                    "failures",
+                    "invalid_selections",
+                ):
+                    self.gauge_preemption_policy_events.labels(
+                        *labels, policy, event
+                    ).set(int(policy_stats[event]))
 
             self.counter_prefix_cache_queries[engine_idx].inc(
                 scheduler_stats.prefix_cache_stats.queries

@@ -47,6 +47,11 @@ from vllm.v1.core.sched.output import (
     ScheduledEncoderInputStats,
     SchedulerOutput,
 )
+from vllm.v1.core.sched.preemption import (
+    PreemptionCandidate,
+    PreemptionContext,
+    PreemptionPolicyController,
+)
 from vllm.v1.core.sched.request_queue import (
     RequestQueue,
     SchedulingPolicy,
@@ -199,6 +204,7 @@ class Scheduler(SchedulerInterface):
         # requests skipped in waiting flow due async deps or constraints.
         self.skipped_waiting = create_request_queue(self.policy)
         self.running: list[Request] = []
+        self.preemption_policy = PreemptionPolicyController(vllm_config)
 
         # The request IDs that are finished in between the previous and the
         # current steps. This is used to notify the workers about the finished
@@ -673,44 +679,37 @@ class Scheduler(SchedulerInterface):
                         # The request can be scheduled.
                         break
 
-                    # The request cannot be scheduled.
-                    # Preempt the lowest-priority request.
-                    if self.policy == SchedulingPolicy.PRIORITY:
-                        preempted_req = max(
-                            self.running,
-                            key=lambda r: (r.priority, r.arrival_time),
-                        )
-                        # Record the index of the preemption victim to
-                        # maintain accurate loop state.
-                        victim_index = self.running.index(preempted_req)
-                        del self.running[victim_index]
-                        # Decrement the loop cursor if the removed request
-                        # preceded the current iteration, preventing the
-                        # silent omission of the subsequent request.
-                        if victim_index < req_index:
-                            req_index -= 1
+                    # The request cannot be scheduled. Select a victim using an
+                    # immutable snapshot so policies cannot mutate scheduler state.
+                    preempted_req = self._select_preemption_victim(
+                        request, scheduled_timestamp
+                    )
+                    # Record the index of the preemption victim to maintain
+                    # accurate loop state for both built-in and custom policies.
+                    victim_index = self.running.index(preempted_req)
+                    del self.running[victim_index]
+                    if victim_index < req_index:
+                        req_index -= 1
 
-                        if preempted_req in scheduled_running_reqs:
-                            preempted_req_id = preempted_req.request_id
-                            scheduled_running_reqs.remove(preempted_req)
-                            restored = num_scheduled_tokens.pop(preempted_req_id)
-                            token_budget += restored
-                            input_budget += restored + draft_slots
-                            req_to_new_blocks.pop(preempted_req_id)
-                            scheduled_spec_decode_tokens.pop(preempted_req_id, None)
-                            preempted_encoder_inputs = scheduled_encoder_inputs.pop(
-                                preempted_req_id, None
+                    if preempted_req in scheduled_running_reqs:
+                        preempted_req_id = preempted_req.request_id
+                        scheduled_running_reqs.remove(preempted_req)
+                        restored = num_scheduled_tokens.pop(preempted_req_id)
+                        token_budget += restored
+                        input_budget += restored + draft_slots
+                        req_to_new_blocks.pop(preempted_req_id)
+                        scheduled_spec_decode_tokens.pop(preempted_req_id, None)
+                        preempted_encoder_inputs = scheduled_encoder_inputs.pop(
+                            preempted_req_id, None
+                        )
+                        if preempted_encoder_inputs:
+                            # Restore encoder compute budget if the preempted
+                            # request had encoder inputs scheduled in this step.
+                            num_embeds_to_restore = sum(
+                                preempted_req.get_num_encoder_embeds(i)
+                                for i in preempted_encoder_inputs
                             )
-                            if preempted_encoder_inputs:
-                                # Restore encoder compute budget if the preempted
-                                # request had encoder inputs scheduled in this step.
-                                num_embeds_to_restore = sum(
-                                    preempted_req.get_num_encoder_embeds(i)
-                                    for i in preempted_encoder_inputs
-                                )
-                                encoder_compute_budget += num_embeds_to_restore
-                    else:
-                        preempted_req = self.running.pop()
+                            encoder_compute_budget += num_embeds_to_restore
 
                     self._preempt_request(
                         preempted_req,
@@ -1452,6 +1451,30 @@ class Scheduler(SchedulerInterface):
         # Put the request back to the waiting queue.
         self.waiting.prepend_request(request)
         self.reset_preempted_req_ids.add(request.request_id)
+
+    def _select_preemption_victim(self, request: Request, timestamp: float) -> Request:
+        candidates = tuple(
+            PreemptionCandidate(
+                request_id=candidate.request_id,
+                priority=candidate.priority,
+                arrival_time=candidate.arrival_time,
+                num_prompt_tokens=candidate.num_prompt_tokens,
+                num_output_tokens=candidate.num_output_tokens,
+                num_computed_tokens=candidate.num_computed_tokens,
+                num_preemptions=candidate.num_preemptions,
+                max_tokens=candidate.max_tokens,
+            )
+            for candidate in self.running
+        )
+        context = PreemptionContext(
+            candidates=candidates,
+            scheduling_policy=self.policy.value,
+            requesting_request_id=request.request_id,
+            kv_cache_usage=self.kv_cache_manager.usage,
+            now=timestamp,
+        )
+        victim_id = self.preemption_policy.select_victim(context)
+        return self.requests[victim_id]
 
     def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
         # Advance the number of computed tokens for the request AFTER
@@ -2710,6 +2733,7 @@ class Scheduler(SchedulerInterface):
             num_waiting_reqs=len(self.waiting),
             num_skipped_waiting_reqs=len(self.skipped_waiting),
             kv_cache_usage=self.kv_cache_manager.usage,
+            preemption_policy_stats=self.preemption_policy.export_stats(),
             prefix_cache_stats=prefix_cache_stats,
             connector_prefix_cache_stats=connector_prefix_cache_stats,
             kv_cache_eviction_events=eviction_events,

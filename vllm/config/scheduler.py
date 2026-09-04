@@ -150,6 +150,13 @@ class SchedulerConfig:
     the default scheduler. Can be a class directly or the path to a class of
     form "mod.custom_class"."""
 
+    preemption_policy: str | type[object] | None = None
+    """Optional request-preemption policy class or import path.
+
+    The policy receives immutable request snapshots only. If it abstains,
+    raises, or returns an invalid request ID, the scheduler restores its
+    built-in FCFS or priority victim selection."""
+
     disable_hybrid_kv_cache_manager: bool | None = None
     """If set to True, KV cache manager will allocate the same size of KV cache
     for all attention layers even if there are multiple type of attention layers
@@ -253,7 +260,9 @@ class SchedulerConfig:
         hash_str = safe_hash(str(factors).encode(), usedforsecurity=False).hexdigest()
         return hash_str
 
-    @field_validator("scheduler_cls", "async_scheduling", mode="wrap")
+    @field_validator(
+        "scheduler_cls", "preemption_policy", "async_scheduling", mode="wrap"
+    )
     @classmethod
     def _skip_none_validation(cls, value: Any, handler: Callable) -> Any:
         """Skip validation if the value is `None` when initialisation is delayed."""

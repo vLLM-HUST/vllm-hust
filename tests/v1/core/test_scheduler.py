@@ -29,6 +29,7 @@ from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.core.kv_cache_coordinator import HybridKVCacheCoordinator
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
 from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
+from vllm.v1.core.sched.preemption import PreemptionContext
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.single_type_kv_cache_manager import register_all_kvcache_specs
 from vllm.v1.engine import FinishReason
@@ -51,6 +52,13 @@ from vllm.v1.structured_output import StructuredOutputGrammar, StructuredOutputM
 from .utils import EOS_TOKEN_ID, create_requests, create_scheduler, mock_kv
 
 pytestmark = pytest.mark.cpu_test
+
+
+class SelectFirstPreemptionPolicy:
+    """Select the opposite victim from the built-in FCFS policy."""
+
+    def select_victim(self, context: PreemptionContext) -> str:
+        return context.candidates[0].request_id
 
 
 def test_make_scheduled_encoder_input_stats_output_embeddings():
@@ -1131,6 +1139,41 @@ def test_preempt_during_execution():
     # sampled token id.
     assert len(requests[1].output_token_ids) == 1
     assert requests[1].output_token_ids[0] == 42
+
+
+def test_custom_preemption_policy_is_called_during_scheduling():
+    scheduler = create_scheduler(
+        max_num_batched_tokens=100,
+        block_size=16,
+        num_blocks=11,
+        enable_prefix_caching=False,
+        preemption_policy=SelectFirstPreemptionPolicy,
+    )
+    requests = create_requests(num_requests=2, num_tokens=80, block_size=16)
+
+    scheduler.add_request(requests[0])
+    output0 = scheduler.schedule()
+    scheduler.add_request(requests[1])
+    scheduler.schedule()
+    scheduler.update_from_output(
+        output0,
+        ModelRunnerOutput(
+            req_ids=[requests[0].request_id],
+            req_id_to_index={requests[0].request_id: 0},
+            sampled_token_ids=[[0]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
+    )
+
+    scheduler_output = scheduler.schedule()
+
+    assert requests[0].status == RequestStatus.PREEMPTED
+    assert scheduler.running == [requests[1]]
+    assert scheduler_output.preempted_req_ids == {requests[0].request_id}
+    assert scheduler.preemption_policy.export_stats()["calls"] == 1
+    assert scheduler.preemption_policy.export_stats()["selections"] == 1
 
 
 def test_prefix_cache_query_not_inflated_by_connector_defer():
