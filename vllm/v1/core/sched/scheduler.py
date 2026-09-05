@@ -38,6 +38,12 @@ from vllm.v1.core.encoder_cache_manager import (
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock
+from vllm.v1.core.sched.batch_admission import (
+    BatchAdmissionContext,
+    BatchAdmissionPolicyController,
+    BatchRequest,
+    BatchRequestState,
+)
 from vllm.v1.core.sched.interface import PauseState, SchedulerInterface
 from vllm.v1.core.sched.output import (
     CachedRequestData,
@@ -205,6 +211,8 @@ class Scheduler(SchedulerInterface):
         self.skipped_waiting = create_request_queue(self.policy)
         self.running: list[Request] = []
         self.preemption_policy = PreemptionPolicyController(vllm_config)
+        self.batch_admission_policy = BatchAdmissionPolicyController(vllm_config)
+        self._batch_eligible_request_ids: frozenset[str] | None = None
 
         # The request IDs that are finished in between the previous and the
         # current steps. This is used to notify the workers about the finished
@@ -565,6 +573,9 @@ class Scheduler(SchedulerInterface):
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+            if not self._is_batch_eligible(request.request_id):
+                req_index += 1
+                continue
             if input_budget <= draft_slots:
                 break
 
@@ -796,6 +807,11 @@ class Scheduler(SchedulerInterface):
 
                 request = request_queue.peek_request()
                 request_id = request.request_id
+
+                if not self._is_batch_eligible(request_id):
+                    request_queue.pop_request()
+                    step_skipped_waiting.prepend_request(request)
+                    continue
 
                 # try to promote blocked statuses while traversing skipped queue.
                 if self._is_blocked_waiting_status(
@@ -1389,6 +1405,90 @@ class Scheduler(SchedulerInterface):
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
         return scheduler_output
+
+    def schedule_batch(
+        self,
+        in_flight_batch_ids: frozenset[str],
+        throttle_prefills: bool = False,
+    ) -> tuple[str | None, SchedulerOutput] | None:
+        """Schedule one policy-selected logical batch for EngineCore."""
+        controller = self.batch_admission_policy
+        if not controller.enabled:
+            return None, self.schedule(throttle_prefills)
+
+        requests = self._make_batch_request_snapshots()
+        if not requests:
+            # Scheduler maintenance can outlive all request queues (for
+            # example, finished requests awaiting connector cleanup). It must
+            # still produce a built-in empty step so EngineCore can drain the
+            # lifecycle state; there is no request admission decision to make.
+            return None, self.schedule(throttle_prefills)
+
+        context = BatchAdmissionContext(
+            requests=requests,
+            in_flight_batch_ids=in_flight_batch_ids,
+            max_concurrent_batches=self.vllm_config.max_concurrent_batches,
+            pipeline_parallel_size=self.parallel_config.pipeline_parallel_size,
+            now=time.monotonic(),
+        )
+        admission = controller.admit_batch(context)
+        if admission is None:
+            if not controller.enabled:
+                return None, self.schedule(throttle_prefills)
+            return None
+
+        self._batch_eligible_request_ids = frozenset(admission.request_ids)
+        try:
+            scheduler_output = self.schedule(throttle_prefills)
+        finally:
+            self._batch_eligible_request_ids = None
+        scheduled_ids = set(scheduler_output.num_scheduled_tokens)
+        if not scheduled_ids.issubset(admission.request_ids):
+            raise AssertionError(
+                "batch admission policy allowed request IDs do not cover "
+                f"scheduled IDs {sorted(scheduled_ids)!r}"
+            )
+        return admission.batch_id, scheduler_output
+
+    def on_batch_complete(self, batch_id: str | None) -> None:
+        if batch_id is not None:
+            self.batch_admission_policy.on_batch_complete(batch_id)
+
+    def on_batch_abort(self, batch_id: str | None) -> None:
+        if batch_id is not None:
+            self.batch_admission_policy.on_batch_abort(batch_id)
+
+    def _is_batch_eligible(self, request_id: str) -> bool:
+        eligible = self._batch_eligible_request_ids
+        return eligible is None or request_id in eligible
+
+    def _make_batch_request_snapshots(self) -> tuple[BatchRequest, ...]:
+        snapshots: list[BatchRequest] = []
+        seen: set[str] = set()
+        request_groups: tuple[tuple[BatchRequestState, Iterable[Request]], ...] = (
+            ("running", self.running),
+            ("waiting", self.waiting),
+            ("waiting", self.skipped_waiting),
+        )
+        for state, requests in request_groups:
+            for request in requests:
+                if request.request_id in seen:
+                    continue
+                seen.add(request.request_id)
+                snapshots.append(
+                    BatchRequest(
+                        request_id=request.request_id,
+                        state=state,
+                        priority=request.priority,
+                        arrival_time=request.arrival_time,
+                        num_prompt_tokens=request.num_prompt_tokens,
+                        num_output_tokens=request.num_output_tokens,
+                        num_computed_tokens=request.num_computed_tokens,
+                        num_in_flight_tokens=request.num_in_flight_tokens,
+                        max_tokens=request.max_tokens,
+                    )
+                )
+        return tuple(snapshots)
 
     def _build_kv_connector_meta(
         self, connector: KVConnectorBase_V1, scheduler_output: SchedulerOutput
@@ -2745,6 +2845,7 @@ class Scheduler(SchedulerInterface):
             num_skipped_waiting_reqs=len(self.skipped_waiting),
             kv_cache_usage=self.kv_cache_manager.usage,
             preemption_policy_stats=self.preemption_policy.export_stats(),
+            batch_admission_policy_stats=(self.batch_admission_policy.export_stats()),
             prefix_cache_stats=prefix_cache_stats,
             connector_prefix_cache_stats=connector_prefix_cache_stats,
             kv_cache_eviction_events=eviction_events,

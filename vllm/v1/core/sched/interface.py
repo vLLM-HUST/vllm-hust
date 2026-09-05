@@ -82,6 +82,29 @@ class SchedulerInterface(ABC):
         """
         raise NotImplementedError
 
+    def schedule_batch(
+        self,
+        in_flight_batch_ids: frozenset[str],
+        throttle_prefills: bool = False,
+    ) -> "tuple[str | None, SchedulerOutput] | None":
+        """Schedule one entry for EngineCore's concurrent batch queue.
+
+        The default implementation preserves the built-in scheduler behavior.
+        Schedulers with a batch-admission policy may return ``None`` when all
+        logical batches are already in flight. The optional batch ID is owned
+        by EngineCore until the corresponding output is retired.
+        """
+        del in_flight_batch_ids
+        return None, self.schedule(throttle_prefills)
+
+    def on_batch_complete(self, batch_id: str | None) -> None:
+        """Notify a scheduler that an EngineCore queue entry was retired."""
+        del batch_id
+
+    def on_batch_abort(self, batch_id: str | None) -> None:
+        """Notify a scheduler that an EngineCore queue entry was discarded."""
+        del batch_id
+
     @abstractmethod
     def get_grammar_bitmask(
         self, scheduler_output: "SchedulerOutput"

@@ -197,6 +197,7 @@ class SchedulerStats:
 
     kv_cache_usage: float = 0.0
     preemption_policy_stats: dict[str, str | int | bool] | None = None
+    batch_admission_policy_stats: dict[str, str | int | bool] | None = None
     iteration_details: SchedulerIterationDetails | None = None
 
     prefix_cache_stats: PrefixCacheStats = field(default_factory=PrefixCacheStats)

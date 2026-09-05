@@ -584,6 +584,23 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             multiprocess_mode="mostrecent",
             labelnames=labelnames + ["policy"],
         )
+        self.gauge_batch_admission_policy_events = self._gauge_cls(
+            name="vllm:batch_admission_policy_events",
+            documentation=(
+                "Cumulative batch-admission-policy events by policy and event kind."
+            ),
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames + ["policy", "event"],
+        )
+        self.gauge_batch_admission_policy_enabled = self._gauge_cls(
+            name="vllm:batch_admission_policy_enabled",
+            documentation=(
+                "Whether the configured external batch admission policy remains "
+                "enabled."
+            ),
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames + ["policy"],
+        )
 
         if envs.VLLM_COMPUTE_NANS_IN_LOGITS:
             counter_corrupted_requests = self._counter_cls(
@@ -1162,6 +1179,28 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                     "invalid_selections",
                 ):
                     self.gauge_preemption_policy_events.labels(
+                        *labels, policy, event
+                    ).set(int(policy_stats[event]))
+
+            if (
+                policy_stats := scheduler_stats.batch_admission_policy_stats
+            ) is not None:
+                labels = self.per_engine_labelvalues[engine_idx]
+                policy = str(policy_stats["policy_name"])
+                self.gauge_batch_admission_policy_enabled.labels(*labels, policy).set(
+                    int(bool(policy_stats["enabled"]))
+                )
+                for event in (
+                    "calls",
+                    "admissions",
+                    "abstentions",
+                    "completions",
+                    "aborts",
+                    "failures",
+                    "invalid_admissions",
+                    "builtin_fallbacks",
+                ):
+                    self.gauge_batch_admission_policy_events.labels(
                         *labels, policy, event
                     ).set(int(policy_stats[event]))
 

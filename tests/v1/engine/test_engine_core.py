@@ -327,6 +327,13 @@ def test_engine_core_concurrent_batches():
         )
     assert engine_core.batch_queue is not None
 
+    with (
+        patch.object(engine_core.scheduler, "has_requests", return_value=True),
+        patch.object(engine_core.scheduler, "schedule_batch", return_value=None),
+    ):
+        assert engine_core.step_with_batch_queue() == (None, False)
+        assert not engine_core.batch_queue
+
     # Add two requests in a row. Each request have 12 prompt tokens.
     req0 = make_request_with_max_tokens("0", 5)
     engine_core.add_request(*engine_core.preprocess_add_request(req0))

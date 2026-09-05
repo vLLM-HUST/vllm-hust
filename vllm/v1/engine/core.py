@@ -209,7 +209,15 @@ class EngineCore:
         # to eliminate pipeline bubbles.
         self.batch_queue_size = vllm_config.max_concurrent_batches
         self.batch_queue: (
-            deque[tuple[Future[ModelRunnerOutput], SchedulerOutput, Future[Any]]] | None
+            deque[
+                tuple[
+                    Future[ModelRunnerOutput],
+                    SchedulerOutput,
+                    Future[Any],
+                    str | None,
+                ]
+            ]
+            | None
         ) = None
         if self.batch_queue_size > 1:
             logger.debug("Batch queue is enabled with size %d", self.batch_queue_size)
@@ -673,68 +681,97 @@ class EngineCore:
 
         model_executed = False
         deferred_scheduler_output = None
+        deferred_batch_id = None
         if self.scheduler.has_requests():
-            scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
-            with self.log_error_detail(scheduler_output):
-                exec_future = self.model_executor.execute_model(
-                    scheduler_output, non_block=True
-                )
-            if self.is_ec_consumer:
-                model_executed = scheduler_output.total_num_scheduled_tokens > 0
+            in_flight_batch_ids = frozenset(
+                batch_id for _, _, _, batch_id in batch_queue if batch_id is not None
+            )
+            scheduled_batch = self.scheduler.schedule_batch(
+                in_flight_batch_ids, self._should_throttle_prefills()
+            )
+            if scheduled_batch is not None:
+                batch_id, scheduler_output = scheduled_batch
+                with self.log_error_detail(scheduler_output):
+                    try:
+                        exec_future = self.model_executor.execute_model(
+                            scheduler_output, non_block=True
+                        )
+                    except Exception:
+                        self.scheduler.on_batch_abort(batch_id)
+                        raise
+                if self.is_ec_consumer:
+                    model_executed = scheduler_output.total_num_scheduled_tokens > 0
 
-            if self.is_pooling_model or not model_executed:
-                # No sampling required (no requests scheduled).
-                future = cast(Future[ModelRunnerOutput], exec_future)
-            else:
-                if not scheduler_output.pending_structured_output_tokens:
-                    # We aren't waiting for any tokens, get any grammar output
-                    # and sample immediately.
-                    grammar_output = self.scheduler.get_grammar_bitmask(
-                        scheduler_output
-                    )
-                    future = self.model_executor.sample_tokens(
-                        grammar_output, non_block=True
-                    )
+                if self.is_pooling_model or not model_executed:
+                    # No sampling required (no requests scheduled).
+                    future = cast(Future[ModelRunnerOutput], exec_future)
                 else:
-                    # We need to defer sampling until we have processed the model output
-                    # from the prior step.
-                    deferred_scheduler_output = scheduler_output
+                    if not scheduler_output.pending_structured_output_tokens:
+                        # We aren't waiting for any tokens, get any grammar output
+                        # and sample immediately.
+                        grammar_output = self.scheduler.get_grammar_bitmask(
+                            scheduler_output
+                        )
+                        try:
+                            future = self.model_executor.sample_tokens(
+                                grammar_output, non_block=True
+                            )
+                        except Exception:
+                            self.scheduler.on_batch_abort(batch_id)
+                            raise
+                    else:
+                        # We need to defer sampling until we have processed the model
+                        # output from the prior step.
+                        deferred_scheduler_output = scheduler_output
+                        deferred_batch_id = batch_id
 
-            if not deferred_scheduler_output:
-                # Add this step's future to the queue.
-                batch_queue.appendleft((future, scheduler_output, exec_future))
-                if len(batch_queue) < self.batch_queue_size and (
-                    model_executed or self.scheduler.has_requests()
-                ):
-                    # Don't block on next worker response unless the queue is full
-                    # or there are no more requests to schedule.
-                    return None, model_executed
+                if not deferred_scheduler_output:
+                    # Add this step's future to the queue.
+                    batch_queue.appendleft(
+                        (future, scheduler_output, exec_future, batch_id)
+                    )
+                    if len(batch_queue) < self.batch_queue_size and (
+                        model_executed or self.scheduler.has_requests()
+                    ):
+                        # Don't block on next worker response unless the queue is full
+                        # or there are no more requests to schedule.
+                        return None, model_executed
 
-        elif not batch_queue:
-            # Queue is empty. We should not reach here since this method should
-            # only be called when the scheduler contains requests or the queue
-            # is non-empty.
+        if not batch_queue:
+            # A policy can temporarily decline admission even though the
+            # scheduler still owns unfinished work (for example, a request
+            # waiting on remote KV state). There is no worker result to pop in
+            # that case; let the busy loop yield and retry admission later.
             return None, False
 
         # Block until the next result is available.
-        future, scheduler_output, exec_model_fut = batch_queue.pop()
-        with (
-            self.capture_iteration_details(scheduler_output) as iteration_details,
-            self.log_error_detail(scheduler_output),
-        ):
-            model_output = future.result()
-            if model_output is None:
-                # None from sample_tokens() implies that the original execute_model()
-                # call failed - raise that exception.
-                exec_model_fut.result()
-                raise RuntimeError("unexpected error")
+        future, scheduler_output, exec_model_fut, completed_batch_id = batch_queue.pop()
+        try:
+            with (
+                self.capture_iteration_details(scheduler_output) as iteration_details,
+                self.log_error_detail(scheduler_output),
+            ):
+                model_output = future.result()
+                if model_output is None:
+                    # None from sample_tokens() implies that the original
+                    # execute_model() call failed - raise that exception.
+                    exec_model_fut.result()
+                    raise RuntimeError("unexpected error")
+        except Exception:
+            self.scheduler.on_batch_abort(completed_batch_id)
+            raise
 
         # Before processing the model output, process any aborts that happened
         # during the model execution.
         self._process_aborts_queue()
-        engine_core_outputs = self.scheduler.update_from_output(
-            scheduler_output, model_output
-        )
+        try:
+            engine_core_outputs = self.scheduler.update_from_output(
+                scheduler_output, model_output
+            )
+        except Exception:
+            self.scheduler.on_batch_abort(completed_batch_id)
+            raise
+        self.scheduler.on_batch_complete(completed_batch_id)
         self._attach_iteration_details(engine_core_outputs, iteration_details)
 
         # NOTE(nick): We can either handle the deferred tasks here or save
@@ -757,8 +794,16 @@ class EngineCore:
             grammar_output = self.scheduler.get_grammar_bitmask(
                 deferred_scheduler_output
             )
-            future = self.model_executor.sample_tokens(grammar_output, non_block=True)
-            batch_queue.appendleft((future, deferred_scheduler_output, exec_future))
+            try:
+                future = self.model_executor.sample_tokens(
+                    grammar_output, non_block=True
+                )
+            except Exception:
+                self.scheduler.on_batch_abort(deferred_batch_id)
+                raise
+            batch_queue.appendleft(
+                (future, deferred_scheduler_output, exec_future, deferred_batch_id)
+            )
 
         return engine_core_outputs, model_executed
 

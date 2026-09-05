@@ -75,6 +75,7 @@ def create_scheduler(
     kv_cache_spec: KVCacheSpec | None = None,
     per_request_spec_decode_metrics: str = "none",
     preemption_policy: str | type[object] | None = None,
+    batch_admission_policy: str | type[object] | None = None,
 ) -> Scheduler | AsyncScheduler:
     """Create scheduler under test.
 
@@ -115,6 +116,7 @@ def create_scheduler(
         # Ensure admission/preemption mechanics are deterministic
         watermark=0.0,
         preemption_policy=preemption_policy,
+        batch_admission_policy=batch_admission_policy,
     )
     # Cache config, optionally force APC
     cache_config = CacheConfig(
