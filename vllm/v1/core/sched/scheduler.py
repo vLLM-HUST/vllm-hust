@@ -1472,6 +1472,17 @@ class Scheduler(SchedulerInterface):
             requesting_request_id=request.request_id,
             kv_cache_usage=self.kv_cache_manager.usage,
             now=timestamp,
+            builtin_victim_id=(
+                max(
+                    candidates,
+                    key=lambda candidate: (
+                        candidate.priority,
+                        candidate.arrival_time,
+                    ),
+                ).request_id
+                if self.policy.value == "priority"
+                else candidates[-1].request_id
+            ),
         )
         victim_id = self.preemption_policy.select_victim(context)
         return self.requests[victim_id]

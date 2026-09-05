@@ -25,6 +25,7 @@ def make_context(policy: str = "fcfs") -> PreemptionContext:
         requesting_request_id="first",
         kv_cache_usage=0.95,
         now=3.0,
+        builtin_victim_id="last",
     )
 
 
@@ -78,6 +79,15 @@ def test_policy_receives_immutable_snapshots() -> None:
         context.kv_cache_usage = 0.0  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
         context.candidates[0].num_computed_tokens = 0  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        context.builtin_victim_id = "first"  # type: ignore[misc]
+
+
+def test_context_exposes_requester_and_builtin_victim() -> None:
+    context = make_context()
+
+    assert context.requesting_request_id == "first"
+    assert context.builtin_victim_id == "last"
 
 
 def test_custom_policy_selection_and_abstention() -> None:

@@ -1201,10 +1201,10 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 idle_hist = self.histogram_kv_block_idle_before_evict[engine_idx]
                 reuse_hist = self.histogram_kv_block_reuse_gap[engine_idx]
 
-                for event in scheduler_stats.kv_cache_eviction_events:
-                    lifetime_hist.observe(event.lifetime_seconds)
-                    idle_hist.observe(event.idle_seconds)
-                    for gap in event.reuse_gaps_seconds:
+                for eviction_event in scheduler_stats.kv_cache_eviction_events:
+                    lifetime_hist.observe(eviction_event.lifetime_seconds)
+                    idle_hist.observe(eviction_event.idle_seconds)
+                    for gap in eviction_event.reuse_gaps_seconds:
                         reuse_hist.observe(gap)
 
             if self.gauge_lora_info is not None:
