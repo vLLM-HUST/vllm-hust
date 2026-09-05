@@ -29,8 +29,11 @@ def make_context(in_flight: frozenset[str] = frozenset()) -> BatchAdmissionConte
     )
 
 
-def make_config(policy=None):
-    scheduler_config = SimpleNamespace(batch_admission_policy=policy)
+def make_config(policy=None, policy_config=None):
+    scheduler_config = SimpleNamespace(
+        batch_admission_policy=policy,
+        batch_admission_policy_config=policy_config,
+    )
     return SimpleNamespace(scheduler_config=scheduler_config)
 
 
@@ -68,6 +71,15 @@ class FailingPolicy:
         raise RuntimeError("policy failure")
 
 
+class ConfiguredPolicy(FirstPolicy):
+    received = None
+
+    @classmethod
+    def from_config(cls, config, vllm_config):
+        cls.received = (config, vllm_config)
+        return cls()
+
+
 def test_policy_receives_immutable_snapshots() -> None:
     context = make_context()
 
@@ -75,6 +87,15 @@ def test_policy_receives_immutable_snapshots() -> None:
         context.now = 0.0  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
         context.requests[0].num_computed_tokens = 0  # type: ignore[misc]
+
+
+def test_policy_factory_receives_isolated_scheduler_config() -> None:
+    config = make_config(ConfiguredPolicy, {"microbatches": 2})
+
+    controller = BatchAdmissionPolicyController(config)
+
+    assert controller.enabled
+    assert ConfiguredPolicy.received == ({"microbatches": 2}, config)
 
 
 def test_admission_and_completion_are_counted() -> None:

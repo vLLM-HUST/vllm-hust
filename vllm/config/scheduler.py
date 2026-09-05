@@ -166,6 +166,13 @@ class SchedulerConfig:
     the built-in scheduler without exposing mutable Request or SchedulerOutput
     objects to the policy."""
 
+    batch_admission_policy_config: dict[str, Any] | None = None
+    """Opaque JSON configuration for ``batch_admission_policy``.
+
+    This is deliberately separate from platform ``additional_config`` so a
+    scheduler extension does not depend on, or collide with, platform-specific
+    configuration validation."""
+
     disable_hybrid_kv_cache_manager: bool | None = None
     """If set to True, KV cache manager will allocate the same size of KV cache
     for all attention layers even if there are multiple type of attention layers
@@ -282,6 +289,13 @@ class SchedulerConfig:
         return None if value is None else handler(value)
 
     def __post_init__(self, max_model_len: int, is_encoder_decoder: bool) -> None:
+        if (
+            self.batch_admission_policy is None
+            and self.batch_admission_policy_config is not None
+        ):
+            raise ValueError(
+                "batch_admission_policy_config requires batch_admission_policy"
+            )
         if is_encoder_decoder:
             # Chunked prefill should be disabled for encoder-decoder models.
             self.disable_chunked_mm_input = True

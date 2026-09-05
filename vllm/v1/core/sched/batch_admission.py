@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-BATCH_ADMISSION_POLICY_API_VERSION = "1.0"
+BATCH_ADMISSION_POLICY_API_VERSION = "1.1"
 BatchRequestState = Literal["waiting", "running"]
 
 
@@ -71,6 +72,17 @@ class BatchAdmissionPolicy(Protocol):
         ...
 
 
+class BatchAdmissionPolicyFactory(Protocol):
+    """Optional factory contract for policies requiring JSON configuration."""
+
+    @classmethod
+    def from_config(
+        cls, config: Mapping[str, Any], vllm_config: VllmConfig
+    ) -> BatchAdmissionPolicy:
+        """Build a policy from its isolated configuration and engine config."""
+        ...
+
+
 @dataclass(slots=True)
 class BatchAdmissionPolicyStats:
     """Cumulative policy invocation and failover counters."""
@@ -102,9 +114,10 @@ def _load_policy(vllm_config: VllmConfig) -> BatchAdmissionPolicy | None:
         if isinstance(configured, str)
         else configured
     )
-    factory = getattr(implementation, "from_vllm_config", None)
+    factory = getattr(implementation, "from_config", None)
     if callable(factory):
-        policy = factory(vllm_config)
+        raw_config = vllm_config.scheduler_config.batch_admission_policy_config
+        policy = factory(raw_config or {}, vllm_config)
     elif isinstance(implementation, type):
         policy = implementation()
     else:
@@ -238,6 +251,7 @@ __all__ = [
     "BatchAdmission",
     "BatchAdmissionContext",
     "BatchAdmissionPolicy",
+    "BatchAdmissionPolicyFactory",
     "BatchAdmissionPolicyController",
     "BatchAdmissionPolicyStats",
     "BatchRequest",
