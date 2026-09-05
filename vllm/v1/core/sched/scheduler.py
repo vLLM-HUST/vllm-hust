@@ -1416,8 +1416,16 @@ class Scheduler(SchedulerInterface):
         if not controller.enabled:
             return None, self.schedule(throttle_prefills)
 
+        requests = self._make_batch_request_snapshots()
+        if not requests:
+            # Scheduler maintenance can outlive all request queues (for
+            # example, finished requests awaiting connector cleanup). It must
+            # still produce a built-in empty step so EngineCore can drain the
+            # lifecycle state; there is no request admission decision to make.
+            return None, self.schedule(throttle_prefills)
+
         context = BatchAdmissionContext(
-            requests=self._make_batch_request_snapshots(),
+            requests=requests,
             in_flight_batch_ids=in_flight_batch_ids,
             max_concurrent_batches=self.vllm_config.max_concurrent_batches,
             pipeline_parallel_size=self.parallel_config.pipeline_parallel_size,

@@ -1219,6 +1219,19 @@ def test_batch_admission_policy_filters_without_mutating_scheduler_output():
     assert stats["completions"] == 1
 
 
+def test_batch_admission_policy_bypasses_requestless_maintenance_step(monkeypatch):
+    scheduler = create_scheduler(
+        pipeline_parallel_size=2,
+        batch_admission_policy=OneRequestPerBatchPolicy,
+    )
+    maintenance_output = Mock(spec=SchedulerOutput)
+    monkeypatch.setattr(scheduler, "_make_batch_request_snapshots", tuple)
+    monkeypatch.setattr(scheduler, "schedule", lambda _: maintenance_output)
+
+    assert scheduler.schedule_batch(frozenset(), True) == (None, maintenance_output)
+    assert scheduler.batch_admission_policy.export_stats()["calls"] == 0
+
+
 def test_prefix_cache_query_not_inflated_by_connector_defer():
     """The GPU prefix-cache query is recorded at admission, so a request the
     connector defers several times is counted once, not once per retry."""
