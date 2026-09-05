@@ -737,10 +737,11 @@ class EngineCore:
                         # or there are no more requests to schedule.
                         return None, model_executed
 
-        elif not batch_queue:
-            # Queue is empty. We should not reach here since this method should
-            # only be called when the scheduler contains requests or the queue
-            # is non-empty.
+        if not batch_queue:
+            # A policy can temporarily decline admission even though the
+            # scheduler still owns unfinished work (for example, a request
+            # waiting on remote KV state). There is no worker result to pop in
+            # that case; let the busy loop yield and retry admission later.
             return None, False
 
         # Block until the next result is available.
