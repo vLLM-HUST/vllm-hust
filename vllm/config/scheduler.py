@@ -158,6 +158,14 @@ class SchedulerConfig:
     returns an invalid request ID, the scheduler restores its built-in FCFS or
     priority victim selection."""
 
+    batch_admission_policy: str | type[object] | None = None
+    """Optional concurrent-batch admission policy class or import path.
+
+    The policy receives immutable request snapshots and IDs for logical batches
+    already in EngineCore's queue. Its validated request allowlist is applied by
+    the built-in scheduler without exposing mutable Request or SchedulerOutput
+    objects to the policy."""
+
     disable_hybrid_kv_cache_manager: bool | None = None
     """If set to True, KV cache manager will allocate the same size of KV cache
     for all attention layers even if there are multiple type of attention layers
@@ -262,7 +270,11 @@ class SchedulerConfig:
         return hash_str
 
     @field_validator(
-        "scheduler_cls", "preemption_policy", "async_scheduling", mode="wrap"
+        "scheduler_cls",
+        "preemption_policy",
+        "batch_admission_policy",
+        "async_scheduling",
+        mode="wrap",
     )
     @classmethod
     def _skip_none_validation(cls, value: Any, handler: Callable) -> Any:

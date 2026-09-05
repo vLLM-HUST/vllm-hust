@@ -28,6 +28,10 @@ from vllm.utils.hashing import sha256
 from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.core.kv_cache_coordinator import HybridKVCacheCoordinator
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
+from vllm.v1.core.sched.batch_admission import (
+    BatchAdmission,
+    BatchAdmissionContext,
+)
 from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
 from vllm.v1.core.sched.preemption import PreemptionContext
 from vllm.v1.core.sched.scheduler import Scheduler
@@ -59,6 +63,15 @@ class SelectFirstPreemptionPolicy:
 
     def select_victim(self, context: PreemptionContext) -> str:
         return context.candidates[0].request_id
+
+
+class OneRequestPerBatchPolicy:
+    def admit_batch(self, context: BatchAdmissionContext) -> BatchAdmission | None:
+        for request in context.requests:
+            batch_id = f"batch-{request.request_id}"
+            if batch_id not in context.in_flight_batch_ids:
+                return BatchAdmission(batch_id, (request.request_id,))
+        return None
 
 
 def test_make_scheduled_encoder_input_stats_output_embeddings():
@@ -1174,6 +1187,36 @@ def test_custom_preemption_policy_is_called_during_scheduling():
     assert scheduler_output.preempted_req_ids == {requests[0].request_id}
     assert scheduler.preemption_policy.export_stats()["calls"] == 1
     assert scheduler.preemption_policy.export_stats()["selections"] == 1
+
+
+def test_batch_admission_policy_filters_without_mutating_scheduler_output():
+    scheduler = create_scheduler(
+        max_num_batched_tokens=100,
+        pipeline_parallel_size=2,
+        batch_admission_policy=OneRequestPerBatchPolicy,
+    )
+    requests = create_requests(num_requests=2, num_tokens=10)
+    for request in requests:
+        scheduler.add_request(request)
+
+    first = scheduler.schedule_batch(frozenset())
+    assert first is not None
+    first_batch_id, first_output = first
+    assert first_batch_id == f"batch-{requests[0].request_id}"
+    assert set(first_output.num_scheduled_tokens) == {requests[0].request_id}
+    assert not hasattr(first_output, "batch_id")
+
+    second = scheduler.schedule_batch(frozenset({first_batch_id}))
+    assert second is not None
+    second_batch_id, second_output = second
+    assert second_batch_id == f"batch-{requests[1].request_id}"
+    assert set(second_output.num_scheduled_tokens) == {requests[1].request_id}
+
+    scheduler.on_batch_complete(first_batch_id)
+    stats = scheduler.batch_admission_policy.export_stats()
+    assert stats["calls"] == 2
+    assert stats["admissions"] == 2
+    assert stats["completions"] == 1
 
 
 def test_prefix_cache_query_not_inflated_by_connector_defer():
