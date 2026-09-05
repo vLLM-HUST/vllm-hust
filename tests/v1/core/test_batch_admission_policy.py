@@ -6,12 +6,19 @@ from types import SimpleNamespace
 
 import pytest
 
+from vllm.config import SchedulerConfig
 from vllm.v1.core.sched.batch_admission import (
     BatchAdmission,
     BatchAdmissionContext,
     BatchAdmissionPolicyController,
     BatchRequest,
 )
+
+
+def test_batch_admission_policy_rejects_colon_import_path_early():
+    with pytest.raises(ValueError, match="dotted Python import path"):
+        SchedulerConfig.default_factory(batch_admission_policy="example.policy:Policy")
+
 
 pytestmark = pytest.mark.cpu_test
 

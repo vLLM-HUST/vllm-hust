@@ -289,6 +289,13 @@ class SchedulerConfig:
         return None if value is None else handler(value)
 
     def __post_init__(self, max_model_len: int, is_encoder_decoder: bool) -> None:
+        if isinstance(self.batch_admission_policy, str) and ":" in (
+            self.batch_admission_policy
+        ):
+            raise ValueError(
+                "batch_admission_policy must use a dotted Python import path "
+                "(for example, 'package.module.Policy'), not 'module:Policy'"
+            )
         if (
             self.batch_admission_policy is None
             and self.batch_admission_policy_config is not None
