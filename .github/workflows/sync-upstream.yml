@@ -29,7 +29,6 @@ jobs:
           APP_PRIVATE_KEY: ${{ secrets.UPSTREAM_SYNC_APP_PRIVATE_KEY }}
         shell: bash
         run: |
-          # shellcheck disable=SC2129
           set -euo pipefail
           if [[ -n "$APP_CLIENT_ID" && -z "$APP_PRIVATE_KEY" || -z "$APP_CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
             echo "::error::Configure both UPSTREAM_SYNC_APP_CLIENT_ID and UPSTREAM_SYNC_APP_PRIVATE_KEY."
@@ -43,9 +42,11 @@ jobs:
             exit 1
           fi
           upstream_branch="$(gh api "repos/${upstream_repo}" --jq '.default_branch')"
-          echo "repository=$upstream_repo" >> "$GITHUB_OUTPUT"
-          echo "branch=$upstream_branch" >> "$GITHUB_OUTPUT"
-          echo "target=$branch" >> "$GITHUB_OUTPUT"
+          {
+            echo "repository=$upstream_repo"
+            echo "branch=$upstream_branch"
+            echo "target=$branch"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create repository-scoped sync token
         id: app-token
@@ -67,7 +68,6 @@ jobs:
           TARGET_BRANCH: ${{ steps.upstream.outputs.target }}
         shell: bash
         run: |
-          # shellcheck disable=SC2016
           set -euo pipefail
           echo "has-sync-credential=$HAS_SYNC_CREDENTIAL" >> "$GITHUB_OUTPUT"
           if [[ "$HAS_SYNC_CREDENTIAL" != "true" ]]; then
@@ -75,15 +75,16 @@ jobs:
           fi
           before="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_BRANCH}" --jq '.sha')"
           upstream="$(gh api "repos/${UPSTREAM_REPOSITORY}/commits/${UPSTREAM_BRANCH}" --jq '.sha')"
-          printf 'Target before: `%s`\nUpstream observed: `%s`\n' "$before" "$upstream" >> "$GITHUB_STEP_SUMMARY"
+          printf "Target before: \`%s\`\nUpstream observed: \`%s\`\n" "$before" "$upstream" >> "$GITHUB_STEP_SUMMARY"
           relation="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${upstream}...${before}" --jq '.status')"
           if [[ "$relation" == ahead || "$relation" == identical ]]; then
-            printf '\nNo-op: target `%s` already contains the observed upstream commit; no write requested.\n' "$before" >> "$GITHUB_STEP_SUMMARY"
+            printf "\nNo-op: target \`%s\` already contains the observed upstream commit; no write requested.\n" "$before" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           response="$(mktemp)"
           failure="$(mktemp)"
-          trap 'rm -f "$response" "$failure"' EXIT
+          cleanup_merge_files() { rm -f "$response" "$failure"; }
+          trap cleanup_merge_files EXIT
           # Pin the observed upstream SHA; preserve the old GITHUB_TOKEN behavior
           # of not launching imported hardware/release CI from a synchronization.
           if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/merges" \
@@ -98,9 +99,9 @@ jobs:
               *) kind=api-error; hint="Inspect the API error and retry only after distinguishing a transient failure from a conflict." ;;
             esac
             echo "failure-kind=$kind" >> "$GITHUB_OUTPUT"
-            printf '::error::Upstream sync failed (%s). %s\n' "$kind" "$hint"
-            printf '%s\n' "$reason" >&2
-            printf '\nFailure: **%s**. %s\n' "$kind" "$hint" >> "$GITHUB_STEP_SUMMARY"
+            printf "::error::Upstream sync failed (%s). %s\n" "$kind" "$hint"
+            printf "%s\n" "$reason" >&2
+            printf "\nFailure: **%s**. %s\n" "$kind" "$hint" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           if [[ -s "$response" ]]; then
@@ -110,15 +111,15 @@ jobs:
             echo "Already contains the observed upstream commit (HTTP 204)." >> "$GITHUB_STEP_SUMMARY"
             merged="$before"
           fi
-          printf '\nMerge response SHA: `%s`\n' "$merged" >> "$GITHUB_STEP_SUMMARY"
+          printf "\nMerge response SHA: \`%s\`\n" "$merged" >> "$GITHUB_STEP_SUMMARY"
           # Branch reads can briefly lag a successful merge. Retry reads, never
           # the mutation, and still fail closed if ancestry does not converge.
           verified=false
           for attempt in 1 2 3 4 5; do
-            after="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_BRANCH}" -H 'Cache-Control: no-cache' --jq '.sha')"
+            after="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_BRANCH}" -H "Cache-Control: no-cache" --jq ".sha")"
             verified=true
             for ancestor in "$before" "$upstream" "$merged"; do
-              status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${ancestor}...${after}" -H 'Cache-Control: no-cache' --jq '.status')"
+              status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${ancestor}...${after}" -H "Cache-Control: no-cache" --jq ".status")"
               if [[ "$status" != ahead && "$status" != identical ]]; then
                 verified=false
                 break
@@ -135,7 +136,7 @@ jobs:
             echo "::error::Post-merge ancestry verification failed for $ancestor ($status); branch $after, merge $merged."
             exit 1
           fi
-          printf '\nTarget after: `%s`\nBoth previous fork HEAD and observed upstream HEAD are ancestors.\n' "$after" >> "$GITHUB_STEP_SUMMARY"
+          printf "\nTarget after: \`%s\`\nBoth previous fork HEAD and observed upstream HEAD are ancestors.\n" "$after" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create or update failure issue
         if: failure()
@@ -146,25 +147,25 @@ jobs:
           FAILURE_KIND: ${{ steps.merge.outputs.failure-kind || 'configuration-or-api' }}
         shell: bash
         run: |
-          # shellcheck disable=SC2016
           set -euo pipefail
           title="[Automation] Daily upstream sync failed"
           run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           issue_number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
             --search "$title in:title" --json number,title \
-            --jq '.[] | select(.title == "[Automation] Daily upstream sync failed") | .number' | head -n 1)"
+            --jq ".[] | select(.title == \"[Automation] Daily upstream sync failed\") | .number" | head -n 1)"
           body="$(mktemp)"
           stored="$(mktemp)"
-          trap 'rm -f "$body" "$stored"' EXIT
-          printf 'Daily synchronization from `%s:%s` into `%s:%s` failed.\n\nFailure class: **%s**\n\nRun: %s\n\nSee the run summary for exact source SHAs and diagnosis. Workflow updates require a dedicated App/Token with Contents and Workflows write access. Conflicts must be resolved without discarding fork-only commits.\n' \
+          cleanup_issue_files() { rm -f "$body" "$stored"; }
+          trap cleanup_issue_files EXIT
+          printf "Daily synchronization from \`%s:%s\` into \`%s:%s\` failed.\n\nFailure class: **%s**\n\nRun: %s\n\nSee the run summary for exact source SHAs and diagnosis. Workflow updates require a dedicated App/Token with Contents and Workflows write access. Conflicts must be resolved without discarding fork-only commits.\n" \
             "${UPSTREAM_REPOSITORY:-unknown}" "${UPSTREAM_BRANCH:-unknown}" \
             "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$FAILURE_KIND" "$run_url" > "$body"
           if [[ -n "$issue_number" ]]; then
             url="$(gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body-file "$body")"
-            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${url##*issuecomment-}" | jq -j '.body' > "$stored"
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${url##*issuecomment-}" | jq -j ".body" > "$stored"
           else
             url="$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body" --assignee ShuhaoZhangTony)"
-            gh api "repos/${GITHUB_REPOSITORY}/issues/${url##*/}" | jq -j '.body' > "$stored"
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${url##*/}" | jq -j ".body" > "$stored"
           fi
           cmp "$body" "$stored"
 
