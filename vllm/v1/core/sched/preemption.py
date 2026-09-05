@@ -35,13 +35,22 @@ class PreemptionCandidate:
 
 @dataclass(frozen=True, slots=True)
 class PreemptionContext:
-    """Immutable snapshot of one scheduler preemption decision."""
+    """Immutable snapshot of one scheduler preemption decision.
+
+    ``requesting_request_id`` identifies the running request whose KV
+    allocation just failed. Selecting it resets its computed KV state, so a
+    policy that cannot establish a material benefit should return ``None``.
+    ``builtin_victim_id`` lets policies compare against vLLM's stable fallback
+    without copying FCFS/priority ordering rules. It is optional only for
+    source compatibility with callers that constructed API 1.0 contexts.
+    """
 
     candidates: tuple[PreemptionCandidate, ...]
     scheduling_policy: PreemptionSchedulingPolicy
     requesting_request_id: str
     kv_cache_usage: float
     now: float
+    builtin_victim_id: str | None = None
 
 
 @runtime_checkable
@@ -74,6 +83,9 @@ class PreemptionPolicyStats:
 def _builtin_victim_id(context: PreemptionContext) -> str:
     if not context.candidates:
         raise ValueError("cannot select a preemption victim from an empty set")
+    candidate_ids = {candidate.request_id for candidate in context.candidates}
+    if context.builtin_victim_id in candidate_ids:
+        return context.builtin_victim_id
     if context.scheduling_policy == "priority":
         return max(
             context.candidates,

@@ -153,9 +153,10 @@ class SchedulerConfig:
     preemption_policy: str | type[object] | None = None
     """Optional request-preemption policy class or import path.
 
-    The policy receives immutable request snapshots only. If it abstains,
-    raises, or returns an invalid request ID, the scheduler restores its
-    built-in FCFS or priority victim selection."""
+    The policy receives immutable request snapshots, the request whose KV
+    allocation failed, and the built-in victim ID. If it abstains, raises, or
+    returns an invalid request ID, the scheduler restores its built-in FCFS or
+    priority victim selection."""
 
     disable_hybrid_kv_cache_manager: bool | None = None
     """If set to True, KV cache manager will allocate the same size of KV cache
