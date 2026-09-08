@@ -5,9 +5,10 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, MutableMapping
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, overload
 
 T = TypeVar("T")
+TDefault = TypeVar("TDefault")
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "incomplete"})
 
 
@@ -98,7 +99,18 @@ class BoundedResponseStore(MutableMapping[str, T]):
         self._purge_expired(self._clock())
         return len(self._items)
 
-    def get(self, key: str, default: T | None = None) -> T | None:
+    @overload
+    def get(self, key: str) -> T | None: ...
+
+    @overload
+    def get(self, key: str, default: T) -> T: ...
+
+    @overload
+    def get(self, key: str, default: TDefault) -> T | TDefault: ...
+
+    def get(
+        self, key: str, default: TDefault | None = None
+    ) -> T | TDefault | None:
         now = self._clock()
         self._purge_expired(now)
         item = self._items.get(key)
