@@ -108,9 +108,7 @@ class BoundedResponseStore(MutableMapping[str, T]):
     @overload
     def get(self, key: str, default: TDefault) -> T | TDefault: ...
 
-    def get(
-        self, key: str, default: TDefault | None = None
-    ) -> T | TDefault | None:
+    def get(self, key: str, default: TDefault | None = None) -> T | TDefault | None:
         now = self._clock()
         self._purge_expired(now)
         item = self._items.get(key)
