@@ -11,10 +11,96 @@ from vllm.entrypoints.openai.responses.api_router import (
 )
 from vllm.entrypoints.openai.responses.custom_tools import (
     CustomToolStreamTransformer,
+    _convert_custom_tool_lark_to_ebnf,
+    constrain_custom_tool_formats,
 )
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 
 pytestmark = pytest.mark.skip_global_cleanup
+
+
+APPLY_PATCH_LARK = r"""start: begin_patch hunk+ end_patch
+begin_patch: "*** Begin Patch" LF
+end_patch: "*** End Patch" LF?
+
+hunk: add_hunk | delete_hunk | update_hunk
+add_hunk: "*** Add File: " filename LF add_line+
+delete_hunk: "*** Delete File: " filename LF
+update_hunk: "*** Update File: " filename LF change_move? change?
+
+filename: /(.+)/
+add_line: "+" /(.*)/ LF -> line
+
+change_move: "*** Move to: " filename LF
+change: (change_context | change_line)+ eof_line?
+change_context: ("@@" | "@@ " /(.+)/) LF
+change_line: ("+" | "-" | " ") /(.*)/ LF
+eof_line: "*** End of File" LF
+
+%import common.LF"""
+
+
+def test_apply_patch_lark_converts_to_xgrammar_ebnf() -> None:
+    ebnf = _convert_custom_tool_lark_to_ebnf(APPLY_PATCH_LARK)
+
+    assert ebnf.startswith("root ::= begin_patch hunk+ end_patch")
+    assert "filename ::= [^\\n]+" in ebnf
+    assert 'add_line ::= "+" [^\\n]* LF' in ebnf
+    assert 'LF ::= "\\n"' in ebnf
+    assert "-> line" not in ebnf
+
+
+def test_custom_grammar_replaces_qwen_xml_string_schema() -> None:
+    xgrammar = pytest.importorskip("xgrammar")
+    from xgrammar.testing import _is_grammar_accept_string
+
+    structure_tag = xgrammar.StructuralTag.model_validate(
+        {
+            "type": "structural_tag",
+            "format": {
+                "type": "tag",
+                "begin": "<tool_call>\n<function=apply_patch>\n",
+                "content": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "type": "object",
+                        "properties": {"input": {"type": "string"}},
+                        "required": ["input"],
+                        "additionalProperties": False,
+                    },
+                    "style": "qwen_xml",
+                    "any_order": False,
+                },
+                "end": "\n</function>\n</tool_call>",
+            },
+        }
+    )
+    request = SimpleNamespace(
+        vllm_original_tools=[
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "format": {
+                    "type": "grammar",
+                    "syntax": "lark",
+                    "definition": APPLY_PATCH_LARK,
+                },
+            }
+        ]
+    )
+
+    constrained = constrain_custom_tool_formats(structure_tag, request).model_dump()
+    content = constrained["format"]["content"]
+    assert content["type"] == "tag"
+    assert content["begin"] == "<parameter=input>"
+    assert content["end"] == "</parameter>"
+    assert content["content"]["type"] == "grammar"
+    assert content["content"]["grammar"].startswith("root ::=")
+    grammar = xgrammar.Grammar.from_ebnf(content["content"]["grammar"])
+    complete = "*** Begin Patch\n*** Add File: result.txt\n+ok\n*** End Patch\n"
+    incomplete = "*** Begin Patch\n*** Add File: result.txt\n+ok\n"
+    assert _is_grammar_accept_string(grammar, complete)
+    assert not _is_grammar_accept_string(grammar, incomplete)
 
 
 def test_request_lowers_custom_tools_and_inputs_for_function_renderers() -> None:

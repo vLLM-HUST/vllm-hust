@@ -570,6 +570,13 @@ class DelegatingParser(Parser):
         if structure_tag is None:
             return request
 
+        if isinstance(request, ResponsesRequest):
+            from vllm.entrypoints.openai.responses.custom_tools import (
+                constrain_custom_tool_formats,
+            )
+
+            structure_tag = constrain_custom_tool_formats(structure_tag, request)
+
         structural_tag = json.dumps(structure_tag.model_dump())
         request.structured_outputs = StructuredOutputsParams(
             structural_tag=structural_tag,
