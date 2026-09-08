@@ -1146,6 +1146,13 @@ class OpenAIServingResponses(GenerateBaseServing):
             )
         return response
 
+    async def get_response_stream_context(
+        self, response_id: str
+    ) -> ResponsesResponse | None:
+        """Return stored request metadata needed to encode SSE events."""
+        async with self.response_store_lock:
+            return self.response_store.get(response_id)
+
     async def cancel_responses(
         self,
         response_id: str,

@@ -1,8 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
 from types import SimpleNamespace
 
+import pytest
+
+from vllm.entrypoints.openai.responses.api_router import (
+    _convert_stream_to_sse_events,
+)
 from vllm.entrypoints.openai.responses.custom_tools import (
     CustomToolStreamTransformer,
 )
@@ -103,3 +109,69 @@ def test_stream_transformer_restores_custom_tool_events() -> None:
     assert added[0]["item"]["type"] == "custom_tool_call"
     assert delta[0]["type"] == "response.custom_tool_call_input.delta"
     assert delta[0]["delta"] == "*** Begin Patch"
+
+
+@pytest.mark.asyncio
+async def test_sse_converter_seeds_custom_context_from_request() -> None:
+    request = ResponsesRequest.model_validate(
+        {
+            "model": "test-model",
+            "input": "Apply the patch",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "custom",
+                    "name": "apply_patch",
+                    "description": "Apply a patch",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: /.+/s",
+                    },
+                }
+            ],
+            "tool_choice": {"type": "custom", "name": "apply_patch"},
+        }
+    )
+
+    async def events():
+        yield _Event(
+            {
+                "type": "response.created",
+                # Streaming serving serializes the response before constructing
+                # this event, so excluded compatibility fields are absent here.
+                "response": {"output": []},
+            }
+        )
+        yield _Event(
+            {
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "item_1",
+                    "call_id": "call_1",
+                    "type": "function_call",
+                    "name": "apply_patch",
+                    "arguments": "",
+                },
+            }
+        )
+        yield _Event(
+            {
+                "type": "response.function_call_arguments.done",
+                "item_id": "item_1",
+                "output_index": 0,
+                "sequence_number": 2,
+                "arguments": '{"input":"*** Begin Patch"}',
+            }
+        )
+
+    payloads = []
+    async for block in _convert_stream_to_sse_events(events(), request):
+        data_line = next(
+            line for line in block.splitlines() if line.startswith("data: ")
+        )
+        payloads.append(json.loads(data_line.removeprefix("data: ")))
+
+    assert payloads[1]["item"]["type"] == "custom_tool_call"
+    assert payloads[2]["type"] == "response.custom_tool_call_input.delta"
+    assert payloads[3]["type"] == "response.custom_tool_call_input.done"

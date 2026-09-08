@@ -38,9 +38,14 @@ def responses(request: Request) -> OpenAIServingResponses | None:
 
 async def _convert_stream_to_sse_events(
     generator: AsyncGenerator[StreamingResponsesResponse, None],
+    context: ResponsesRequest | ResponsesResponse | None = None,
 ) -> AsyncGenerator[str, None]:
     """Convert the generator to a stream of events in SSE format"""
-    transformer = CustomToolStreamTransformer()
+    transformer = CustomToolStreamTransformer(
+        custom_names=frozenset(getattr(context, "vllm_custom_tool_names", set())),
+        original_tools=getattr(context, "vllm_original_tools", None),
+        original_tool_choice=getattr(context, "vllm_original_tool_choice", "auto"),
+    )
     async for event in generator:
         for payload in transformer.transform(event):
             event_type = payload.get("type", "unknown")
@@ -77,7 +82,8 @@ async def create_responses(request: ResponsesRequest, raw_request: Request):
         return JSONResponse(content=restore_custom_response(generator))
 
     return StreamingResponse(
-        content=_convert_stream_to_sse_events(generator), media_type="text/event-stream"
+        content=_convert_stream_to_sse_events(generator, request),
+        media_type="text/event-stream",
     )
 
 
@@ -93,6 +99,9 @@ async def retrieve_responses(
     if handler is None:
         raise NotImplementedError("The model does not support Responses API")
 
+    stream_context = (
+        await handler.get_response_stream_context(response_id) if stream else None
+    )
     response = await handler.retrieve_responses(
         response_id,
         starting_after=starting_after,
@@ -107,7 +116,8 @@ async def retrieve_responses(
     elif isinstance(response, ResponsesResponse):
         return JSONResponse(content=restore_custom_response(response))
     return StreamingResponse(
-        content=_convert_stream_to_sse_events(response), media_type="text/event-stream"
+        content=_convert_stream_to_sse_events(response, stream_context),
+        media_type="text/event-stream",
     )
 
 
