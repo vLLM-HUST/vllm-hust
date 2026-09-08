@@ -3,18 +3,184 @@
 
 import copy
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from vllm.exceptions import VLLMValidationError
+
+_LARK_RULE_RE = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<body>.*)$")
+_LARK_ALIAS_RE = re.compile(r"\s+->\s+[A-Za-z_][A-Za-z0-9_]*\s*$")
+
+
+def _convert_custom_tool_lark_to_ebnf(definition: str) -> str:
+    """Convert the bounded Lark subset used by Responses custom tools.
+
+    xgrammar structural tags embed EBNF, while the Responses API specifies
+    custom-tool grammars as Lark.  This converter deliberately accepts the
+    portable subset used by Codex-style line-oriented grammars and rejects
+    unsupported constructs instead of silently weakening the constraint.
+    """
+    if not definition.strip():
+        raise VLLMValidationError(
+            "A grammar custom tool must have a non-empty definition.",
+            parameter="tools",
+        )
+
+    output: list[str] = []
+    imported_lf = False
+    saw_start = False
+    for line_number, raw_line in enumerate(definition.splitlines(), 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        if line == "%import common.LF":
+            imported_lf = True
+            continue
+        if line.startswith("%"):
+            raise VLLMValidationError(
+                f"Unsupported Lark directive on line {line_number}: {line!r}.",
+                parameter="tools",
+            )
+
+        match = _LARK_RULE_RE.match(line)
+        if match is None:
+            raise VLLMValidationError(
+                f"Unsupported Lark grammar line {line_number}: {line!r}.",
+                parameter="tools",
+            )
+        name = match.group("name")
+        body = _LARK_ALIAS_RE.sub("", match.group("body").strip())
+        # OpenAI's apply_patch grammar uses these two line-local regexes.  They
+        # have exact EBNF character-class equivalents and cannot cross LF.
+        body = body.replace("/(.+)/", r"[^\n]+").replace("/(.*)/", r"[^\n]*")
+        if re.search(r"/(?:\\.|[^/])+/[A-Za-z]*", body):
+            raise VLLMValidationError(
+                "This Lark regular expression cannot be represented exactly "
+                f"by the structured-output backend (line {line_number}).",
+                parameter="tools",
+            )
+        if name == "start":
+            name = "root"
+            saw_start = True
+        output.append(f"{name} ::= {body}")
+
+    if not saw_start:
+        raise VLLMValidationError(
+            "A grammar custom tool must define a start rule.", parameter="tools"
+        )
+    if imported_lf:
+        output.append(r'LF ::= "\n"')
+    return "\n".join(output)
+
+
+def constrain_custom_tool_formats(structure_tag: Any, request: Any) -> Any:
+    """Embed Responses custom-tool grammars in a parser structural tag.
+
+    Custom tools are lowered to single-string function tools for chat-template
+    compatibility.  Without this rewrite, structural decoding constrains only
+    the outer JSON/XML argument object, not the declared grammar of ``input``.
+    """
+    original_tools = getattr(request, "vllm_original_tools", None)
+    if not original_tools:
+        return structure_tag
+
+    grammars: dict[str, str] = {}
+    for tool in original_tools:
+        if not isinstance(tool, dict) or tool.get("type") != "custom":
+            continue
+        tool_format = tool.get("format")
+        if not isinstance(tool_format, dict) or tool_format.get("type") != "grammar":
+            continue
+        syntax = str(tool_format.get("syntax") or "").lower()
+        if syntax != "lark":
+            raise VLLMValidationError(
+                f"Unsupported custom-tool grammar syntax: {syntax!r}.",
+                parameter="tools",
+            )
+        grammars[str(tool.get("name") or "")] = _convert_custom_tool_lark_to_ebnf(
+            str(tool_format.get("definition") or "")
+        )
+    if not grammars:
+        return structure_tag
+
+    payload = structure_tag.model_dump()
+    constrained: set[str] = set()
+
+    def rewrite(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                rewrite(item)
+            return
+        if not isinstance(node, dict):
+            return
+
+        begin = node.get("begin")
+        content = node.get("content")
+        if node.get("type") == "tag" and isinstance(begin, str):
+            for name, grammar in grammars.items():
+                if f"<function={name}>" not in begin:
+                    continue
+                if not (
+                    isinstance(content, dict)
+                    and content.get("type") == "json_schema"
+                    and content.get("style") == "qwen_xml"
+                ):
+                    continue
+                schema = content.get("json_schema")
+                properties = (
+                    schema.get("properties") if isinstance(schema, dict) else None
+                )
+                input_schema = (
+                    properties.get("input") if isinstance(properties, dict) else None
+                )
+                if not (
+                    isinstance(schema, dict)
+                    and schema.get("type") == "object"
+                    and isinstance(properties, dict)
+                    and set(properties) == {"input"}
+                    and isinstance(input_schema, dict)
+                    and input_schema.get("type") == "string"
+                    and schema.get("required") == ["input"]
+                    and schema.get("additionalProperties") is False
+                ):
+                    continue
+                node["content"] = {
+                    "type": "tag",
+                    "begin": "<parameter=input>",
+                    "content": {"type": "grammar", "grammar": grammar},
+                    "end": "</parameter>",
+                }
+                constrained.add(name)
+                break
+
+        for value in node.values():
+            rewrite(value)
+
+    rewrite(payload)
+    missing = set(grammars) - constrained
+    if missing:
+        names = ", ".join(sorted(missing))
+        raise VLLMValidationError(
+            "The active tool parser cannot exactly constrain the declared "
+            f"custom-tool grammar for: {names}.",
+            parameter="tools",
+        )
+
+    from xgrammar import StructuralTag
+
+    return StructuralTag.model_validate(payload)
 
 
 def _custom_input_description(tool: dict[str, Any]) -> str:
     """Preserve model-visible custom-tool format requirements when lowering."""
     guidance = [
         "Provide one complete raw input string for this custom tool.",
-        "The string must satisfy the declared custom-tool format exactly; do not "
-        "replace required control characters with their escaped textual spelling.",
+        (
+            "The string must satisfy the declared custom-tool format exactly; do "
+            "not replace required control characters with their escaped textual "
+            "spelling."
+        ),
     ]
     tool_format = tool.get("format")
     if not isinstance(tool_format, dict):
