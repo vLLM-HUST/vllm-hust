@@ -14,6 +14,8 @@ from vllm.entrypoints.openai.responses.custom_tools import (
 )
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 
+pytestmark = pytest.mark.skip_global_cleanup
+
 
 def test_request_lowers_custom_tools_and_inputs_for_function_renderers() -> None:
     request = ResponsesRequest.model_validate(
@@ -45,10 +47,25 @@ def test_request_lowers_custom_tools_and_inputs_for_function_renderers() -> None
     assert request.tools[0].type == "function"
     assert request.tools[0].parameters == {
         "type": "object",
-        "properties": {"input": {"type": "string"}},
+        "properties": {
+            "input": {
+                "type": "string",
+                "description": (
+                    "Provide one complete raw input string for this custom tool. "
+                    "The string must satisfy the declared custom-tool format exactly; "
+                    "do not replace required control characters with their escaped "
+                    "textual spelling. Format type: grammar. Grammar syntax: lark. "
+                    "The complete grammar is:\nstart: /.+/s"
+                ),
+            }
+        },
         "required": ["input"],
         "additionalProperties": False,
     }
+    assert request.tools[0].description == (
+        "Apply a patch Return exactly one complete input string in the required "
+        "custom-tool format."
+    )
     assert request.tool_choice.model_dump() == {
         "type": "function",
         "name": "apply_patch",

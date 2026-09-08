@@ -9,6 +9,30 @@ from typing import Any
 from vllm.exceptions import VLLMValidationError
 
 
+def _custom_input_description(tool: dict[str, Any]) -> str:
+    """Preserve model-visible custom-tool format requirements when lowering."""
+    guidance = [
+        "Provide one complete raw input string for this custom tool.",
+        "The string must satisfy the declared custom-tool format exactly; do not "
+        "replace required control characters with their escaped textual spelling.",
+    ]
+    tool_format = tool.get("format")
+    if not isinstance(tool_format, dict):
+        return " ".join(guidance)
+
+    format_type = str(tool_format.get("type") or "").strip()
+    if format_type:
+        guidance.append(f"Format type: {format_type}.")
+    if format_type == "grammar":
+        syntax = str(tool_format.get("syntax") or "").strip()
+        definition = str(tool_format.get("definition") or "").strip()
+        if syntax:
+            guidance.append(f"Grammar syntax: {syntax}.")
+        if definition:
+            guidance.append(f"The complete grammar is:\n{definition}")
+    return " ".join(guidance)
+
+
 def lower_custom_tools(data: Any) -> Any:
     """Lower Responses custom tools to function tools for chat renderers."""
     if not isinstance(data, dict):
@@ -43,15 +67,23 @@ def lower_custom_tools(data: Any) -> Any:
                 parameter="tools",
             )
         custom_names.add(name)
+        description = tool.get("description") or "Provide freeform text input."
         lowered_tools.append(
             {
                 "type": "function",
                 "name": name,
-                "description": tool.get("description")
-                or "Provide freeform text input.",
+                "description": (
+                    f"{description} Return exactly one complete input string in the "
+                    "required custom-tool format."
+                ),
                 "parameters": {
                     "type": "object",
-                    "properties": {"input": {"type": "string"}},
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "description": _custom_input_description(tool),
+                        }
+                    },
                     "required": ["input"],
                     "additionalProperties": False,
                 },
