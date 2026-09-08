@@ -53,6 +53,7 @@ from vllm.entrypoints.openai.responses.protocol import (
     ResponseUsage,
     StreamingResponsesResponse,
 )
+from vllm.entrypoints.openai.responses.store import BoundedResponseStore
 from vllm.entrypoints.openai.responses.streaming_events import (
     SimpleStreamingEventProcessor,
     StreamingState,
@@ -152,10 +153,10 @@ class OpenAIServingResponses(GenerateBaseServing):
         # vLLM's default behavior is not.
         self.enable_store = envs.VLLM_ENABLE_RESPONSES_API_STORE
         if self.enable_store:
-            logger.warning_once(
-                "`VLLM_ENABLE_RESPONSES_API_STORE` is enabled. This may "
-                "cause a memory leak since we never remove responses from "
-                "the store."
+            logger.info_once(
+                "Responses API store enabled with max_entries=%d and ttl=%ss.",
+                envs.VLLM_RESPONSES_API_STORE_MAX_ENTRIES,
+                envs.VLLM_RESPONSES_API_STORE_TTL_SECONDS,
             )
 
         self.use_harmony = self.model_config.hf_config.model_type == "gpt_oss"
@@ -165,27 +166,44 @@ class OpenAIServingResponses(GenerateBaseServing):
                 "and always enable tool use."
             )
         self.enable_auto_tools = enable_auto_tools
-        # HACK(woosuk): This is a hack. We should use a better store.
-        # FIXME: If enable_store=True, this may cause a memory leak since we
-        # never remove responses from the store.
-        self.response_store: dict[str, ResponsesResponse] = {}
-        self.response_store_lock = asyncio.Lock()
-
-        # HACK(woosuk): This is a hack. We should use a better store.
-        # FIXME: If enable_store=True, this may cause a memory leak since we
-        # never remove messages from the store.
         self.msg_store: dict[str, ResponsesPreviousMessages] = {}
-
-        # HACK(wuhang): This is a hack. We should use a better store.
-        # FIXME: If enable_store=True, this may cause a memory leak since we
-        # never remove events from the store.
         self.event_store: dict[
             str, tuple[deque[StreamingResponsesResponse], asyncio.Event]
         ] = {}
-
         self.background_tasks: dict[str, asyncio.Task] = {}
+        self.response_store: BoundedResponseStore[ResponsesResponse] = (
+            BoundedResponseStore(
+                max_entries=envs.VLLM_RESPONSES_API_STORE_MAX_ENTRIES,
+                ttl_seconds=envs.VLLM_RESPONSES_API_STORE_TTL_SECONDS,
+                on_evict=self._evict_response_state,
+            )
+        )
+        self.response_store_lock = asyncio.Lock()
 
         self.tool_server = tool_server
+
+    def _evict_response_state(self, response_id: str) -> None:
+        self.msg_store.pop(response_id, None)
+        self.event_store.pop(response_id, None)
+
+    async def _discard_orphaned_response_state(self, response_id: str) -> None:
+        """Remove request state when generation ended before a response was stored."""
+        async with self.response_store_lock:
+            is_orphaned = self.response_store.get(response_id) is None
+        if is_orphaned:
+            self._evict_response_state(response_id)
+
+    async def _stream_with_store_cleanup(
+        self,
+        request: ResponsesRequest,
+        generator: AsyncGenerator[StreamingResponsesResponse, None],
+    ) -> AsyncGenerator[StreamingResponsesResponse, None]:
+        try:
+            async for event in generator:
+                yield event
+        finally:
+            if request.store:
+                await self._discard_orphaned_response_state(request.request_id)
 
     def _effective_chat_template_kwargs(
         self, request: ResponsesRequest
@@ -561,7 +579,21 @@ class OpenAIServingResponses(GenerateBaseServing):
             return response
 
         if request.stream:
-            return self.responses_stream_generator(
+            return self._stream_with_store_cleanup(
+                request,
+                self.responses_stream_generator(
+                    request,
+                    sampling_params,
+                    result_generator,
+                    context,
+                    model_name,
+                    tokenizer,
+                    request_metadata,
+                ),
+            )
+
+        try:
+            return await self.responses_full_generator(
                 request,
                 sampling_params,
                 result_generator,
@@ -570,16 +602,9 @@ class OpenAIServingResponses(GenerateBaseServing):
                 tokenizer,
                 request_metadata,
             )
-
-        return await self.responses_full_generator(
-            request,
-            sampling_params,
-            result_generator,
-            context,
-            model_name,
-            tokenizer,
-            request_metadata,
-        )
+        finally:
+            if request.store:
+                await self._discard_orphaned_response_state(request.request_id)
 
     async def _render_next_turn(
         self,

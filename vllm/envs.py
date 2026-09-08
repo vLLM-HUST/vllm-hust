@@ -260,6 +260,9 @@ if TYPE_CHECKING:
     VLLM_LOOPBACK_IP: str = ""
     VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE: bool = True
     VLLM_ENABLE_RESPONSES_API_STORE: bool = False
+    VLLM_RESPONSES_API_STORE_MAX_ENTRIES: int = 256
+    VLLM_RESPONSES_API_STORE_TTL_SECONDS: float = 3600.0
+    VLLM_OPENAI_MODELS_CATALOG_JSON: str | None = None
     VLLM_ENABLE_COHERE_API: bool = False
     VLLM_ENABLE_SCALE_OUT_ENDPOINTS: bool | None = None
     VLLM_HAS_FLASHINFER_CUBIN: bool = False
@@ -1860,13 +1863,24 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # When set to 1, vLLM's OpenAI server will retain the input and output
     # messages for those requests in memory. By default, this is disabled (0),
     # and the "store" option is ignored.
-    # NOTE/WARNING:
-    # 1. Messages are kept in memory only (not persisted to disk) and will be
-    #    lost when the vLLM server shuts down.
-    # 2. Enabling this option will cause a memory leak, as stored messages are
-    #    never removed from memory until the server terminates.
+    # Records are kept in bounded, expiring process memory and are lost when
+    # the vLLM server shuts down.
     "VLLM_ENABLE_RESPONSES_API_STORE": lambda: bool(
         int(os.getenv("VLLM_ENABLE_RESPONSES_API_STORE", "0"))
+    ),
+    # Maximum number of terminal Responses API records retained in memory.
+    # Active background responses are never evicted to satisfy this limit.
+    "VLLM_RESPONSES_API_STORE_MAX_ENTRIES": lambda: int(
+        os.getenv("VLLM_RESPONSES_API_STORE_MAX_ENTRIES", "256")
+    ),
+    # Time-to-live in seconds for terminal Responses API records.
+    "VLLM_RESPONSES_API_STORE_TTL_SECONDS": lambda: float(
+        os.getenv("VLLM_RESPONSES_API_STORE_TTL_SECONDS", "3600")
+    ),
+    # Optional JSON file with a top-level `models` array. Matching entries are
+    # added alongside the standard OpenAI `data` list returned by /v1/models.
+    "VLLM_OPENAI_MODELS_CATALOG_JSON": lambda: os.getenv(
+        "VLLM_OPENAI_MODELS_CATALOG_JSON"
     ),
     # If set to 1, expose the Cohere Chat v2 API at ``POST /cohere/v2/chat``
     # and its render endpoint at ``POST /cohere/v2/chat/render``.

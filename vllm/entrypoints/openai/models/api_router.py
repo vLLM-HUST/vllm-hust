@@ -22,7 +22,11 @@ async def show_available_models(raw_request: Request):
     handler = models(raw_request)
 
     models_ = await handler.show_available_models()
-    return JSONResponse(content=models_.model_dump())
+    payload = models_.model_dump()
+    models_catalog = getattr(handler, "models_catalog", None)
+    if models_catalog is not None:
+        payload["models"] = models_catalog
+    return JSONResponse(content=payload)
 
 
 def attach_router(app: FastAPI):

@@ -5,8 +5,10 @@ from asyncio import Lock
 from collections import defaultdict
 from http import HTTPStatus
 
+from vllm import envs
 from vllm.config import ModelConfig
 from vllm.engine.protocol import EngineClient
+from vllm.entrypoints.openai.models.catalog import load_models_catalog
 from vllm.entrypoints.openai.models.protocol import BaseModelPath, LoRAModulePath
 from vllm.entrypoints.serve import create_error_response
 from vllm.entrypoints.serve.engine.protocol import (
@@ -120,6 +122,13 @@ class OpenAIServingModels:
         self.model_config = self.engine_client.model_config
         self.renderer = self.engine_client.renderer
         self.input_processor = self.engine_client.input_processor
+        self.models_catalog = load_models_catalog(
+            envs.VLLM_OPENAI_MODELS_CATALOG_JSON,
+            available_models={
+                model.name: self.model_config.max_model_len
+                for model in self.base_model_paths
+            },
+        )
 
     async def init_static_loras(self):
         """Loads all static LoRA modules.
