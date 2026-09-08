@@ -3,9 +3,10 @@
 
 import copy
 import json
-import re
 from dataclasses import dataclass, field
 from typing import Any
+
+import regex as re
 
 from vllm.exceptions import VLLMValidationError
 
