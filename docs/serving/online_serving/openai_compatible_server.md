@@ -197,6 +197,14 @@ The following extra parameters are supported:
 Our Responses API is compatible with [OpenAI's Responses API](https://platform.openai.com/docs/api-reference/responses);
 you can use the [official OpenAI Python client](https://github.com/openai/openai-python) to interact with it.
 
+Server-side `previous_response_id` continuation is available when
+`VLLM_ENABLE_RESPONSES_API_STORE=1`. The in-memory store is bounded by
+`VLLM_RESPONSES_API_STORE_MAX_ENTRIES` and expires terminal responses after
+`VLLM_RESPONSES_API_STORE_TTL_SECONDS`; it is not durable across server
+restarts. Responses custom/freeform tools are adapted to function tools for
+non-Harmony chat renderers and restored to the Responses schema in both JSON
+and SSE output.
+
 Code example: [examples/tool_calling/openai_responses_client_with_tools.py](../../../examples/tool_calling/openai_responses_client_with_tools.py)
 
 #### Extra parameters

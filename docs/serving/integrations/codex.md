@@ -14,6 +14,11 @@ vLLM implements the OpenAI-Responses API, which is the same API that Codex uses 
 
 This means any model served by vLLM with proper tool calling support can act as a drop-in replacement for OpenAI models in Codex.
 
+For non-Harmony models, vLLM adapts Responses custom/freeform tools to a
+strict string-valued function tool for chat-template rendering, then restores
+custom tool objects and streaming events on the public API. The configured
+tool-call parser must still be able to produce valid function calls.
+
 ## Requirements
 
 Codex requires a model with strong tool calling capabilities. The model must support the OpenAI-Responses tool calling API. See [Tool Calling](../../features/tool_calling.md) for details on enabling tool calling for your model.
@@ -40,6 +45,7 @@ Codex is configured via a TOML file located at `~/.codex/config.toml`. Create or
 ```toml
 model = "my-model"
 model_provider = "vllm"
+model_catalog_json = "/absolute/path/to/vllm-model-catalog.json"
 
 [model_providers.vllm]
 name = "vLLM"
@@ -59,6 +65,7 @@ The configuration fields:
 | `env_key` | The name of an environment variable that Codex will read for the API key. vLLM does not require authentication by default, so this can be any value. |
 | `base_url` | The URL of your vLLM server's OpenAI-compatible API endpoint (default is `http://localhost:8000/v1`). |
 | `wire_api` | The API style to use. Set to `"responses"` for the OpenAI Responses API |
+| `model_catalog_json` | Optional Codex model metadata file. Codex CLI 0.153.4 loads custom-provider metadata from a local file at startup rather than synchronously consuming the provider's `/models` response. |
 
 !!! tip
     You can set the `env_key` to any dummy environment variable since vLLM doesn't require authentication by default:
@@ -68,6 +75,34 @@ The configuration fields:
 
 !!! warning
     When using the `responses` API, ensure your vLLM version supports the OpenAI Responses API.
+
+### Stateful continuation
+
+`previous_response_id` requires the in-memory Responses store:
+
+```bash
+VLLM_ENABLE_RESPONSES_API_STORE=1 \
+VLLM_RESPONSES_API_STORE_MAX_ENTRIES=256 \
+VLLM_RESPONSES_API_STORE_TTL_SECONDS=3600 \
+vllm serve ...
+```
+
+The store is process-local and is cleared on restart. Terminal responses are
+expired by TTL and evicted in least-recently-used order. Active background
+responses are not evicted merely to enforce the terminal-record limit.
+
+### Model catalog endpoint
+
+To expose operator-supplied model capability metadata alongside the standard
+OpenAI model list, point `VLLM_OPENAI_MODELS_CATALOG_JSON` at a JSON file with a
+top-level `models` array. `/v1/models` retains its `object` and `data` fields and
+adds `models`. Entries whose `slug` is not currently served are omitted, and
+context limits are replaced with the live model configuration.
+
+Codex versions that require a startup catalog can export the authenticated
+`models` field from this endpoint to a local file and set
+`model_catalog_json` to that file. Refresh it after changing the served model
+or context window.
 
 ## Testing the Setup
 
