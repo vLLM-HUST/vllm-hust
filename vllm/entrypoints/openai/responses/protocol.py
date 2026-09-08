@@ -61,6 +61,7 @@ from vllm.entrypoints.chat_utils import (
     ChatTemplateContentFormatOption,
 )
 from vllm.entrypoints.generate.base.protocol import StopParam, validate_cache_salt
+from vllm.entrypoints.openai.responses.custom_tools import lower_custom_tools
 from vllm.entrypoints.serve.engine.protocol import OpenAIBaseModel
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
@@ -178,6 +179,9 @@ class ResponsesRequest(OpenAIBaseModel):
     text: ResponseTextConfig | None = None
     tool_choice: ToolChoice = "auto"
     tools: list[Tool] = Field(default_factory=list)
+    vllm_original_tools: list[dict[str, Any]] | None = Field(default=None, exclude=True)
+    vllm_original_tool_choice: Any = Field(default="auto", exclude=True)
+    vllm_custom_tool_names: set[str] = Field(default_factory=set, exclude=True)
     top_logprobs: int | None = 0
     top_p: float | None = None
     top_k: int | None = None
@@ -655,6 +659,11 @@ class ResponsesRequest(OpenAIBaseModel):
 
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def lower_custom_tools_for_renderers(cls, data):
+        return lower_custom_tools(data)
+
 
 class ResponsesResponse(OpenAIBaseModel):
     id: str = Field(default_factory=lambda: f"resp_{random_uuid()}")
@@ -684,6 +693,9 @@ class ResponsesResponse(OpenAIBaseModel):
     truncation: Literal["auto", "disabled"]
     usage: ResponseUsage | None = None
     user: str | None = None
+    vllm_original_tools: list[dict[str, Any]] | None = Field(default=None, exclude=True)
+    vllm_original_tool_choice: Any = Field(default="auto", exclude=True)
+    vllm_custom_tool_names: set[str] = Field(default_factory=set, exclude=True)
 
     presence_penalty: float | None = Field(
         default=None,
@@ -795,6 +807,9 @@ class ResponsesResponse(OpenAIBaseModel):
             top_logprobs=sampling_params.logprobs,
             truncation=request.truncation,
             user=request.user,
+            vllm_original_tools=request.vllm_original_tools,
+            vllm_original_tool_choice=request.vllm_original_tool_choice,
+            vllm_custom_tool_names=request.vllm_custom_tool_names,
             usage=usage,
             kv_transfer_params=kv_transfer_params,
             ec_transfer_params=ec_transfer_params,

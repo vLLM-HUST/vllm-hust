@@ -2,12 +2,17 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 
+import json
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from vllm.entrypoints.openai.responses.custom_tools import (
+    CustomToolStreamTransformer,
+    restore_custom_response,
+)
 from vllm.entrypoints.openai.responses.protocol import (
     ResponsesRequest,
     ResponsesResponse,
@@ -35,14 +40,13 @@ async def _convert_stream_to_sse_events(
     generator: AsyncGenerator[StreamingResponsesResponse, None],
 ) -> AsyncGenerator[str, None]:
     """Convert the generator to a stream of events in SSE format"""
+    transformer = CustomToolStreamTransformer()
     async for event in generator:
-        event_type = getattr(event, "type", "unknown")
-        # https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#event_stream_format
-        event_data = (
-            f"event: {event_type}\ndata: "
-            f"{event.model_dump_json(indent=None, by_alias=True)}\n\n"
-        )
-        yield event_data
+        for payload in transformer.transform(event):
+            event_type = payload.get("type", "unknown")
+            event_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            # https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#event_stream_format
+            yield f"event: {event_type}\ndata: {event_json}\n\n"
 
 
 @router.post(
@@ -70,7 +74,7 @@ async def create_responses(request: ResponsesRequest, raw_request: Request):
             status_code=generator.error.code,
         )
     elif isinstance(generator, ResponsesResponse):
-        return JSONResponse(content=generator.model_dump(mode="json", by_alias=True))
+        return JSONResponse(content=restore_custom_response(generator))
 
     return StreamingResponse(
         content=_convert_stream_to_sse_events(generator), media_type="text/event-stream"
@@ -101,7 +105,7 @@ async def retrieve_responses(
             status_code=response.error.code,
         )
     elif isinstance(response, ResponsesResponse):
-        return JSONResponse(content=response.model_dump(mode="json", by_alias=True))
+        return JSONResponse(content=restore_custom_response(response))
     return StreamingResponse(
         content=_convert_stream_to_sse_events(response), media_type="text/event-stream"
     )
@@ -121,7 +125,7 @@ async def cancel_responses(response_id: str, raw_request: Request):
             content=response.model_dump(mode="json", by_alias=True),
             status_code=response.error.code,
         )
-    return JSONResponse(content=response.model_dump(mode="json", by_alias=True))
+    return JSONResponse(content=restore_custom_response(response))
 
 
 def attach_router(app: FastAPI):
