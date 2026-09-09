@@ -1,4 +1,7 @@
-"""Plugin-owned metadata for timing samples."""
+"""本模块的作用：在调度器与 worker 之间传递物化分支和计时样本。
+输入：原生 SimpleCPUOffload 元数据、请求进度及分支测量。
+输出：保持原生执行语义的扩展元数据，不改变 load/recompute 动作。
+"""
 
 from __future__ import annotations
 
@@ -15,9 +18,10 @@ from vllm.v1.simple_kv_offload.metadata import (
 
 @dataclass
 class DynamicCPUOffloadMetadata(SimpleCPUOffloadMetadata):
-    """Extend native offload metadata with recompute request IDs."""
+    """扩展原生 offload 元数据以携带重算工作量。"""
 
     recompute_requests: dict[str, int] = field(default_factory=dict)
+    recompute_flops: dict[str, float] = field(default_factory=dict)
     reset_recompute_requests: set[str] = field(default_factory=set)
     completed_recompute_requests: set[str] = field(default_factory=set)
     load_block_counts: dict[str, int] = field(default_factory=dict)
@@ -32,8 +36,9 @@ class DynamicCPUOffloadMetadata(SimpleCPUOffloadMetadata):
         completed_recompute_requests: set[str],
         load_block_counts: dict[str, int],
         decision_times: dict[str, float] | None = None,
+        recompute_flops: dict[str, float] | None = None,
     ) -> DynamicCPUOffloadMetadata:
-        """Copy native metadata without changing its semantics."""
+        """复制原生元数据，并保持原生字段不变。"""
         return cls(
             load_event=base.load_event,
             load_gpu_blocks=base.load_gpu_blocks,
@@ -44,6 +49,7 @@ class DynamicCPUOffloadMetadata(SimpleCPUOffloadMetadata):
             store_cpu_blocks=base.store_cpu_blocks,
             need_flush=base.need_flush,
             recompute_requests=recompute_requests,
+            recompute_flops=recompute_flops or {},
             reset_recompute_requests=reset_recompute_requests,
             completed_recompute_requests=completed_recompute_requests,
             load_block_counts=load_block_counts,
@@ -53,18 +59,19 @@ class DynamicCPUOffloadMetadata(SimpleCPUOffloadMetadata):
 
 @dataclass(frozen=True)
 class TimingSampleMetadata:
-    """A completed worker-side timing sample."""
+    """一次 worker 侧完成的服务测量。"""
 
     request_id: str
     size: int
     service_ms: float
     kv_bytes: int = 0
     queue_wait_ms: float = 0.0
+    work_flops: float = 0.0
 
 
 @dataclass
 class DynamicCPUOffloadWorkerMetadata(SimpleCPUOffloadWorkerMetadata):
-    """Carry native store completions and plugin timing samples."""
+    """携带原生 store 完成信息和插件计时样本。"""
 
     copy_samples: list[TimingSampleMetadata] = field(default_factory=list)
     recompute_samples: list[TimingSampleMetadata] = field(default_factory=list)
@@ -72,7 +79,7 @@ class DynamicCPUOffloadWorkerMetadata(SimpleCPUOffloadWorkerMetadata):
     def aggregate(
         self, other: KVConnectorWorkerMetadata
     ) -> DynamicCPUOffloadWorkerMetadata:
-        """Aggregate worker samples while preserving native store counts."""
+        """合并 worker 样本并保留原生 store 计数。"""
         if not isinstance(other, DynamicCPUOffloadWorkerMetadata):
             raise TypeError("Cannot aggregate different worker metadata types")
         merged_store_events = dict(self.completed_store_events)
@@ -92,7 +99,7 @@ def as_worker_metadata(
     copy_samples: list[TimingSampleMetadata],
     recompute_samples: list[TimingSampleMetadata],
 ) -> DynamicCPUOffloadWorkerMetadata | None:
-    """Build plugin metadata only when there is something to report."""
+    """仅在存在原生或插件样本时构造扩展元数据。"""
     if base is None and not copy_samples and not recompute_samples:
         return None
     return DynamicCPUOffloadWorkerMetadata(

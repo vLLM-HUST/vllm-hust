@@ -1,11 +1,16 @@
-"""Auditable per-request materialization decisions."""
+"""本模块的作用：记录每次物化决策的预测分项、实际分支和误差。
+输入：决策输出、运行时观测和 worker 完成计时。
+输出：内存记录及可追加的 NDJSON 审计记录。
+"""
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from kv_materialization_plugin.cost_model import MaterializationCostEstimate
 from kv_materialization_plugin.decision import (
     MaterializationDecision,
     MaterializationObservation,
@@ -14,7 +19,7 @@ from kv_materialization_plugin.decision import (
 
 @dataclass(slots=True)
 class AuditRecord:
-    """Decision and completion data for one materialization attempt."""
+    """一条物化尝试的决策与完成数据。"""
 
     request_id: str
     hit_tokens: int
@@ -24,7 +29,15 @@ class AuditRecord:
     predicted_load_ms: float | None
     predicted_recompute_ms: float | None
     fallback: bool
+    load_estimate: MaterializationCostEstimate | None = None
+    recompute_estimate: MaterializationCostEstimate | None = None
+    estimate_source: str = "unavailable"
+    confidence_guard: str | None = None
     kv_bytes: int = 0
+    kv_bytes_source: str = "unavailable"
+    prefill_flops: float | None = None
+    device_prefix_tokens: int = 0
+    batch_size: int = 1
     active_materialization_count: int = 0
     timing_scope: str = (
         "decision_to_worker_sample_return;"
@@ -32,12 +45,14 @@ class AuditRecord:
     )
     queue_wait_isolated: bool = False
     load_queue_wait_ms: float | None = None
+    load_queue_wait_source: str = "unavailable"
     load_service_ms: float | None = None
     load_extra_wait_ms: float | None = None
     load_observation_age_ms: float | None = None
     load_sample_count: int = 0
     recompute_service_ms: float | None = None
     recompute_queue_wait_ms: float | None = None
+    recompute_queue_wait_source: str = "unavailable"
     recompute_extra_wait_ms: float | None = None
     recompute_observation_age_ms: float | None = None
     recompute_sample_count: int = 0
@@ -50,11 +65,13 @@ class AuditRecord:
     service_ms: float | None = None
     extra_wait_ms: float | None = None
     queue_wait_ms: float | None = None
+    prediction_error_ms: float | None = None
+    prediction_error_ratio: float | None = None
     status: str = "decided"
 
 
 class AuditLog:
-    """Collect records without imposing a logging framework on vLLM."""
+    """收集审计数据，不要求 vLLM 引入额外日志框架。"""
 
     def __init__(
         self,
@@ -81,7 +98,7 @@ class AuditLog:
         gpu_local_hit_tokens: int | None = None,
         observation: MaterializationObservation | None = None,
     ) -> None:
-        """Start or replace a record for a request."""
+        """开始或替换一条请求记录。"""
         self._records[request_id] = AuditRecord(
             request_id=request_id,
             hit_tokens=hit_tokens,
@@ -91,7 +108,19 @@ class AuditLog:
             predicted_load_ms=decision.predicted_load_ms,
             predicted_recompute_ms=decision.predicted_recompute_ms,
             fallback=decision.fallback,
+            load_estimate=decision.load_estimate,
+            recompute_estimate=decision.recompute_estimate,
+            estimate_source=decision.estimate_source,
+            confidence_guard=decision.confidence_guard,
             kv_bytes=observation.kv_bytes if observation else 0,
+            kv_bytes_source=(
+                observation.kv_bytes_source if observation else "unavailable"
+            ),
+            prefill_flops=observation.prefill_flops if observation else None,
+            device_prefix_tokens=(
+                observation.device_prefix_tokens if observation else 0
+            ),
+            batch_size=observation.batch_size if observation else 1,
             active_materialization_count=(
                 observation.active_materialization_count if observation else 0
             ),
@@ -103,6 +132,9 @@ class AuditLog:
             load_service_ms=observation.load_service_ms if observation else None,
             load_queue_wait_ms=(
                 observation.load_queue_wait_ms if observation else None
+            ),
+            load_queue_wait_source=(
+                observation.load_queue_wait_source if observation else "unavailable"
             ),
             load_extra_wait_ms=(
                 observation.load_extra_wait_ms if observation else None
@@ -116,6 +148,11 @@ class AuditLog:
             ),
             recompute_queue_wait_ms=(
                 observation.recompute_queue_wait_ms if observation else None
+            ),
+            recompute_queue_wait_source=(
+                observation.recompute_queue_wait_source
+                if observation
+                else "unavailable"
             ),
             recompute_extra_wait_ms=(
                 observation.recompute_extra_wait_ms if observation else None
@@ -142,7 +179,7 @@ class AuditLog:
         queue_wait_ms: float | None = None,
         status: str = "completed",
     ) -> None:
-        """Complete an existing record."""
+        """完成一条记录并计算已执行分支的预测误差。"""
         record = self._records.get(request_id)
         if record is None:
             return
@@ -151,26 +188,45 @@ class AuditLog:
         record.service_ms = service_ms
         record.extra_wait_ms = extra_wait_ms
         record.queue_wait_ms = queue_wait_ms
+        prediction = (
+            record.predicted_load_ms
+            if actual_branch == "cpu_kv_load"
+            else record.predicted_recompute_ms
+        )
+        if (
+            prediction is not None
+            and math.isfinite(float(prediction))
+            and prediction > 0.0
+            and math.isfinite(float(actual_cost_ms))
+        ):
+            record.prediction_error_ms = float(actual_cost_ms) - float(prediction)
+            record.prediction_error_ratio = (
+                record.prediction_error_ms / float(prediction)
+            )
         record.status = status
         self._write(record)
 
     def close(self) -> None:
-        """Flush and close the optional NDJSON output."""
+        """刷新并关闭可选的 NDJSON 输出。"""
         if self._output is not None:
             self._output.close()
             self._output = None
 
     def records(self) -> list[AuditRecord]:
-        """Return records in insertion order."""
+        """按插入顺序返回记录。"""
         return list(self._records.values())
 
     def json_lines(self) -> str:
-        """Serialize records as newline-delimited JSON."""
+        """序列化为换行分隔 JSON。"""
         return "\n".join(
             json.dumps(asdict(record), sort_keys=True) for record in self.records()
         )
 
     def _write(self, record: AuditRecord) -> None:
+        """追加写出一条完成记录。"""
         if self._output is None:
             return
         self._output.write(json.dumps(asdict(record), sort_keys=True) + "\n")
+
+
+__all__ = ["AuditLog", "AuditRecord"]

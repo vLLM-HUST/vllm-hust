@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from kv_materialization_plugin.audit import AuditLog
 from kv_materialization_plugin.connector import (
@@ -34,6 +36,32 @@ def test_recompute_progress_rejects_invalid_counts() -> None:
     """Impossible scheduler progress cannot silently corrupt telemetry."""
     with pytest.raises(ValueError, match="non-negative"):
         _advance_recompute_progress(256, -1)
+
+
+def test_kv_bytes_per_block_uses_runtime_tensor_pages() -> None:
+    """KV bytes use the actual aligned tensor pages when no override exists."""
+    config = SimpleNamespace(
+        num_blocks=4,
+        kv_cache_tensors=(
+            SimpleNamespace(size=40),
+            SimpleNamespace(size=24),
+        ),
+    )
+
+    assert (
+        DynamicSimpleCPUOffloadConnector._infer_kv_bytes_per_block(config)
+        == 16
+    )
+
+
+def test_kv_bytes_per_block_rejects_non_page_aligned_tensor_size() -> None:
+    """An incomplete runtime description must force the explicit fallback."""
+    config = SimpleNamespace(
+        num_blocks=4,
+        kv_cache_tensors=(SimpleNamespace(size=41),),
+    )
+
+    assert DynamicSimpleCPUOffloadConnector._infer_kv_bytes_per_block(config) == 0
 
 
 def test_request_completion_releases_active_materialization_state() -> None:

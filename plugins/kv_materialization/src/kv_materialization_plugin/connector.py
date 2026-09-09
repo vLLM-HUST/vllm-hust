@@ -9,6 +9,11 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 from kv_materialization_plugin.audit import AuditLog
+from kv_materialization_plugin.cost_model import (
+    MaterializationCostModel,
+    MaterializationModelShape,
+    estimate_prefill_flops,
+)
 from kv_materialization_plugin.decision import (
     MaterializationDecision,
     MaterializationDecisionConfig,
@@ -90,10 +95,19 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
                 "materialization_mode must be 'load', 'recompute', or 'dynamic'"
             )
         fallback_mode = extra_config.get("fallback_mode", "load")
+        predictor = extra_config.get("dynamic_predictor", "historical")
+        cost_model_path = extra_config.get("cost_model_path")
+        cost_model = (
+            MaterializationCostModel.from_json(cost_model_path)
+            if predictor == "formula" and cost_model_path
+            else None
+        )
         self._decision_config = MaterializationDecisionConfig(
             enabled=materialization_mode == "dynamic",
             forced_mode=forced_mode,
             fallback_mode=fallback_mode,
+            predictor=predictor,
+            cost_model=cost_model,
             min_copy_samples=int(extra_config.get("min_copy_samples", 1)),
             min_recompute_samples=int(
                 extra_config.get("min_recompute_samples", 1)
@@ -102,9 +116,24 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
                 extra_config.get("max_observation_age_ms", 5000.0)
             ),
         )
-        self._kv_bytes_per_block = int(extra_config.get("kv_bytes_per_block", 0))
-        if self._kv_bytes_per_block < 0:
+        configured_kv_bytes = int(extra_config.get("kv_bytes_per_block", 0))
+        if configured_kv_bytes < 0:
             raise ValueError("kv_bytes_per_block must be non-negative")
+        inferred_kv_bytes = self._infer_kv_bytes_per_block(kv_cache_config)
+        self._kv_bytes_per_block = configured_kv_bytes or inferred_kv_bytes
+        self._kv_bytes_source = (
+            "configured_kv_bytes_per_block"
+            if configured_kv_bytes > 0
+            else (
+                "kv_cache_config_page_bytes"
+                if inferred_kv_bytes > 0
+                else "unavailable"
+            )
+        )
+        self._prefill_batch_size = int(extra_config.get("prefill_batch_size", 1))
+        if self._prefill_batch_size <= 0:
+            raise ValueError("prefill_batch_size must be positive")
+        self._model_shape = self._model_shape_from_config(vllm_config)
 
         self._telemetry = TelemetryWindow(
             max_samples=int(extra_config.get("sample_window_size", 32))
@@ -127,6 +156,7 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
         )
         self._decisions: dict[str, MaterializationDecision] = {}
         self._decision_hit_tokens: dict[str, int] = {}
+        self._decision_prefill_flops: dict[str, float] = {}
         self._decision_times: dict[str, float] = {}
         self._recompute_remaining_tokens: dict[str, int] = {}
         self._new_recompute_attempts: set[str] = set()
@@ -138,6 +168,7 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
         self._recompute_step_started_at: float | None = None
         self._recompute_service_ms: dict[str, float] = {}
         self._recompute_queue_wait_ms: dict[str, float] = {}
+        self._recompute_last_step_end_at: dict[str, float] = {}
 
     def get_num_new_matched_tokens(
         self,
@@ -153,19 +184,33 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
             return hit_tokens, is_async
 
         hit_blocks = max(1, self._estimate_hit_blocks(hit_tokens))
+        prefill_flops = self._estimate_prefill_flops(
+            hit_tokens, num_computed_tokens
+        )
         observation = self._telemetry.snapshot(
             hit_tokens,
             hit_blocks,
             kv_bytes=hit_blocks * self._kv_bytes_per_block,
             max_age_ms=self._decision_config.max_observation_age_ms,
+            prefill_flops=prefill_flops,
+            device_prefix_tokens=max(0, int(num_computed_tokens)),
+            batch_size=self._prefill_batch_size,
+            formula_mode=self._decision_config.predictor == "formula",
         )
         observation = replace(
             observation,
             active_materialization_count=len(self._decisions),
         )
+        if self._kv_bytes_source != "unavailable":
+            observation = replace(
+                observation,
+                kv_bytes_source=self._kv_bytes_source,
+            )
         decision = choose_materialization(observation, self._decision_config)
         self._decisions[request.request_id] = decision
         self._decision_hit_tokens[request.request_id] = hit_tokens
+        if prefill_flops is not None:
+            self._decision_prefill_flops[request.request_id] = prefill_flops
         self._decision_times[request.request_id] = time.monotonic()
         self._audit.start(
             request.request_id,
@@ -242,6 +287,11 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
                 for request_id in tracked_request_ids
                 if request_id in self._decision_times
             },
+            recompute_flops={
+                request_id: self._decision_prefill_flops[request_id]
+                for request_id in recompute_requests
+                if request_id in self._decision_prefill_flops
+            },
         )
 
     def bind_connector_metadata(
@@ -255,15 +305,27 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
             isinstance(connector_metadata, DynamicCPUOffloadMetadata)
             and connector_metadata.recompute_requests
         ):
-            for request_id in connector_metadata.reset_recompute_requests:
-                self._recompute_service_ms.pop(request_id, None)
-                decision_time = connector_metadata.decision_times.get(request_id)
-                if decision_time is not None:
-                    self._recompute_queue_wait_ms[request_id] = max(
-                        0.0,
-                        (time.monotonic() - decision_time) * 1000.0,
-                    )
-            self._recompute_step_started_at = time.monotonic()
+            step_started_at = time.monotonic()
+            for request_id in connector_metadata.recompute_requests:
+                if request_id in connector_metadata.reset_recompute_requests:
+                    self._recompute_service_ms.pop(request_id, None)
+                    decision_time = connector_metadata.decision_times.get(request_id)
+                    if decision_time is not None:
+                        self._recompute_queue_wait_ms[request_id] = max(
+                            0.0,
+                            (step_started_at - decision_time) * 1000.0,
+                        )
+                else:
+                    previous_end = self._recompute_last_step_end_at.get(request_id)
+                    if previous_end is not None:
+                        self._recompute_queue_wait_ms[request_id] = (
+                            self._recompute_queue_wait_ms.get(request_id, 0.0)
+                            + max(
+                                0.0,
+                                (step_started_at - previous_end) * 1000.0,
+                            )
+                        )
+            self._recompute_step_started_at = step_started_at
 
     def clear_connector_metadata(self) -> None:
         """Clear native metadata and per-step worker timing state."""
@@ -368,14 +430,20 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
                             queue_wait_ms=self._recompute_queue_wait_ms.pop(
                                 request_id, 0.0
                             ),
+                            work_flops=metadata.recompute_flops.get(
+                                request_id, 0.0
+                            ),
                         )
                     )
                     self._recompute_service_ms.pop(request_id, None)
+                    self._recompute_last_step_end_at.pop(request_id, None)
                 else:
                     self._recompute_service_ms[request_id] = service_ms
+                    self._recompute_last_step_end_at[request_id] = completed_at
         for request_id in finished_req_ids:
             self._recompute_service_ms.pop(request_id, None)
             self._recompute_queue_wait_ms.pop(request_id, None)
+            self._recompute_last_step_end_at.pop(request_id, None)
         return result
 
     def build_connector_worker_meta(self):
@@ -454,6 +522,7 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
                     total_ms,
                     service_ms,
                     queue_wait_ms=queue_wait_ms,
+                    work_flops=critical_sample.work_flops,
                 )
             self._audit.complete(
                 request_id,
@@ -469,10 +538,98 @@ class DynamicSimpleCPUOffloadConnector(_SimpleCPUOffloadConnector):
         """Release scheduler-side state after a request is decided/completed."""
         self._decisions.pop(request_id, None)
         self._decision_hit_tokens.pop(request_id, None)
+        getattr(self, "_decision_prefill_flops", {}).pop(request_id, None)
         self._decision_times.pop(request_id, None)
         self._recompute_remaining_tokens.pop(request_id, None)
         self._new_recompute_attempts.discard(request_id)
         getattr(self, "_recompute_queue_wait_ms", {}).pop(request_id, None)
+        getattr(self, "_recompute_last_step_end_at", {}).pop(request_id, None)
+
+    @staticmethod
+    def _model_shape_from_config(
+        vllm_config: VllmConfig,
+    ) -> MaterializationModelShape | None:
+        """从 Hugging Face 配置提取完整前向公式所需的结构。"""
+        model_config = getattr(vllm_config, "model_config", None)
+        hf_config = getattr(model_config, "hf_config", model_config)
+        if hf_config is None:
+            return None
+
+        def read_int(*names: str) -> int | None:
+            for name in names:
+                value = getattr(hf_config, name, None)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    return value
+            return None
+
+        num_layers = read_int("num_hidden_layers", "num_layers")
+        hidden_size = read_int("hidden_size", "d_model")
+        num_heads = read_int("num_attention_heads", "n_head")
+        num_kv_heads = read_int("num_key_value_heads", "num_kv_heads") or num_heads
+        intermediate_size = read_int("intermediate_size", "ffn_hidden_size")
+        head_dim = read_int("head_dim")
+        if head_dim is None and hidden_size and num_heads:
+            head_dim = hidden_size // num_heads
+        if not all(
+            value is not None
+            for value in (
+                num_layers,
+                hidden_size,
+                num_heads,
+                num_kv_heads,
+                head_dim,
+                intermediate_size,
+            )
+        ):
+            return None
+        hidden_act = str(getattr(hf_config, "hidden_act", "")).lower()
+        gated_mlp = hidden_act in {"silu", "swiglu", "geglu"}
+        try:
+            return MaterializationModelShape(
+                num_layers=num_layers,
+                hidden_size=hidden_size,
+                num_attention_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
+                intermediate_size=intermediate_size,
+                gated_mlp=gated_mlp,
+                vocab_size=read_int("vocab_size"),
+            )
+        except ValueError:
+            return None
+
+    def _estimate_prefill_flops(
+        self,
+        recompute_tokens: int,
+        device_prefix_tokens: int,
+    ) -> float | None:
+        """按实际模型结构展开目标重算段的完整前向工作量。"""
+        if self._model_shape is None:
+            return None
+        try:
+            return estimate_prefill_flops(
+                self._model_shape,
+                recompute_tokens,
+                device_prefix_tokens=device_prefix_tokens,
+                batch_size=self._prefill_batch_size,
+            )
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _infer_kv_bytes_per_block(kv_cache_config: KVCacheConfig) -> int:
+        """从实际 KV tensor 页面大小推导一次 block 的传输字节数。"""
+        num_blocks = int(getattr(kv_cache_config, "num_blocks", 0))
+        tensors = getattr(kv_cache_config, "kv_cache_tensors", ())
+        if num_blocks <= 0 or not tensors:
+            return 0
+        sizes = []
+        for tensor in tensors:
+            size = int(getattr(tensor, "size", 0))
+            if size <= 0 or size % num_blocks != 0:
+                return 0
+            sizes.append(size // num_blocks)
+        return sum(sizes)
 
     def _estimate_hit_blocks(self, hit_tokens: int) -> int:
         """Convert hit tokens to the connector's scheduler block count."""
