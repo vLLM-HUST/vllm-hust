@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import hashlib
+from collections.abc import Mapping
 
 import pytest
 
@@ -164,8 +166,8 @@ def test_runtime_observer_registration_is_idempotent(
     monkeypatch.setattr(kv_materialization, "_runtime_observers", {})
     events: list[dict[str, object]] = []
 
-    def observer(event: object) -> None:
-        events.append(dict(event))  # type: ignore[arg-type]
+    def observer(event: Mapping[str, object]) -> None:
+        events.append(dict(event))
 
     register_kv_materialization_runtime_observer("example", observer)
     register_kv_materialization_runtime_observer("example", observer)
