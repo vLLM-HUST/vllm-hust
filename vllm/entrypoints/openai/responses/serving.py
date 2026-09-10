@@ -434,6 +434,15 @@ class OpenAIServingResponses(GenerateBaseServing):
                 default_max_tokens, self.default_sampling_params
             )
 
+            self._apply_request_processors(
+                endpoint="responses",
+                request_id=request.request_id,
+                engine_input=engine_input,
+                max_tokens=default_max_tokens,
+                raw_request=raw_request,
+                params=sampling_params,
+            )
+
             trace_headers = (
                 None
                 if raw_request is None

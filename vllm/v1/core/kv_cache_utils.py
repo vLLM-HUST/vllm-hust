@@ -808,6 +808,29 @@ def get_request_block_hasher(
     """
 
     def request_block_hasher(request: Request) -> list[BlockHash]:
+        runtime_control = request.kv_materialization_runtime_control
+        segment_start_idx = None
+        segment_parent_hash = None
+        if (
+            runtime_control is not None
+            and runtime_control.effective_decision == "partial_reuse"
+            and runtime_control.segmented_tail_cache_salt
+        ):
+            aligned_reuse_tokens = (
+                runtime_control.target_reuse_tokens // hash_block_size
+            ) * hash_block_size
+            if aligned_reuse_tokens > 0:
+                segment_start_idx = aligned_reuse_tokens
+                segment_parent_hash = BlockHash(
+                    caching_hash_fn(
+                        (
+                            "kv_materialization_segment",
+                            runtime_control.segmented_tail_cache_salt,
+                            aligned_reuse_tokens,
+                        )
+                    )
+                )
+
         start_token_idx = len(request.block_hashes) * hash_block_size
         num_tokens = request.num_tokens
 
@@ -832,6 +855,9 @@ def get_request_block_hasher(
             if end_token_idx > num_tokens:
                 # We only hash full blocks
                 break
+
+            if segment_start_idx is not None and start_token_idx == segment_start_idx:
+                prev_block_hash_value = segment_parent_hash
 
             # MM and LoRA requests need extra keys for block-hash computation.
             extra_keys, curr_mm_idx = generate_block_hash_extra_keys(

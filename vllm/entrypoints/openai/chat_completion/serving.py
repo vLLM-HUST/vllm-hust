@@ -329,6 +329,15 @@ class OpenAIServingChat(GenerateBaseServing):
                     self.default_sampling_params,
                 )
 
+            self._apply_request_processors(
+                endpoint="chat",
+                request_id=sub_request_id,
+                engine_input=engine_input,
+                max_tokens=max_tokens,
+                raw_request=raw_request,
+                params=sampling_params,
+            )
+
             self._log_inputs(
                 sub_request_id,
                 engine_input,

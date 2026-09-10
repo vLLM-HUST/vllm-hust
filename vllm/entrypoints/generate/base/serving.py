@@ -31,6 +31,12 @@ from vllm.inputs import EngineInput
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob, PromptLogprobs
 from vllm.lora.request import LoRARequest
+from vllm.plugins.request_processing import (
+    RequestEndpoint,
+    RequestProcessingContext,
+    apply_request_processors,
+)
+from vllm.sampling_params import BeamSearchParams, SamplingParams
 from vllm.tokenizers import TokenizerLike
 from vllm.tracing import (
     contains_trace_headers,
@@ -183,6 +189,30 @@ class GenerateBaseServing(BaseServing, BeamSearchOnlineMixin):
         if self.engine_client.errored:
             raise self.engine_client.dead_error
         self.engine_client.check_admission(n)
+
+    def _apply_request_processors(
+        self,
+        *,
+        endpoint: RequestEndpoint,
+        request_id: str,
+        engine_input: EngineInput,
+        max_tokens: int,
+        raw_request: Request | None,
+        params: SamplingParams | BeamSearchParams,
+    ) -> None:
+        """Apply registered request processors before engine submission."""
+
+        headers = {} if raw_request is None else dict(raw_request.headers.items())
+        params.extra_args = apply_request_processors(
+            RequestProcessingContext(
+                endpoint=endpoint,
+                request_id=request_id,
+                prompt_tokens=self._extract_prompt_len(engine_input),
+                max_tokens=max_tokens,
+                headers=headers,
+            ),
+            params.extra_args,
+        )
 
     def create_streaming_error_response(
         self,
