@@ -217,6 +217,7 @@ class ResponsesRequest(OpenAIBaseModel):
     )
 
     # --8<-- [start:responses-extra-params]
+    watermarking: bool = True
     request_id: str = Field(
         default_factory=lambda: f"resp_{random_uuid()}",
         description=(
@@ -440,6 +441,7 @@ class ResponsesRequest(OpenAIBaseModel):
 
         return SamplingParams.from_optional(
             temperature=temperature,
+            watermarking=self.watermarking,
             top_p=top_p,
             top_k=top_k,
             max_tokens=max_tokens,
