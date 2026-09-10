@@ -41,6 +41,10 @@ from vllm.inputs import EngineInput
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
 from vllm.outputs import RequestOutput
+from vllm.plugins.request_processing import (
+    RequestProcessingContext,
+    apply_request_processors,
+)
 from vllm.renderers.online_renderer import OnlineRenderer
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 from vllm.tokenizers import TokenizerLike
@@ -156,6 +160,8 @@ class OpenAIServingCompletion(OpenAIServing):
         max_model_len = self.model_config.max_model_len
         generators: list[AsyncGenerator[RequestOutput, None]] = []
         for i, engine_input in enumerate(engine_inputs):
+            request_id_item = f"{request_id}-{i}"
+            prompt_token_ids = self._extract_prompt_components(engine_input).token_ids
             max_tokens = get_max_tokens(
                 max_model_len,
                 request.max_tokens,
@@ -175,8 +181,20 @@ class OpenAIServingCompletion(OpenAIServing):
                     max_tokens,
                     self.default_sampling_params,
                 )
-
-            request_id_item = f"{request_id}-{i}"
+                sampling_params.extra_args = apply_request_processors(
+                    RequestProcessingContext(
+                        endpoint="completion",
+                        request_id=request_id_item,
+                        prompt_token_ids=tuple(prompt_token_ids or ()),
+                        max_tokens=max_tokens,
+                        headers=(
+                            {}
+                            if raw_request is None
+                            else dict(raw_request.headers.items())
+                        ),
+                    ),
+                    sampling_params.extra_args,
+                )
 
             self._log_inputs(
                 request_id_item,

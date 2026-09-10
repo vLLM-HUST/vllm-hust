@@ -58,6 +58,10 @@ from vllm.logprobs import Logprob
 from vllm.outputs import RequestOutput
 from vllm.parser import ParserManager
 from vllm.parser.abstract_parser import Parser
+from vllm.plugins.request_processing import (
+    RequestProcessingContext,
+    apply_request_processors,
+)
 from vllm.renderers import ChatParams
 from vllm.renderers.online_renderer import OnlineRenderer
 from vllm.sampling_params import BeamSearchParams, SamplingParams
@@ -314,6 +318,20 @@ class OpenAIServingChat(OpenAIServing):
                 sampling_params = request.to_sampling_params(
                     max_tokens,
                     self.default_sampling_params,
+                )
+                sampling_params.extra_args = apply_request_processors(
+                    RequestProcessingContext(
+                        endpoint="chat",
+                        request_id=sub_request_id,
+                        prompt_token_ids=tuple(prompt_token_ids or ()),
+                        max_tokens=max_tokens,
+                        headers=(
+                            {}
+                            if raw_request is None
+                            else dict(raw_request.headers.items())
+                        ),
+                    ),
+                    sampling_params.extra_args,
                 )
 
             self._log_inputs(
