@@ -549,7 +549,10 @@ class Scheduler(SchedulerInterface):
             return self.kv_cache_manager.get_computed_blocks_for_connector(request)
 
         blocks, num_local, shared_prefix_boundary = (
-            self.kv_cache_manager.get_computed_blocks(request)
+            self.kv_cache_manager.get_computed_blocks(
+                request,
+                emit_event=connector is None,
+            )
         )
         return blocks, num_local, shared_prefix_boundary, False
 
@@ -932,8 +935,15 @@ class Scheduler(SchedulerInterface):
                         hit_diverged,
                     ) = self._get_local_prefix_cache_hit(request)
 
+                    # Apply the same request-scoped reuse policy to remote KV.
+                    runtime_control = request.kv_materialization_runtime_control
+                    connector_reuse_enabled = (
+                        runtime_control is None
+                        or runtime_control.effective_decision != "recompute"
+                    )
+
                     # Get externally-cached tokens if using a KVConnector.
-                    if self.connector is not None:
+                    if self.connector is not None and connector_reuse_enabled:
                         # Present a block-aligned local hit to the connector so
                         # a strictly longer remote hit can supersede a local
                         # sub-block tail without racing its copy-on-write.
@@ -954,6 +964,21 @@ class Scheduler(SchedulerInterface):
                             request_queue.pop_request()
                             step_skipped_waiting.prepend_request(request)
                             continue
+
+                        if (
+                            runtime_control is not None
+                            and runtime_control.effective_decision == "partial_reuse"
+                        ):
+                            reuse_boundary = runtime_control.reuse_boundary(
+                                self.hash_block_size
+                            )
+                            assert reuse_boundary is not None
+                            ext_tokens = min(
+                                ext_tokens,
+                                max(reuse_boundary - block_aligned_local, 0),
+                            )
+                            if ext_tokens == 0:
+                                load_kv_async = False
 
                         if partial_tail and ext_tokens > partial_tail:
                             # Remote strictly exceeds the full local hit: drop the
@@ -997,6 +1022,20 @@ class Scheduler(SchedulerInterface):
                         num_new_local_computed_tokens + num_external_computed_tokens
                     )
                     assert num_computed_tokens <= request.num_tokens
+
+                    if self.connector is not None:
+                        skip_local_read = not (
+                            self.kv_cache_manager.prefix_cache_lookup_enabled(request)
+                        )
+                        self.kv_cache_manager.record_materialization_lookup(
+                            request,
+                            local_reused_tokens=num_new_local_computed_tokens,
+                            external_reused_tokens=num_external_computed_tokens,
+                            matched_blocks=sum(
+                                len(group) for group in new_computed_blocks.blocks
+                            ),
+                            skip_read=skip_local_read,
+                        )
 
                     # Skip request with pending mm encoding prefetches
                     if self._ec_transfer_pending(request, num_computed_tokens):

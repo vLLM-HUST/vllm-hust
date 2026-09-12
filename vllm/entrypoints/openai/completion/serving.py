@@ -178,6 +178,15 @@ class OpenAIServingCompletion(GenerateBaseServing):
 
             request_id_item = f"{request_id}-{i}"
 
+            self._apply_request_processors(
+                endpoint="completion",
+                request_id=request_id_item,
+                engine_input=engine_input,
+                max_tokens=max_tokens,
+                raw_request=raw_request,
+                params=sampling_params,
+            )
+
             self._log_inputs(
                 request_id_item,
                 engine_input,
