@@ -17,6 +17,7 @@ from vllm.config import (
     SpeculativeConfig,
     VllmConfig,
 )
+from vllm.config.scheduler import SchedulerPolicy
 from vllm.multimodal.inputs import (
     MultiModalFeatureSpec,
     MultiModalKwargsItem,
@@ -76,6 +77,7 @@ def create_scheduler(
     per_request_spec_decode_metrics: str = "none",
     preemption_policy: str | type[object] | None = None,
     batch_admission_policy: str | type[object] | None = None,
+    scheduling_policy: SchedulerPolicy = "fcfs",
 ) -> Scheduler | AsyncScheduler:
     """Create scheduler under test.
 
@@ -117,6 +119,7 @@ def create_scheduler(
         watermark=0.0,
         preemption_policy=preemption_policy,
         batch_admission_policy=batch_admission_policy,
+        policy=scheduling_policy,
     )
     # Cache config, optionally force APC
     cache_config = CacheConfig(
