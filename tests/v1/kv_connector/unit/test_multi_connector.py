@@ -23,6 +23,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorStats
 from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import (
     MultiConnector,
+    MultiKVConnectorPromMetrics,
     MultiKVConnectorStats,
     MultiKVConnectorWorkerMetadata,
 )
@@ -529,6 +530,14 @@ class TestMultiConnectorStats:
         )
         assert isinstance(stats.data[connector_name], MockConnectorStats)
         assert stats.data[connector_name].data == {"mock_field": [1, 2, 3]}
+
+    def test_prometheus_skips_child_without_prometheus_exporter(self):
+        metrics = object.__new__(MultiKVConnectorPromMetrics)
+        metrics._prom_metrics = {}
+
+        metrics.observe(
+            {"ExternalStatsConnector": {"records": [], "transport_counters": {}}}
+        )
 
     def test_build_kv_connector_stats_reconstructs_nixl_stats(self):
         """Test that NixlConnector stats are properly reconstructed with
