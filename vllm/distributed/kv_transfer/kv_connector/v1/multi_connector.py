@@ -135,6 +135,8 @@ class MultiConnector(KVConnectorBase_V1, SupportsHMA):
     - Save to all connectors.
     """
 
+    _external_stats_connector_names: set[str] = set()
+
     @classmethod
     def requires_piecewise_for_cudagraph(cls, extra_config: dict[str, Any]) -> bool:
         """
@@ -264,12 +266,14 @@ class MultiConnector(KVConnectorBase_V1, SupportsHMA):
                 KVConnectorFactory.register_connector(
                     connector_name, module_path, connector_cls.__name__
                 )
+                cls._external_stats_connector_names.add(connector_name)
                 continue
             if registered_cls is not connector_cls:
                 raise ValueError(
                     f"Connector '{connector_name}' is already registered to "
                     "a different class."
                 )
+            cls._external_stats_connector_names.add(connector_name)
 
     def register_cross_layers_kv_cache(
         self, kv_cache: torch.Tensor, attn_backend: type[AttentionBackend]
@@ -630,12 +634,22 @@ class MultiConnector(KVConnectorBase_V1, SupportsHMA):
                 connector_name
             )
 
-            # stats_value is the serialized dataclass which contains {'data': {...}}
-            # We need to extract the inner 'data' field to avoid double-nesting
-            assert isinstance(stats_value, dict) and "data" in stats_value, (
-                f"Expected a dict with a 'data' field, got {stats_value}"
+            assert isinstance(stats_value, dict), (
+                f"Expected serialized connector stats dict, got {stats_value}"
             )
-            inner_data = stats_value["data"]
+            if "data" in stats_value:
+                # Built-in KVConnectorStats subclasses serialize through the
+                # base ``data`` field.
+                inner_data = stats_value["data"]
+            else:
+                # An external typed dataclass may serialize its declared
+                # fields directly. Only children registered from the explicit
+                # module-path config may use this representation.
+                assert connector_name in cls._external_stats_connector_names, (
+                    "Expected a dict with a 'data' field for a non-external "
+                    f"connector, got {stats_value}"
+                )
+                inner_data = stats_value
 
             # Use the connector's build_kv_connector_stats to reconstruct
             if reconstructed_stats := connector_cls.build_kv_connector_stats(

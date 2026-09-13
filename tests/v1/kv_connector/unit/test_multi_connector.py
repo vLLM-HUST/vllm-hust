@@ -525,9 +525,10 @@ class TestMultiConnectorStats:
             is ExternalStatsConnector
         )
         stats = MultiConnector.build_kv_connector_stats(
-            data={connector_name: {"data": {"mock_field": [1, 2, 3]}}}
+            data={connector_name: {"mock_field": [1, 2, 3]}}
         )
         assert isinstance(stats.data[connector_name], MockConnectorStats)
+        assert stats.data[connector_name].data == {"mock_field": [1, 2, 3]}
 
     def test_build_kv_connector_stats_reconstructs_nixl_stats(self):
         """Test that NixlConnector stats are properly reconstructed with
