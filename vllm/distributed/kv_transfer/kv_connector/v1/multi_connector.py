@@ -235,6 +235,42 @@ class MultiConnector(KVConnectorBase_V1, SupportsHMA):
             )
         return ret
 
+    @classmethod
+    def _register_external_connector_stats_classes(
+        cls, vllm_config: "VllmConfig"
+    ) -> None:
+        """Expose external children to API-side stats reconstruction.
+
+        Child creation honors ``kv_connector_module_path``, while serialized
+        MultiConnector stats carry the connector class name. The API process
+        therefore needs the same external class in its local factory registry
+        before it can reconstruct typed stats emitted by the engine process.
+        """
+
+        for connector_cls, temp_config in cls._get_connector_classes_and_configs(
+            vllm_config
+        ):
+            assert temp_config.kv_transfer_config is not None
+            child_config = temp_config.kv_transfer_config
+            module_path = child_config.kv_connector_module_path
+            connector_name = child_config.kv_connector
+            if not module_path or connector_name is None:
+                continue
+            try:
+                registered_cls = KVConnectorFactory.get_connector_class_by_name(
+                    connector_name
+                )
+            except ValueError:
+                KVConnectorFactory.register_connector(
+                    connector_name, module_path, connector_cls.__name__
+                )
+                continue
+            if registered_cls is not connector_cls:
+                raise ValueError(
+                    f"Connector '{connector_name}' is already registered to "
+                    "a different class."
+                )
+
     def register_cross_layers_kv_cache(
         self, kv_cache: torch.Tensor, attn_backend: type[AttentionBackend]
     ):
@@ -636,6 +672,7 @@ class MultiConnector(KVConnectorBase_V1, SupportsHMA):
         labelnames: list[str],
         per_engine_labelvalues: dict[int, list[object]],
     ) -> KVConnectorPromMetrics:
+        cls._register_external_connector_stats_classes(vllm_config)
         prom_metrics: dict[str, KVConnectorPromMetrics] = {}
         seen_classes: set[type] = set()
         for connector_cls, temp_config in cls._get_connector_classes_and_configs(

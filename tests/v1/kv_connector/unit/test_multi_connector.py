@@ -120,6 +120,12 @@ class MockHMAConnector(KVConnectorBase_V1, SupportsHMA):
         return (False, None)
 
 
+class ExternalStatsConnector(MockConnector):
+    """External connector intentionally absent from the global registry."""
+
+    pass
+
+
 # Register mock connectors
 KVConnectorFactory.register_connector("MockConnector", __name__, MockConnector.__name__)
 KVConnectorFactory.register_connector(
@@ -495,6 +501,33 @@ class TestMultiConnectorStats:
         assert isinstance(stats, MultiKVConnectorStats)
         assert len(stats.data) == 0
         assert stats.is_empty()
+
+    def test_external_child_is_registered_for_api_stats_reconstruction(self):
+        connector_name = "ExternalStatsConnector"
+        KVConnectorFactory._registry.pop(connector_name, None)
+        vllm_config = create_vllm_config(
+            kv_connector="MultiConnector",
+            kv_connector_extra_config={
+                "connectors": [
+                    {
+                        "kv_connector": connector_name,
+                        "kv_role": "kv_both",
+                        "kv_connector_module_path": __name__,
+                    }
+                ]
+            },
+        )
+
+        MultiConnector._register_external_connector_stats_classes(vllm_config)
+
+        assert (
+            KVConnectorFactory.get_connector_class_by_name(connector_name)
+            is ExternalStatsConnector
+        )
+        stats = MultiConnector.build_kv_connector_stats(
+            data={connector_name: {"data": {"mock_field": [1, 2, 3]}}}
+        )
+        assert isinstance(stats.data[connector_name], MockConnectorStats)
 
     def test_build_kv_connector_stats_reconstructs_nixl_stats(self):
         """Test that NixlConnector stats are properly reconstructed with
