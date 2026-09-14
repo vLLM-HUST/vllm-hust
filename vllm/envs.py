@@ -264,7 +264,6 @@ if TYPE_CHECKING:
     VLLM_RESPONSES_API_STORE_TTL_SECONDS: float = 3600.0
     VLLM_OPENAI_MODELS_CATALOG_JSON: str | None = None
     VLLM_ENABLE_COHERE_API: bool = False
-    VLLM_ENABLE_SCALE_OUT_ENDPOINTS: bool | None = None
     VLLM_HAS_FLASHINFER_CUBIN: bool = False
     VLLM_ROCM_FP8_MFMA_PAGE_ATTN: bool = False
     VLLM_ALLREDUCE_USE_SYMM_MEM: bool = True
@@ -353,15 +352,6 @@ def maybe_convert_bool(value: str | None) -> bool | None:
     if value is None:
         return None
     return bool(int(value))
-
-
-def maybe_convert_scale_out_endpoints(value: str | None) -> bool | None:
-    if value is None:
-        return None
-    normalized = value.strip()
-    if normalized not in ("0", "1"):
-        raise ValueError("VLLM_ENABLE_SCALE_OUT_ENDPOINTS must be 0 or 1")
-    return maybe_convert_bool(normalized)
 
 
 def maybe_convert_json_str_or_file(value: str | None) -> dict[str, Any] | None:
@@ -1872,12 +1862,6 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ENABLE_COHERE_API": lambda: bool(
         int(os.getenv("VLLM_ENABLE_COHERE_API", "0"))
     ),
-    # If set to 1, expose the scale-out endpoints on `vllm serve`.
-    # The dedicated `vllm launch render` server exposes render and derender
-    # endpoints when this variable is unset or set to 1.
-    "VLLM_ENABLE_SCALE_OUT_ENDPOINTS": lambda: maybe_convert_scale_out_endpoints(
-        os.getenv("VLLM_ENABLE_SCALE_OUT_ENDPOINTS") or None
-    ),
     # If set, use the fp8 mfma in rocm paged attention.
     "VLLM_ROCM_FP8_MFMA_PAGE_ATTN": lambda: bool(
         int(os.getenv("VLLM_ROCM_FP8_MFMA_PAGE_ATTN", "0"))
@@ -2303,7 +2287,6 @@ def compile_factors() -> dict[str, object]:
         "VLLM_CONFIG_ROOT",
         "LD_LIBRARY_PATH",
         "VLLM_SERVER_DEV_MODE",
-        "VLLM_ENABLE_SCALE_OUT_ENDPOINTS",
         "VLLM_DP_MASTER_IP",
         "VLLM_DP_MASTER_PORT",
         "VLLM_NIXL_SIDE_CHANNEL_HOST",
