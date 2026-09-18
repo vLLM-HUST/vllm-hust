@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Optional host-owned lifecycle evidence for existing plugin paths.
 
 Disabled by default. This module observes the existing loader; it is not a
@@ -35,18 +36,14 @@ def _start_identity() -> str:
 
 def _identity() -> dict[str, Any]:
     start_identity = _start_identity()
-    default_epoch = int(
-        hashlib.sha256(start_identity.encode()).hexdigest()[:12], 16
-    )
+    default_epoch = int(hashlib.sha256(start_identity.encode()).hexdigest()[:12], 16)
     return {
         "host": socket.gethostname(),
         "role": os.getenv("VLLM_ECPA_PROCESS_ROLE", "unknown"),
         "ordinal": int(os.getenv("VLLM_ECPA_PROCESS_ORDINAL", "0")),
         "pid": os.getpid(),
         "start_identity": start_identity,
-        "process_epoch": int(
-            os.getenv("VLLM_ECPA_PROCESS_EPOCH", str(default_epoch))
-        ),
+        "process_epoch": int(os.getenv("VLLM_ECPA_PROCESS_EPOCH", str(default_epoch))),
     }
 
 
