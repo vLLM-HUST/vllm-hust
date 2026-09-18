@@ -53,9 +53,9 @@ def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
     log_level("Available plugins for group %s:", group)
     for plugin in discovered_plugins:
         log_level("- %s -> %s", plugin.name, plugin.value)
-        from vllm.plugins.evidence import emit
+        from vllm.plugins.evidence import _emit_host_event
 
-        emit("discovered", group, plugin.name, plugin.value)
+        _emit_host_event("discovered", group, plugin.name, plugin.value)
 
     if allowed_plugins is None:
         log_level(
@@ -71,20 +71,26 @@ def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
 
             try:
                 func = plugin.load()
+            except Exception as plugin_error:
+                logger.exception("Failed to load plugin %s", plugin.name)
+                try:
+                    _emit_host_event(
+                        "failed",
+                        group,
+                        plugin.name,
+                        plugin.value,
+                        detail="entry_point.load",
+                    )
+                except Exception as evidence_error:
+                    raise plugin_error from evidence_error
+            else:
                 plugins[plugin.name] = func
                 _plugin_values[(group, plugin.name)] = plugin.value
-                emit("resolved", group, plugin.name, plugin.value)
-            except Exception:
-                emit(
-                    "failed",
-                    group,
-                    plugin.name,
-                    plugin.value,
-                    detail="entry_point.load",
-                )
-                logger.exception("Failed to load plugin %s", plugin.name)
+                _emit_host_event("resolved", group, plugin.name, plugin.value)
         else:
-            emit("skipped", group, plugin.name, plugin.value, detail="allowlist")
+            _emit_host_event(
+                "skipped", group, plugin.name, plugin.value, detail="allowlist"
+            )
 
     return plugins
 
@@ -105,14 +111,19 @@ def load_general_plugins():
         value = _plugin_values.get((DEFAULT_PLUGINS_GROUP, name), "unknown")
         try:
             func()
-        except Exception:
-            from vllm.plugins.evidence import emit
+        except Exception as plugin_error:
+            from vllm.plugins.evidence import _emit_host_event
 
-            emit("failed", DEFAULT_PLUGINS_GROUP, name, value, detail="callable")
+            try:
+                _emit_host_event(
+                    "failed", DEFAULT_PLUGINS_GROUP, name, value, detail="callable"
+                )
+            except Exception as evidence_error:
+                raise plugin_error from evidence_error
             raise
-        from vllm.plugins.evidence import emit
+        from vllm.plugins.evidence import _emit_host_event
 
-        emit("invoked", DEFAULT_PLUGINS_GROUP, name, value)
+        _emit_host_event("invoked", DEFAULT_PLUGINS_GROUP, name, value)
 
 
 def load_endpoint_plugins(

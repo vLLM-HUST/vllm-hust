@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import importlib.metadata
+from unittest.mock import mock_open
 
 import pytest
 
@@ -31,7 +32,7 @@ def reset(monkeypatch):
 
 def enable(events):
     evidence._sink = events.append
-    evidence._sink_loaded = True
+    evidence._sink_state = "ready"
 
 
 def test_disabled_observer_preserves_plugin_behavior(monkeypatch):
@@ -99,16 +100,155 @@ def test_call_failure_never_emits_invoked(monkeypatch):
     ]
 
 
+def test_plugin_can_forge_internal_event_but_loader_never_emits_success(monkeypatch):
+    events = []
+    enable(events)
+
+    def hostile():
+        evidence._emit_host_event(
+            "invoked", plugins.DEFAULT_PLUGINS_GROUP, "forged", "forged:value"
+        )
+        raise RuntimeError("after forgery")
+
+    ep = EntryPoint("demo", "demo:hostile", lambda: hostile)
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda group: [ep])
+    with pytest.raises(RuntimeError, match="after forgery"):
+        plugins.load_general_plugins()
+    assert not any(
+        item["event"] == "invoked" and item["entry_point"]["name"] == "demo"
+        for item in events
+    )
+
+
 def test_sink_failure_is_logged_by_default_and_strict_when_requested(
     monkeypatch, caplog
 ):
     def broken(_event):
         raise RuntimeError("sink down")
 
-    evidence._sink, evidence._sink_loaded = broken, True
-    evidence.emit("discovered", "group", "name", "value")
+    evidence._sink, evidence._sink_state = broken, "ready"
+    assert not evidence._emit_host_event("discovered", "group", "name", "value")
     assert "ECPA_EVIDENCE_SINK_WRITE_FAILED" in caplog.text
+    assert not evidence._delivered
+    assert evidence._delivery_attempts == 1
     monkeypatch.setenv("VLLM_ECPA_EVIDENCE_STRICT", "1")
-    evidence._emitted.clear()
-    with pytest.raises(RuntimeError, match="sink down"):
-        evidence.emit("discovered", "group", "name", "value")
+    with pytest.raises(evidence.EvidenceConfigurationError):
+        evidence._emit_host_event("discovered", "group", "name", "value")
+    with pytest.raises(evidence.EvidenceConfigurationError):
+        evidence._emit_host_event("discovered", "group", "name", "value")
+    assert evidence._sink_state == "failed"
+
+
+def test_compat_write_failure_retries_and_dedupes_only_after_delivery():
+    events = []
+
+    def transient(event):
+        if not events:
+            events.append(None)
+            raise RuntimeError("once")
+        events.append(event)
+
+    evidence._sink, evidence._sink_state = transient, "ready"
+    assert not evidence._emit_host_event("resolved", "group", "name", "value")
+    assert evidence._emit_host_event("resolved", "group", "name", "value")
+    assert evidence._emit_host_event("resolved", "group", "name", "value")
+    delivered = [item for item in events if item is not None]
+    assert len(delivered) == 1
+    assert delivered[0]["delivery_attempt"] == 2
+    assert evidence._delivery_attempts == 2
+    assert evidence._delivery_count == 1
+
+
+def test_sink_import_failure_retries_in_compat_and_is_sticky_in_strict(
+    monkeypatch,
+):
+    monkeypatch.setenv("VLLM_ECPA_EVIDENCE_SINK", "missing.module:sink")
+    attempts = []
+
+    def missing(name):
+        attempts.append(name)
+        raise ImportError(name)
+
+    monkeypatch.setattr(evidence.importlib, "import_module", missing)
+    assert not evidence._emit_host_event("resolved", "g", "n", "v")
+    assert not evidence._emit_host_event("resolved", "g", "n", "v")
+    assert len(attempts) == 2
+
+    evidence.reset_for_tests()
+    monkeypatch.setenv("VLLM_ECPA_EVIDENCE_STRICT", "1")
+    with pytest.raises(evidence.EvidenceConfigurationError):
+        evidence._emit_host_event("resolved", "g", "n", "v")
+    with pytest.raises(evidence.EvidenceConfigurationError):
+        evidence._emit_host_event("resolved", "g", "n", "v")
+    assert len(attempts) == 3
+
+
+def test_dedupe_preserves_value_and_failure_stage():
+    events = []
+    enable(events)
+    evidence._emit_host_event("failed", "g", "n", "v1", detail="entry_point.load")
+    evidence._emit_host_event("failed", "g", "n", "v2", detail="entry_point.load")
+    evidence._emit_host_event("failed", "g", "n", "v1", detail="callable")
+    assert len(events) == 3
+
+
+def test_identity_errors_follow_compat_and_sticky_strict(monkeypatch):
+    events = []
+    enable(events)
+    monkeypatch.setenv("VLLM_ECPA_PROCESS_ORDINAL", "not-an-int")
+    assert not evidence._emit_host_event("discovered", "g", "n", "v")
+    assert events == []
+    monkeypatch.setenv("VLLM_ECPA_EVIDENCE_STRICT", "1")
+    with pytest.raises(evidence.EvidenceConfigurationError):
+        evidence._emit_host_event("discovered", "g", "n", "v")
+    monkeypatch.setenv("VLLM_ECPA_PROCESS_ORDINAL", "1")
+    with pytest.raises(evidence.EvidenceConfigurationError):
+        evidence._emit_host_event("discovered", "g", "n", "v")
+
+
+def test_invalid_strict_mode_configuration_fails_deterministically(monkeypatch):
+    monkeypatch.setenv("VLLM_ECPA_EVIDENCE_STRICT", "yes")
+    with pytest.raises(evidence.EvidenceConfigurationError):
+        evidence._emit_host_event("discovered", "g", "n", "v")
+    with pytest.raises(evidence.EvidenceConfigurationError):
+        evidence._emit_host_event("discovered", "g", "n", "v")
+
+
+def test_strict_evidence_failure_preserves_plugin_exception_as_primary(monkeypatch):
+    events = []
+    enable(events)
+    monkeypatch.setenv("VLLM_ECPA_EVIDENCE_STRICT", "1")
+
+    def plugin_failure():
+        evidence._sink = lambda event: (_ for _ in ()).throw(RuntimeError("sink"))
+        raise ValueError("plugin")
+
+    ep = EntryPoint("demo", "demo:failure", lambda: plugin_failure)
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda group: [ep])
+    with pytest.raises(ValueError, match="plugin") as caught:
+        plugins.load_general_plugins()
+    assert isinstance(caught.value.__cause__, evidence.EvidenceConfigurationError)
+
+
+def test_fork_pid_change_clears_inherited_delivery_state(monkeypatch):
+    events = []
+    enable(events)
+    evidence._emit_host_event("resolved", "g", "n", "v")
+    old_pid = evidence._owner_pid
+    monkeypatch.setattr(evidence.os, "getpid", lambda: old_pid + 1)
+    monkeypatch.setattr(evidence, "_start_identity", lambda: "pid:new:start_ticks:2")
+    monkeypatch.setenv("VLLM_ECPA_EVIDENCE_SINK", "tests.fake:sink")
+    monkeypatch.setattr(
+        evidence.importlib,
+        "import_module",
+        lambda name: type("M", (), {"sink": events.append}),
+    )
+    evidence._emit_host_event("resolved", "g", "n", "v")
+    assert len(events) == 2
+
+
+def test_proc_start_identity_parses_after_final_comm_parenthesis(monkeypatch):
+    stat = "123 (worker ) name) S " + " ".join(str(item) for item in range(4, 23))
+    monkeypatch.setattr("builtins.open", mock_open(read_data=stat))
+    monkeypatch.setattr(evidence.os, "getpid", lambda: 123)
+    assert evidence._start_identity() == "pid:123:start_ticks:22"
