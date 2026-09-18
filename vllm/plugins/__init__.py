@@ -31,6 +31,7 @@ ENDPOINT_PLUGINS_GROUP = "vllm.endpoint_plugins"
 
 # make sure one process only loads plugins once
 plugins_loaded = False
+_plugin_values: dict[tuple[str, str], str] = {}
 
 
 def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
@@ -52,6 +53,9 @@ def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
     log_level("Available plugins for group %s:", group)
     for plugin in discovered_plugins:
         log_level("- %s -> %s", plugin.name, plugin.value)
+        from vllm.plugins.evidence import emit
+
+        emit("discovered", group, plugin.name, plugin.value)
 
     if allowed_plugins is None:
         log_level(
@@ -68,8 +72,19 @@ def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
             try:
                 func = plugin.load()
                 plugins[plugin.name] = func
+                _plugin_values[(group, plugin.name)] = plugin.value
+                emit("resolved", group, plugin.name, plugin.value)
             except Exception:
+                emit(
+                    "failed",
+                    group,
+                    plugin.name,
+                    plugin.value,
+                    detail="entry_point.load",
+                )
                 logger.exception("Failed to load plugin %s", plugin.name)
+        else:
+            emit("skipped", group, plugin.name, plugin.value, detail="allowlist")
 
     return plugins
 
@@ -86,8 +101,18 @@ def load_general_plugins():
 
     plugins = load_plugins_by_group(group=DEFAULT_PLUGINS_GROUP)
     # general plugins, we only need to execute the loaded functions
-    for func in plugins.values():
-        func()
+    for name, func in plugins.items():
+        value = _plugin_values.get((DEFAULT_PLUGINS_GROUP, name), "unknown")
+        try:
+            func()
+        except Exception:
+            from vllm.plugins.evidence import emit
+
+            emit("failed", DEFAULT_PLUGINS_GROUP, name, value, detail="callable")
+            raise
+        from vllm.plugins.evidence import emit
+
+        emit("invoked", DEFAULT_PLUGINS_GROUP, name, value)
 
 
 def load_endpoint_plugins(
