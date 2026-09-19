@@ -40,7 +40,7 @@ async def _convert_stream_to_sse_events(
     generator: AsyncGenerator[StreamingResponsesResponse, None],
     context: ResponsesRequest | ResponsesResponse | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Convert the generator to a stream of events in SSE format"""
+    """Convert the generator to a stream of events in SSE format."""
     transformer = CustomToolStreamTransformer(
         custom_names=frozenset(getattr(context, "vllm_custom_tool_names", set())),
         original_tools=getattr(context, "vllm_original_tools", None),

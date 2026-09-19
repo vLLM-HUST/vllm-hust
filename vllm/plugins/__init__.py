@@ -31,6 +31,7 @@ ENDPOINT_PLUGINS_GROUP = "vllm.endpoint_plugins"
 
 # make sure one process only loads plugins once
 plugins_loaded = False
+_plugin_values: dict[tuple[str, str], str] = {}
 
 
 def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
@@ -52,6 +53,9 @@ def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
     log_level("Available plugins for group %s:", group)
     for plugin in discovered_plugins:
         log_level("- %s -> %s", plugin.name, plugin.value)
+        from vllm.plugins.evidence import _emit_host_event
+
+        _emit_host_event("discovered", group, plugin.name, plugin.value)
 
     if allowed_plugins is None:
         log_level(
@@ -67,9 +71,26 @@ def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
 
             try:
                 func = plugin.load()
-                plugins[plugin.name] = func
-            except Exception:
+            except Exception as plugin_error:
                 logger.exception("Failed to load plugin %s", plugin.name)
+                try:
+                    _emit_host_event(
+                        "failed",
+                        group,
+                        plugin.name,
+                        plugin.value,
+                        detail="entry_point.load",
+                    )
+                except Exception as evidence_error:
+                    raise plugin_error from evidence_error
+            else:
+                plugins[plugin.name] = func
+                _plugin_values[(group, plugin.name)] = plugin.value
+                _emit_host_event("resolved", group, plugin.name, plugin.value)
+        else:
+            _emit_host_event(
+                "skipped", group, plugin.name, plugin.value, detail="allowlist"
+            )
 
     return plugins
 
@@ -86,8 +107,23 @@ def load_general_plugins():
 
     plugins = load_plugins_by_group(group=DEFAULT_PLUGINS_GROUP)
     # general plugins, we only need to execute the loaded functions
-    for func in plugins.values():
-        func()
+    for name, func in plugins.items():
+        value = _plugin_values.get((DEFAULT_PLUGINS_GROUP, name), "unknown")
+        try:
+            func()
+        except Exception as plugin_error:
+            from vllm.plugins.evidence import _emit_host_event
+
+            try:
+                _emit_host_event(
+                    "failed", DEFAULT_PLUGINS_GROUP, name, value, detail="callable"
+                )
+            except Exception as evidence_error:
+                raise plugin_error from evidence_error
+            raise
+        from vllm.plugins.evidence import _emit_host_event
+
+        _emit_host_event("invoked", DEFAULT_PLUGINS_GROUP, name, value)
 
 
 def load_endpoint_plugins(
@@ -115,6 +151,7 @@ def load_endpoint_plugins(
 
     Returns:
         Instantiated plugins that passed gating in discovery order.
+
     """
     from importlib.metadata import entry_points
 
