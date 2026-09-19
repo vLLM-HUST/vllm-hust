@@ -12,6 +12,7 @@ from vllm.utils.import_utils import resolve_obj_by_qualname
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+    from vllm.plugins.evidence import EvidenceScope
 
 logger = init_logger(__name__)
 
@@ -99,7 +100,13 @@ def _policy_name(policy: PreemptionPolicy) -> str:
     return f"{policy_type.__module__}.{policy_type.__qualname__}"
 
 
-def _emit_policy_evidence(policy_name: str, event: str, outcome: str) -> None:
+def _emit_policy_evidence(
+    policy_name: str,
+    event: str,
+    outcome: str,
+    scope: EvidenceScope,
+    occurrence_id: int | str,
+) -> None:
     try:
         from vllm.plugins.evidence import _emit_host_event
 
@@ -109,15 +116,16 @@ def _emit_policy_evidence(policy_name: str, event: str, outcome: str) -> None:
             policy_name,
             policy_name,
             detail=f"engine-core.scheduler:{outcome}",
+            scope=scope,
+            occurrence_id=occurrence_id,
+            observation_kind=(
+                "scheduler_dispatch" if event == "invoked" else "scheduler_resolution"
+            ),
         )
     except Exception:
-        logger.warning(
-            "Preemption policy evidence emission failed: policy=%s event=%s outcome=%s",
-            policy_name,
-            event,
-            outcome,
-            exc_info=True,
-        )
+        # Evidence is observational and records/logs its own first sink failure.
+        # Never let a strict or broken sink perturb the scheduler hot path.
+        return
 
 
 def _load_policy(vllm_config: VllmConfig) -> PreemptionPolicy | None:
@@ -149,6 +157,8 @@ class PreemptionPolicyController:
     def __init__(self, vllm_config: VllmConfig) -> None:
         policy = _load_policy(vllm_config)
         self._policy = policy
+        self._evidence_scope: EvidenceScope | None = None
+        self._invocation_seq = 0
         self.stats = PreemptionPolicyStats(
             policy_name=_policy_name(policy) if policy is not None else "builtin",
             enabled=policy is not None,
@@ -159,9 +169,28 @@ class PreemptionPolicyController:
             self.stats.enabled,
         )
         if policy is not None:
-            _emit_policy_evidence(
-                self.stats.policy_name, "resolved", "protocol-validated"
-            )
+            try:
+                from vllm.plugins.evidence import capture_scope, observer_configured
+
+                if observer_configured():
+                    self._evidence_scope = capture_scope(
+                        expected_role="engine-core-scheduler"
+                    )
+            except Exception as exc:
+                logger.warning_once(
+                    "Preemption policy evidence scope is unavailable: "
+                    "policy=%s error=%r",
+                    self.stats.policy_name,
+                    exc,
+                )
+            if self._evidence_scope is not None:
+                _emit_policy_evidence(
+                    self.stats.policy_name,
+                    "resolved",
+                    "protocol-validated",
+                    self._evidence_scope,
+                    "resolved",
+                )
 
     def select_victim(self, context: PreemptionContext) -> str:
         policy = self._policy
@@ -169,28 +198,39 @@ class PreemptionPolicyController:
             return _builtin_victim_id(context)
 
         self.stats.calls += 1
+        self._invocation_seq += 1
         try:
             selected_id = policy.select_victim(context)
         except Exception:
-            _emit_policy_evidence(self.stats.policy_name, "invoked", "exception")
+            self._emit_invocation("exception")
             self._disable_after_failure("raised an exception", exc_info=True)
             return _builtin_victim_id(context)
 
         if selected_id is None:
             self.stats.abstentions += 1
-            _emit_policy_evidence(self.stats.policy_name, "invoked", "abstained")
+            self._emit_invocation("abstained")
             return _builtin_victim_id(context)
 
         candidate_ids = {candidate.request_id for candidate in context.candidates}
         if selected_id not in candidate_ids:
             self.stats.invalid_selections += 1
-            _emit_policy_evidence(self.stats.policy_name, "invoked", "invalid")
+            self._emit_invocation("invalid")
             self._disable_after_failure(f"returned unknown request ID {selected_id!r}")
             return _builtin_victim_id(context)
 
         self.stats.selections += 1
-        _emit_policy_evidence(self.stats.policy_name, "invoked", "selected")
+        self._emit_invocation("selected")
         return selected_id
+
+    def _emit_invocation(self, outcome: str) -> None:
+        if self._evidence_scope is not None:
+            _emit_policy_evidence(
+                self.stats.policy_name,
+                "invoked",
+                outcome,
+                self._evidence_scope,
+                self._invocation_seq,
+            )
 
     def export_stats(self) -> dict[str, str | int | bool]:
         """Return a serialization-safe cumulative stats snapshot."""

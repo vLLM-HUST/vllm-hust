@@ -13,7 +13,7 @@ from vllm.v1.core.sched.preemption import (
     PreemptionPolicyController,
 )
 
-pytestmark = pytest.mark.cpu_test
+pytestmark = [pytest.mark.cpu_test, pytest.mark.skip_global_cleanup]
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +24,8 @@ def reset_evidence(monkeypatch):
     monkeypatch.setenv("VLLM_ECPA_PROCESS_ROLE", "engine-core-scheduler")
     monkeypatch.setenv("VLLM_ECPA_PROCESS_ORDINAL", "0")
     monkeypatch.setenv("VLLM_ECPA_PROCESS_EPOCH", "7")
+    monkeypatch.setenv("VLLM_ECPA_PLAN_ID", "plan-1")
+    monkeypatch.setenv("VLLM_ECPA_LAUNCH_ID", "launch-1")
 
 
 def capture_evidence(events):
@@ -152,6 +154,10 @@ def test_loaded_policy_without_pressure_emits_only_resolved() -> None:
         ("resolved", "engine-core.scheduler:protocol-validated")
     ]
     assert events[0]["process"]["role"] == "engine-core-scheduler"
+    assert events[0]["observation_kind"] == "scheduler_resolution"
+    assert events[0]["binding_status"] == "bound"
+    assert events[0]["plan_id"] == "plan-1"
+    assert events[0]["launch_id"] == "launch-1"
     assert events[0]["plugin_id"] is None
     assert events[0]["artifact_digest"] is None
 
@@ -187,6 +193,7 @@ def test_native_dispatch_emits_process_owned_outcome(
     invoked = [event for event in events if event["event"] == "invoked"]
     assert len(invoked) == 1
     assert invoked[0]["detail"] == f"engine-core.scheduler:{outcome}"
+    assert invoked[0]["observation_kind"] == "scheduler_dispatch"
     assert invoked[0]["process"]["role"] == "engine-core-scheduler"
 
 
@@ -204,13 +211,112 @@ def test_evidence_failure_never_changes_selection_or_fallback(monkeypatch) -> No
     assert invalid.export_stats()["enabled"] is False
 
 
-def test_process_epoch_change_is_reflected_in_dispatch_evidence(monkeypatch) -> None:
+def test_broken_sink_storm_calls_sink_once_and_preserves_dispatches(caplog) -> None:
+    sink_calls = 0
+
+    def broken(_event):
+        nonlocal sink_calls
+        sink_calls += 1
+        raise RuntimeError("sink unavailable")
+
+    evidence._sink, evidence._sink_state = broken, "ready"
+    controller = PreemptionPolicyController(make_config(SelectFirstPolicy))
+
+    for _ in range(100):
+        assert controller.select_victim(make_context()) == "first"
+
+    assert sink_calls == 1
+    assert controller.export_stats()["calls"] == 100
+    assert controller.export_stats()["selections"] == 100
+    assert caplog.text.count("ECPA_EVIDENCE_SINK_WRITE_FAILED") == 1
+
+
+def test_dispatch_scope_is_frozen_across_environment_mutation(monkeypatch) -> None:
     events = []
     capture_evidence(events)
     controller = PreemptionPolicyController(make_config(SelectFirstPolicy))
     controller.select_victim(make_context())
     monkeypatch.setenv("VLLM_ECPA_PROCESS_EPOCH", "8")
+    monkeypatch.setenv("VLLM_ECPA_PROCESS_ROLE", "worker")
+    monkeypatch.setenv("VLLM_ECPA_PLAN_ID", "plan-2")
+    monkeypatch.setenv("VLLM_ECPA_LAUNCH_ID", "launch-2")
     controller.select_victim(make_context())
 
     invoked = [event for event in events if event["event"] == "invoked"]
-    assert [event["process"]["process_epoch"] for event in invoked] == [7, 8]
+    resolved = next(event for event in events if event["event"] == "resolved")
+    assert [event["process"]["process_epoch"] for event in invoked] == [7, 7]
+    assert [event["process"]["role"] for event in invoked] == [
+        "engine-core-scheduler",
+        "engine-core-scheduler",
+    ]
+    assert [event["plan_id"] for event in invoked] == ["plan-1", "plan-1"]
+    assert [event["launch_id"] for event in invoked] == ["launch-1", "launch-1"]
+    assert all(event["process"] == resolved["process"] for event in invoked)
+    assert all(event["plan_id"] == resolved["plan_id"] for event in invoked)
+    assert all(event["launch_id"] == resolved["launch_id"] for event in invoked)
+
+
+@pytest.mark.parametrize(
+    "policy,outcome", [(SelectFirstPolicy, "selected"), (AbstainingPolicy, "abstained")]
+)
+def test_repeated_dispatches_are_delivered_and_align_with_calls(
+    policy, outcome
+) -> None:
+    events = []
+    capture_evidence(events)
+    controller = PreemptionPolicyController(make_config(policy))
+
+    for _ in range(3):
+        controller.select_victim(make_context())
+
+    invoked = [event for event in events if event["event"] == "invoked"]
+    assert len(invoked) == controller.export_stats()["calls"] == 3
+    assert [event["occurrence_id"] for event in invoked] == [1, 2, 3]
+    assert [event["invocation_seq"] for event in invoked] == [1, 2, 3]
+    assert len({event["dispatch_id"] for event in invoked}) == 3
+    assert {event["detail"] for event in invoked} == {
+        f"engine-core.scheduler:{outcome}"
+    }
+
+
+def test_worker_role_rejects_scheduler_evidence_without_changing_policy(
+    monkeypatch,
+) -> None:
+    events = []
+    capture_evidence(events)
+    monkeypatch.setenv("VLLM_ECPA_PROCESS_ROLE", "worker")
+
+    controller = PreemptionPolicyController(make_config(SelectFirstPolicy))
+
+    assert controller.select_victim(make_context()) == "first"
+    assert events == []
+    assert controller.export_stats()["selections"] == 1
+
+
+def test_missing_plan_and_launch_is_explicitly_unbound(monkeypatch) -> None:
+    events = []
+    capture_evidence(events)
+    monkeypatch.delenv("VLLM_ECPA_PLAN_ID")
+    monkeypatch.delenv("VLLM_ECPA_LAUNCH_ID")
+
+    controller = PreemptionPolicyController(make_config(SelectFirstPolicy))
+    controller.select_victim(make_context())
+
+    assert {event["binding_status"] for event in events} == {"unbound"}
+    assert all(event["plan_id"] is None for event in events)
+    assert all(event["launch_id"] is None for event in events)
+
+
+def test_new_launch_in_same_pid_is_not_hidden_by_resolved_dedupe(monkeypatch) -> None:
+    events = []
+    capture_evidence(events)
+    PreemptionPolicyController(make_config(SelectFirstPolicy))
+    monkeypatch.setenv("VLLM_ECPA_PLAN_ID", "plan-2")
+    monkeypatch.setenv("VLLM_ECPA_LAUNCH_ID", "launch-2")
+    PreemptionPolicyController(make_config(SelectFirstPolicy))
+
+    resolved = [event for event in events if event["event"] == "resolved"]
+    assert [(event["plan_id"], event["launch_id"]) for event in resolved] == [
+        ("plan-1", "launch-1"),
+        ("plan-2", "launch-2"),
+    ]

@@ -17,7 +17,7 @@ import os
 import socket
 import time
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 logger = logging.getLogger(__name__)
 SCHEMA = "vllm-hust-plugin-evidence/0.1"
@@ -35,6 +35,15 @@ _owner_pid = os.getpid()
 
 class EvidenceConfigurationError(RuntimeError):
     """Evidence configuration or identity is invalid."""
+
+
+class EvidenceScope(TypedDict):
+    """Process identity and launch binding frozen at component initialization."""
+
+    process: dict[str, Any]
+    plan_id: str | None
+    launch_id: str | None
+    binding_status: Literal["bound", "unbound"]
 
 
 def _strict() -> bool:
@@ -86,6 +95,30 @@ def _identity() -> dict[str, Any]:
         "start_identity": start_identity,
         "process_epoch": epoch,
     }
+
+
+def capture_scope(*, expected_role: str | None = None) -> EvidenceScope:
+    """Capture identity and launch binding once for a long-lived component."""
+    identity = _identity()
+    if expected_role is not None and identity["role"] != expected_role:
+        raise EvidenceConfigurationError(
+            f"evidence role must be {expected_role!r}, got {identity['role']!r}"
+        )
+    plan_id = os.getenv("VLLM_ECPA_PLAN_ID") or None
+    launch_id = os.getenv("VLLM_ECPA_LAUNCH_ID") or None
+    return {
+        "process": identity,
+        "plan_id": plan_id,
+        "launch_id": launch_id,
+        "binding_status": (
+            "bound" if plan_id is not None and launch_id is not None else "unbound"
+        ),
+    }
+
+
+def observer_configured() -> bool:
+    """Return whether this process has an explicit evidence destination."""
+    return _sink_state == "ready" or bool(os.getenv("VLLM_ECPA_EVIDENCE_SINK"))
 
 
 def _reset_after_fork() -> None:
@@ -145,6 +178,10 @@ def _event_key(
     name: str,
     value: str,
     detail: str | None,
+    occurrence_id: int | str | None,
+    plan_id: str | None,
+    launch_id: str | None,
+    observation_kind: str,
 ) -> tuple[Any, ...]:
     return (
         identity["host"],
@@ -158,6 +195,10 @@ def _event_key(
         value,
         event,
         detail,
+        occurrence_id,
+        plan_id,
+        launch_id,
+        observation_kind,
     )
 
 
@@ -168,6 +209,9 @@ def _emit_host_event(
     value: str,
     *,
     detail: str | None = None,
+    scope: EvidenceScope | None = None,
+    occurrence_id: int | str | None = None,
+    observation_kind: str = "loader_lifecycle",
 ) -> bool:
     """Attempt delivery; return true only after the configured sink accepts."""
     global _delivery_attempts, _delivery_count, _sink_state, _sink_error
@@ -181,7 +225,7 @@ def _emit_host_event(
         sink = _load_sink(strict)
         if sink is None:
             return False
-        identity = _identity()
+        identity = _identity() if scope is None else scope["process"]
     except EvidenceConfigurationError as exc:
         if not (_sink_state == "failed" and _sink_error is not None):
             _record_failure("ECPA_EVIDENCE_IDENTITY_FAILED failures=%d", exc)
@@ -190,7 +234,29 @@ def _emit_host_event(
             raise EvidenceConfigurationError("evidence emission failed") from exc
         return False
 
-    key = _event_key(identity, event, group, name, value, detail)
+    plan_id = os.getenv("VLLM_ECPA_PLAN_ID") if scope is None else scope["plan_id"]
+    launch_id = (
+        os.getenv("VLLM_ECPA_LAUNCH_ID") if scope is None else scope["launch_id"]
+    )
+    binding_status = (
+        "bound"
+        if plan_id is not None and launch_id is not None
+        else "unbound"
+        if scope is None
+        else scope["binding_status"]
+    )
+    key = _event_key(
+        identity,
+        event,
+        group,
+        name,
+        value,
+        detail,
+        occurrence_id,
+        plan_id,
+        launch_id,
+        observation_kind,
+    )
     if key in _delivered:
         return True
     _delivery_attempts += 1
@@ -202,15 +268,28 @@ def _emit_host_event(
         "schema": SCHEMA,
         "event_id": hashlib.sha256(event_material).hexdigest(),
         "event": event,
+        "observation_kind": observation_kind,
         "entry_point": {"group": group, "name": name, "value": value},
         "process": identity,
         "observed_at_ns": observed_at_ns,
         "delivery_attempt": _delivery_attempts,
-        "plan_id": os.getenv("VLLM_ECPA_PLAN_ID"),
-        "launch_id": os.getenv("VLLM_ECPA_LAUNCH_ID"),
+        "plan_id": plan_id,
+        "launch_id": launch_id,
+        "binding_status": binding_status,
+        "occurrence_id": occurrence_id,
+        "invocation_seq": occurrence_id if isinstance(occurrence_id, int) else None,
+        "dispatch_id": (
+            f"{identity['start_identity']}:dispatch:{occurrence_id}"
+            if isinstance(occurrence_id, int)
+            else None
+        ),
         "plugin_id": None,
         "artifact_digest": None,
-        "identity_status": "absent; bind from the ECPA Plan at trusted ingestion",
+        "identity_status": (
+            "launch-bound"
+            if binding_status == "bound"
+            else "unbound; not eligible for translated ECPA evidence"
+        ),
         "detail": detail,
     }
     try:
@@ -223,10 +302,10 @@ def _emit_host_event(
             group,
             name,
         )
+        _sink_state, _sink_error = "failed", exc
         if strict:
-            _sink_state, _sink_error = "failed", exc
             raise EvidenceConfigurationError("evidence sink write failed") from exc
-        # Compatibility mode keeps a ready sink and retries this event later.
+        # A broken hot-path sink remains failed; later events short-circuit.
         return False
     _delivered.add(key)
     _delivery_count += 1
