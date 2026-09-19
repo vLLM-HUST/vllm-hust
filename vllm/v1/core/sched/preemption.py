@@ -99,6 +99,27 @@ def _policy_name(policy: PreemptionPolicy) -> str:
     return f"{policy_type.__module__}.{policy_type.__qualname__}"
 
 
+def _emit_policy_evidence(policy_name: str, event: str, outcome: str) -> None:
+    try:
+        from vllm.plugins.evidence import _emit_host_event
+
+        _emit_host_event(
+            event,
+            "vllm.preemption_policy",
+            policy_name,
+            policy_name,
+            detail=f"engine-core.scheduler:{outcome}",
+        )
+    except Exception:
+        logger.warning(
+            "Preemption policy evidence emission failed: policy=%s event=%s outcome=%s",
+            policy_name,
+            event,
+            outcome,
+            exc_info=True,
+        )
+
+
 def _load_policy(vllm_config: VllmConfig) -> PreemptionPolicy | None:
     configured: Any = vllm_config.scheduler_config.preemption_policy
     if configured is None:
@@ -137,6 +158,10 @@ class PreemptionPolicyController:
             self.stats.policy_name,
             self.stats.enabled,
         )
+        if policy is not None:
+            _emit_policy_evidence(
+                self.stats.policy_name, "resolved", "protocol-validated"
+            )
 
     def select_victim(self, context: PreemptionContext) -> str:
         policy = self._policy
@@ -147,20 +172,24 @@ class PreemptionPolicyController:
         try:
             selected_id = policy.select_victim(context)
         except Exception:
+            _emit_policy_evidence(self.stats.policy_name, "invoked", "exception")
             self._disable_after_failure("raised an exception", exc_info=True)
             return _builtin_victim_id(context)
 
         if selected_id is None:
             self.stats.abstentions += 1
+            _emit_policy_evidence(self.stats.policy_name, "invoked", "abstained")
             return _builtin_victim_id(context)
 
         candidate_ids = {candidate.request_id for candidate in context.candidates}
         if selected_id not in candidate_ids:
             self.stats.invalid_selections += 1
+            _emit_policy_evidence(self.stats.policy_name, "invoked", "invalid")
             self._disable_after_failure(f"returned unknown request ID {selected_id!r}")
             return _builtin_victim_id(context)
 
         self.stats.selections += 1
+        _emit_policy_evidence(self.stats.policy_name, "invoked", "selected")
         return selected_id
 
     def export_stats(self) -> dict[str, str | int | bool]:
