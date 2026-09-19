@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import importlib.metadata
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import mock_open
 
@@ -11,6 +12,7 @@ import vllm.plugins as plugins
 from vllm.plugins import evidence
 
 Payload = dict[str, Any]
+pytestmark = pytest.mark.skip_global_cleanup
 
 
 class EntryPoint:
@@ -22,7 +24,7 @@ class EntryPoint:
 
 
 @pytest.fixture(autouse=True)
-def reset(monkeypatch):
+def reset(monkeypatch: pytest.MonkeyPatch) -> None:
     plugins.plugins_loaded = False
     plugins._plugin_values.clear()
     evidence.reset_for_tests()
@@ -36,6 +38,22 @@ def reset(monkeypatch):
 def enable(events: list[Payload]) -> None:
     evidence._sink = events.append
     evidence._sink_state = "ready"
+
+
+def test_process_wide_allocators_are_thread_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLLM_ECPA_PLAN_ID", "plan")
+    monkeypatch.setenv("VLLM_ECPA_LAUNCH_ID", "launch")
+    scope = evidence.capture_scope()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        sequences = list(
+            pool.map(lambda _: evidence.allocate_invocation_sequence(scope), range(100))
+        )
+
+    assert sorted(sequences) == list(range(1, 101))
+    assert len(set(sequences)) == 100
 
 
 def test_disabled_observer_preserves_plugin_behavior(monkeypatch):
@@ -62,6 +80,7 @@ def test_general_plugin_sequence_identity_and_no_fabricated_digest(monkeypatch):
     ]
     assert all(item["entry_point"]["value"] == "demo:register" for item in events)
     assert events[-1]["process"]["role"] == "worker"
+    assert {item["observation_kind"] for item in events} == {"loader_lifecycle"}
     assert events[-1]["process"]["ordinal"] == 2
     assert events[-1]["process"]["process_epoch"] == 7
     assert events[-1]["plugin_id"] is None
@@ -143,24 +162,28 @@ def test_sink_failure_is_logged_by_default_and_strict_when_requested(
     assert evidence._sink_state == "failed"
 
 
-def test_compat_write_failure_retries_and_dedupes_only_after_delivery():
-    events: list[Payload | None] = []
+def test_compat_write_failure_is_sticky_and_logs_once(caplog):
+    calls = 0
 
     def transient(event):
-        if not events:
-            events.append(None)
-            raise RuntimeError("once")
-        events.append(event)
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("broken")
 
     evidence._sink, evidence._sink_state = transient, "ready"
     assert not evidence._emit_host_event("resolved", "group", "name", "value")
-    assert evidence._emit_host_event("resolved", "group", "name", "value")
-    assert evidence._emit_host_event("resolved", "group", "name", "value")
-    delivered = [item for item in events if item is not None]
-    assert len(delivered) == 1
-    assert delivered[0]["delivery_attempt"] == 2
-    assert evidence._delivery_attempts == 2
-    assert evidence._delivery_count == 1
+    for occurrence_id in range(1, 101):
+        assert not evidence._emit_host_event(
+            "invoked",
+            "group",
+            "name",
+            "value",
+            occurrence_id=occurrence_id,
+        )
+    assert calls == 1
+    assert caplog.text.count("ECPA_EVIDENCE_SINK_WRITE_FAILED") == 1
+    assert evidence._delivery_attempts == 1
+    assert evidence._delivery_count == 0
 
 
 def test_sink_import_failure_retries_in_compat_and_is_sticky_in_strict(
