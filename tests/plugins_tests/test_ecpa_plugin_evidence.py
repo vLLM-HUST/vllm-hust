@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import importlib.metadata
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import mock_open
 
@@ -23,7 +24,7 @@ class EntryPoint:
 
 
 @pytest.fixture(autouse=True)
-def reset(monkeypatch):
+def reset(monkeypatch: pytest.MonkeyPatch) -> None:
     plugins.plugins_loaded = False
     plugins._plugin_values.clear()
     evidence.reset_for_tests()
@@ -37,6 +38,22 @@ def reset(monkeypatch):
 def enable(events: list[Payload]) -> None:
     evidence._sink = events.append
     evidence._sink_state = "ready"
+
+
+def test_process_wide_allocators_are_thread_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLLM_ECPA_PLAN_ID", "plan")
+    monkeypatch.setenv("VLLM_ECPA_LAUNCH_ID", "launch")
+    scope = evidence.capture_scope()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        sequences = list(
+            pool.map(lambda _: evidence.allocate_invocation_sequence(scope), range(100))
+        )
+
+    assert sorted(sequences) == list(range(1, 101))
+    assert len(set(sequences)) == 100
 
 
 def test_disabled_observer_preserves_plugin_behavior(monkeypatch):
