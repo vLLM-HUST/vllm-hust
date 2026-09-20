@@ -390,11 +390,19 @@ class AsyncLLM(EngineClient):
 
         # Fan out child requests (for n>1).
         parent_request = ParentRequest(request)
-        for idx in range(parent_params.n):
+        child_indices = list(range(parent_params.n))
+        if parent_request.state_fork_enabled:
+            # Register every dependent before the source can execute in the
+            # concurrently running EngineCore.
+            child_indices = [*range(1, parent_params.n), 0]
+        for position, idx in enumerate(child_indices):
             request_id, child_params = parent_request.get_child_info(idx)
-            child_request = request if idx == parent_params.n - 1 else copy(request)
+            child_request = (
+                request if position == parent_params.n - 1 else copy(request)
+            )
             child_request.request_id = request_id
             child_request.sampling_params = child_params
+            child_request.state_fork = parent_request.get_state_fork(idx)
             await self._add_request(
                 child_request, prompt_text, parent_request, idx, queue
             )

@@ -19,6 +19,7 @@ from vllm.v1.engine import (
     EngineCoreEventType,
     EngineCoreRequest,
     FinishReason,
+    StateForkRequest,
 )
 from vllm.v1.metrics.stats import PrefillStats
 from vllm.v1.structured_output.request import StructuredOutputRequest
@@ -77,6 +78,7 @@ class Request:
         reasoning_ended: bool | None = None,
         reasoning_parser_kwargs: dict[str, Any] | None = None,
         abort_immediately: bool = False,
+        state_fork: StateForkRequest | None = None,
     ) -> None:
         self.request_id = request_id
         self.client_index = client_index
@@ -194,6 +196,11 @@ class Request:
         # the scheduler so the connector's request_finished hook runs.
         self.abort_immediately = abort_immediately
 
+        # Typed StateAxis lifecycle intent. The rejection reason is produced
+        # only by the scheduler and is never accepted from the client.
+        self.state_fork = state_fork
+        self.state_fork_rejection_reason: str | None = None
+
     @classmethod
     def from_engine_core_request(
         cls,
@@ -219,6 +226,7 @@ class Request:
             reasoning_ended=request.reasoning_ended,
             reasoning_parser_kwargs=request.reasoning_parser_kwargs,
             abort_immediately=request.abort_immediately,
+            state_fork=request.state_fork,
         )
 
     def append_output_token_ids(

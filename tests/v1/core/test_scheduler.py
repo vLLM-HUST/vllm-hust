@@ -29,7 +29,7 @@ from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
 from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler
-from vllm.v1.engine import FinishReason
+from vllm.v1.engine import FinishReason, StateForkRequest
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheConfig,
@@ -161,6 +161,219 @@ def test_schedule(enable_prefix_caching: bool, prompt_logprobs: int | None):
     assert len(scheduler.running) == len(requests)
     for i, request in enumerate(requests):
         assert scheduler.running[i] == request
+
+
+def _mark_state_fork_requests(requests: list[Request]) -> None:
+    source_id = requests[0].request_id
+    fork_at_tokens = requests[0].num_prompt_tokens
+    for index, request in enumerate(requests):
+        request.state_fork = StateForkRequest(
+            group_id="fork-group",
+            source_request_id=source_id,
+            fork_at_tokens=fork_at_tokens,
+            child_index=index,
+            num_children=len(requests),
+        )
+
+
+def _create_state_fork_scheduler(monkeypatch):
+    import vllm.platforms
+    from vllm.platforms.cpu import CpuPlatform
+
+    monkeypatch.setattr(vllm.platforms, "_current_platform", CpuPlatform())
+    return create_scheduler(enable_prefix_caching=True, block_size=16)
+
+
+def test_state_fork_children_wait_for_completed_source_then_share_prefix(monkeypatch):
+    scheduler = _create_state_fork_scheduler(monkeypatch)
+    requests = create_requests(
+        num_requests=3,
+        num_tokens=49,
+        same_prompt=True,
+        block_size=16,
+        req_ids=["source", "child-1", "child-2"],
+    )
+    _mark_state_fork_requests(requests)
+    for request in requests:
+        scheduler.add_request(request)
+
+    first = scheduler.schedule()
+    assert first.num_scheduled_tokens == {"source": 49}
+    assert requests[1].status == RequestStatus.WAITING
+    assert requests[2].status == RequestStatus.WAITING
+
+    scheduler.update_from_output(
+        first,
+        ModelRunnerOutput(
+            req_ids=["source"],
+            req_id_to_index={"source": 0},
+            sampled_token_ids=[[101]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
+    )
+
+    assert requests[1].num_computed_tokens == 48
+    assert requests[2].num_computed_tokens == 48
+    for group in scheduler.kv_cache_manager.coordinator.single_type_managers:
+        source_blocks = group.req_to_blocks["source"]
+        for child_id in ("child-1", "child-2"):
+            child_blocks = group.req_to_blocks[child_id]
+            assert child_blocks
+            assert all(
+                block.is_null
+                or any(block is source_block for source_block in source_blocks)
+                for block in child_blocks
+            )
+
+    scheduler.finish_requests("source", RequestStatus.FINISHED_ABORTED)
+    assert "source" in scheduler._published_state_fork_sources
+    assert requests[1].state_fork is not None
+    assert requests[2].state_fork is not None
+
+    second = scheduler.schedule()
+    assert second.num_scheduled_tokens["child-1"] == 1
+    assert second.num_scheduled_tokens["child-2"] == 1
+    scheduler.finish_requests("child-1", RequestStatus.FINISHED_ABORTED)
+    assert requests[2].state_fork is not None
+    scheduler.finish_requests("child-2", RequestStatus.FINISHED_ABORTED)
+    assert "source" not in scheduler._published_state_fork_sources
+
+
+def test_state_fork_source_abort_falls_back_without_stranding_children(monkeypatch):
+    scheduler = _create_state_fork_scheduler(monkeypatch)
+    requests = create_requests(
+        num_requests=2,
+        num_tokens=49,
+        same_prompt=True,
+        block_size=16,
+        req_ids=["source", "child"],
+    )
+    _mark_state_fork_requests(requests)
+    for request in requests:
+        scheduler.add_request(request)
+
+    scheduler.finish_requests("source", RequestStatus.FINISHED_ABORTED)
+    assert requests[1].state_fork is None
+    assert requests[1].state_fork_rejection_reason == (
+        "source finished before fork publication"
+    )
+
+    output = scheduler.schedule()
+    assert output.num_scheduled_tokens == {"child": 49}
+
+
+def test_state_fork_child_abort_releases_siblings_to_independent_execution(
+    monkeypatch,
+):
+    scheduler = _create_state_fork_scheduler(monkeypatch)
+    requests = create_requests(
+        num_requests=3,
+        num_tokens=49,
+        same_prompt=True,
+        block_size=16,
+        req_ids=["source", "child-1", "child-2"],
+    )
+    _mark_state_fork_requests(requests)
+    for request in requests:
+        scheduler.add_request(request)
+
+    scheduler.finish_requests("child-1", RequestStatus.FINISHED_ABORTED)
+    assert requests[2].state_fork is None
+    assert requests[2].state_fork_rejection_reason == (
+        "child finished before fork publication"
+    )
+
+    output = scheduler.schedule()
+    assert set(output.num_scheduled_tokens) == {"source", "child-2"}
+    assert output.num_scheduled_tokens["source"] == 49
+    assert output.num_scheduled_tokens["child-2"] > 0
+
+
+def test_state_fork_duplicate_child_index_falls_back_atomically(monkeypatch):
+    scheduler = _create_state_fork_scheduler(monkeypatch)
+    requests = create_requests(
+        num_requests=3,
+        num_tokens=49,
+        same_prompt=True,
+        block_size=16,
+        req_ids=["source", "child-1", "child-2"],
+    )
+    _mark_state_fork_requests(requests)
+    assert requests[1].state_fork is not None
+    duplicate = requests[1].state_fork
+    requests[2].state_fork = StateForkRequest(
+        group_id=duplicate.group_id,
+        source_request_id="source",
+        fork_at_tokens=duplicate.fork_at_tokens,
+        child_index=duplicate.child_index,
+        num_children=duplicate.num_children,
+    )
+    for request in requests:
+        scheduler.add_request(request)
+
+    first = scheduler.schedule()
+    scheduler.update_from_output(
+        first,
+        ModelRunnerOutput(
+            req_ids=["source"],
+            req_id_to_index={"source": 0},
+            sampled_token_ids=[[101]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
+    )
+
+    for child in requests[1:]:
+        assert child.num_computed_tokens == 0
+        assert child.state_fork is None
+        assert child.state_fork_rejection_reason == (
+            "state fork child indices are incomplete or duplicated"
+        )
+
+
+def test_state_fork_cache_prepare_failure_falls_back_without_stranding(
+    monkeypatch,
+):
+    scheduler = _create_state_fork_scheduler(monkeypatch)
+    requests = create_requests(
+        num_requests=2,
+        num_tokens=49,
+        same_prompt=True,
+        block_size=16,
+        req_ids=["source", "child"],
+    )
+    _mark_state_fork_requests(requests)
+    for request in requests:
+        scheduler.add_request(request)
+
+    first = scheduler.schedule()
+
+    def fail_prepare(*_args, **_kwargs):
+        raise RuntimeError("injected state-fork prepare failure")
+
+    monkeypatch.setattr(
+        scheduler.kv_cache_manager, "fork_cached_prefixes", fail_prepare
+    )
+    scheduler.update_from_output(
+        first,
+        ModelRunnerOutput(
+            req_ids=["source"],
+            req_id_to_index={"source": 0},
+            sampled_token_ids=[[101]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
+    )
+
+    child = requests[1]
+    assert child.num_computed_tokens == 0
+    assert child.state_fork is None
+    assert child.state_fork_rejection_reason == ("injected state-fork prepare failure")
+    assert scheduler.schedule().num_scheduled_tokens["child"] > 0
 
 
 def test_schedule_multimodal_requests():

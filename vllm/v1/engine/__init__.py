@@ -85,6 +85,26 @@ class EngineCoreReadyResponse:
     kv_cache_max_concurrency: float | None = None
 
 
+class StateForkRequest(
+    msgspec.Struct,
+    array_like=True,  # type: ignore[call-arg]
+    frozen=True,  # type: ignore[call-arg]
+):  # type: ignore[call-arg]
+    """Typed parent/child state-lifecycle intent for one request.
+
+    ``fork_at_tokens`` is the source generation that must have completed on
+    the device before a child can acquire its immutable prefix state.
+    ``child_index == 0`` identifies the source request. The contract is
+    opt-in so ordinary parallel sampling retains inherited HUST behavior.
+    """
+
+    group_id: str
+    source_request_id: str
+    fork_at_tokens: int
+    child_index: int
+    num_children: int
+
+
 class EngineCoreRequest(
     msgspec.Struct,
     array_like=True,  # type: ignore[call-arg]
@@ -135,6 +155,9 @@ class EngineCoreRequest(
     # request_finished hook. Used to free P-side prefill blocks when a
     # KV-transfer request is rejected on the D node before engine admission.
     abort_immediately: bool = False
+
+    # StateAxis opt-in state fork. None preserves inherited HUST semantics.
+    state_fork: StateForkRequest | None = None
 
     @property
     def params(self) -> SamplingParams | PoolingParams:

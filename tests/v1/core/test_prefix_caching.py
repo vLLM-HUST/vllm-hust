@@ -35,6 +35,7 @@ from vllm.v1.core.kv_cache_utils import (
     make_block_hash_with_group_id,
 )
 from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.engine import StateForkRequest
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheConfig,
@@ -1075,6 +1076,115 @@ def test_hybrid_computed_prefix_transaction_matches_sequential_reference():
         assert candidate_group.new_block_ids == control_group.new_block_ids
 
 
+def _make_hybrid_state_fork_case():
+    block_size = 16
+    manager = make_kv_cache_manager(
+        _make_hybrid_kv_cache_config(
+            block_size, num_blocks=64, spec_types=["full", "mamba_align"]
+        ),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    token_ids = list(range(3 * block_size + 1))
+    source = make_request("source", token_ids, block_size, sha256)
+    computed, num_computed = manager.get_computed_blocks(source)
+    assert num_computed == 0
+    allocated = manager.allocate_slots(
+        source,
+        3 * block_size,
+        num_new_computed_tokens=0,
+        new_computed_blocks=computed,
+    )
+    assert allocated is not None
+    children = [
+        make_request(child_id, token_ids, block_size, sha256)
+        for child_id in ("child-1", "child-2")
+    ]
+    return manager, source, children
+
+
+def test_hybrid_state_fork_acquires_joint_child_ownership():
+    manager, source, children = _make_hybrid_state_fork_case()
+    groups = manager.coordinator.single_type_managers
+    before_refs = tuple(block.ref_cnt for block in manager.block_pool.blocks)
+
+    inherited_tokens = manager.fork_cached_prefixes(
+        source.request_id, children, fork_at_tokens=source.num_prompt_tokens
+    )
+
+    assert inherited_tokens == 48
+    for group in groups:
+        source_blocks = group.req_to_blocks[source.request_id]
+        first_child_blocks = group.req_to_blocks[children[0].request_id]
+        second_child_blocks = group.req_to_blocks[children[1].request_id]
+        assert len(first_child_blocks) == len(second_child_blocks)
+        assert all(
+            left is right
+            for left, right in zip(first_child_blocks, second_child_blocks, strict=True)
+        )
+        assert all(
+            block.is_null
+            or any(block is source_block for source_block in source_blocks)
+            for block in first_child_blocks
+        )
+
+    expected_ref_increments = [0] * len(manager.block_pool.blocks)
+    for child in children:
+        for group in groups:
+            for block in group.req_to_blocks[child.request_id]:
+                if not block.is_null:
+                    expected_ref_increments[block.block_id] += 1
+    assert tuple(block.ref_cnt for block in manager.block_pool.blocks) == tuple(
+        before + expected_ref_increments[idx] for idx, before in enumerate(before_refs)
+    )
+
+    manager.coordinator.free(source.request_id)
+    for child in children:
+        manager.coordinator.free(child.request_id)
+    assert all(
+        block.ref_cnt == 0 for block in manager.block_pool.blocks if not block.is_null
+    )
+
+
+@pytest.mark.parametrize(
+    ("fault_owner", "fault_method"),
+    [
+        ("manager", "prepare_computed_blocks_allocation"),
+        ("manager", "validate_prepared_computed_blocks_allocation"),
+        ("pool", "prepare_computed_block_allocation"),
+        ("pool", "validate_prepared_computed_block_allocation"),
+    ],
+)
+def test_hybrid_state_fork_prepare_failure_is_atomic(
+    monkeypatch, fault_owner: str, fault_method: str
+):
+    manager, source, children = _make_hybrid_state_fork_case()
+    groups = manager.coordinator.single_type_managers
+    before_pool = _computed_prefix_pool_state(manager.block_pool)
+    source_tables = tuple(
+        tuple(group.req_to_blocks[source.request_id]) for group in groups
+    )
+
+    def fail_transaction(*_args):
+        raise RuntimeError("injected state-fork transaction failure")
+
+    owner = groups[1] if fault_owner == "manager" else manager.block_pool
+    monkeypatch.setattr(owner, fault_method, fail_transaction)
+    with pytest.raises(RuntimeError, match="injected state-fork transaction failure"):
+        manager.fork_cached_prefixes(
+            source.request_id, children, fork_at_tokens=source.num_prompt_tokens
+        )
+
+    assert _computed_prefix_pool_state(manager.block_pool) == before_pool
+    assert source_tables == tuple(
+        tuple(group.req_to_blocks[source.request_id]) for group in groups
+    )
+    for child in children:
+        assert all(child.request_id not in group.req_to_blocks for group in groups)
+        assert all(child.request_id not in group.num_cached_block for group in groups)
+
+
 # Test cases covering various combinations of KV cache spec types:
 # - Varying number of groups (2, 3, or 4)
 # - 0, 1, or 2 full attention groups
@@ -1377,6 +1487,33 @@ def test_hybrid_cache_mamba_align_shared_prefix_detection():
     manager.free(req_0)
     manager.free(req_1)
     manager.free(req_2)
+
+
+@pytest.mark.parametrize(("prompt_tokens", "expected_boundary"), [(48, 32), (49, 48)])
+def test_state_fork_mamba_split_preserves_replay_boundary(
+    prompt_tokens: int, expected_boundary: int
+):
+    """The source must publish before recurrent state rolls past replay state."""
+    block_size = 16
+    request = make_request("source", list(range(prompt_tokens)), block_size, sha256)
+    request.state_fork = StateForkRequest(
+        group_id="fork-group",
+        source_request_id="source",
+        fork_at_tokens=prompt_tokens,
+        child_index=0,
+        num_children=2,
+    )
+    scheduler = SimpleNamespace(
+        cache_config=SimpleNamespace(block_size=block_size), use_eagle=False
+    )
+
+    adjusted = Scheduler._mamba_block_aligned_split(
+        self=scheduler,
+        request=request,
+        num_new_tokens=prompt_tokens,
+    )
+
+    assert adjusted == expected_boundary
 
 
 def test_hybrid_model_mamba_align_with_dynamic_draft_tokens():

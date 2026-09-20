@@ -172,6 +172,10 @@ class Scheduler(SchedulerInterface):
 
         # req_id -> Request
         self.requests: dict[str, Request] = {}
+        # Source request -> opt-in StateAxis fork children. These maps are
+        # inert for ordinary HUST requests and never change their queueing.
+        self._state_fork_children: defaultdict[str, set[str]] = defaultdict(set)
+        self._published_state_fork_sources: set[str] = set()
         # Scheduling policy
         try:
             self.policy = SchedulingPolicy(self.scheduler_config.policy)
@@ -387,6 +391,15 @@ class Scheduler(SchedulerInterface):
             # last chunk must be not smaller than `block_size`.
             block_size = self.cache_config.block_size
             last_cache_position = request.num_tokens - request.num_tokens % block_size
+            state_fork = request.state_fork
+            if state_fork is not None and state_fork.child_index == 0:
+                # Preserve the exact replay boundary that fork children need.
+                # For a block-aligned prompt this is the preceding boundary,
+                # because children must recompute the last prompt token to
+                # produce their own logits.
+                last_cache_position = (
+                    (state_fork.fork_at_tokens - 1) // block_size * block_size
+                )
             # eagle prune
             if self.use_eagle:
                 last_cache_position = max(last_cache_position - block_size, 0)
@@ -672,6 +685,20 @@ class Scheduler(SchedulerInterface):
 
                 request = request_queue.peek_request()
                 request_id = request.request_id
+
+                # A fork child cannot run until the source's prefill write has
+                # completed and the scheduler has atomically attached the
+                # immutable cached prefix. Requeue it without head-of-line
+                # blocking unrelated work.
+                state_fork = request.state_fork
+                if (
+                    state_fork is not None
+                    and state_fork.child_index > 0
+                    and request.num_computed_tokens == 0
+                ):
+                    request_queue.pop_request()
+                    step_skipped_waiting.prepend_request(request)
+                    continue
 
                 # try to promote blocked statuses while traversing skipped queue.
                 if self._is_blocked_waiting_status(
@@ -1621,6 +1648,11 @@ class Scheduler(SchedulerInterface):
                 num_sampled_tokens,
             )
 
+            # The model step that produced this output has completed. Publish
+            # an opt-in source prefix before appending its sampled token or
+            # releasing a source that stops on this step.
+            self._publish_state_fork_children(request)
+
             scheduled_spec_token_ids = (
                 scheduler_output.scheduled_spec_decode_tokens.get(req_id)
             )
@@ -2052,10 +2084,33 @@ class Scheduler(SchedulerInterface):
                 # Streaming-input session finished.
                 self.finish_requests(request.request_id, RequestStatus.FINISHED_ABORTED)
         else:
+            state_fork = request.state_fork
+            if state_fork is not None:
+                if state_fork.fork_at_tokens != request.num_prompt_tokens:
+                    raise ValueError(
+                        "state fork generation must equal the prompt token count"
+                    )
+                if state_fork.child_index < 0:
+                    raise ValueError("state fork child index must be non-negative")
+                if (
+                    state_fork.num_children <= 1
+                    or state_fork.child_index >= state_fork.num_children
+                ):
+                    raise ValueError("state fork child cardinality is invalid")
+                if state_fork.child_index == 0 and (
+                    request.request_id != state_fork.source_request_id
+                ):
+                    raise ValueError(
+                        "state fork source request ID does not match its intent"
+                    )
             if request.resumable:
                 request.streaming_queue = deque()
             self._enqueue_waiting_request(request)
             self.requests[request.request_id] = request
+            if state_fork is not None and state_fork.child_index > 0:
+                self._state_fork_children[state_fork.source_request_id].add(
+                    request.request_id
+                )
             if self.connector is not None:
                 self.connector.on_new_request(request)
             if self.log_stats:
@@ -2129,6 +2184,14 @@ class Scheduler(SchedulerInterface):
     ) -> dict[str, Any] | None:
         assert request.is_finished()
 
+        if (
+            request.request_id in self._state_fork_children
+            and request.request_id not in self._published_state_fork_sources
+        ):
+            self._reject_state_fork_children(
+                request.request_id, "source finished before fork publication"
+            )
+
         self._inflight_prefills.discard(request)
         connector_delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         self.encoder_cache_manager.free(request)
@@ -2143,9 +2206,127 @@ class Scheduler(SchedulerInterface):
 
         return kv_xfer_params
 
+    def _publish_state_fork_children(self, source: Request) -> None:
+        """Publish one completed source generation to all waiting children."""
+        intent = source.state_fork
+        if (
+            intent is None
+            or intent.child_index != 0
+            or source.request_id != intent.source_request_id
+            or source.request_id in self._published_state_fork_sources
+        ):
+            return
+
+        reusable_generation = (
+            (intent.fork_at_tokens - 1) // self.block_size * self.block_size
+        )
+        if source.num_computed_tokens < reusable_generation:
+            return
+
+        child_ids = self._state_fork_children.get(source.request_id, set())
+        if len(child_ids) != intent.num_children - 1:
+            return
+        children = [
+            self.requests[child_id]
+            for child_id in sorted(child_ids)
+            if child_id in self.requests and not self.requests[child_id].is_finished()
+        ]
+        try:
+            child_indices: set[int] = set()
+            for child in children:
+                child_intent = child.state_fork
+                if (
+                    child_intent is None
+                    or child_intent.source_request_id != source.request_id
+                    or child_intent.group_id != intent.group_id
+                    or child_intent.num_children != intent.num_children
+                ):
+                    raise ValueError("state fork child/source intent mismatch")
+                child_indices.add(child_intent.child_index)
+                if child.status != RequestStatus.WAITING:
+                    raise ValueError("state fork child left the waiting state")
+                if child.num_computed_tokens != 0:
+                    raise ValueError("state fork child already owns computed state")
+                if (
+                    child.prompt_token_ids != source.prompt_token_ids
+                    or child.prompt_embeds is not None
+                    or source.prompt_embeds is not None
+                    or child.mm_features
+                    or source.mm_features
+                    or child.cache_salt != source.cache_salt
+                    or child.lora_request != source.lora_request
+                ):
+                    raise ValueError("state fork child is incompatible with its source")
+
+            if child_indices != set(range(1, intent.num_children)):
+                raise ValueError(
+                    "state fork child indices are incomplete or duplicated"
+                )
+
+            if children:
+                inherited_tokens = self.kv_cache_manager.fork_cached_prefixes(
+                    source_request_id=source.request_id,
+                    child_requests=children,
+                    fork_at_tokens=intent.fork_at_tokens,
+                )
+                for child in children:
+                    child.num_computed_tokens = inherited_tokens
+                    if child.prefill_stats is not None:
+                        child.prefill_stats.set(
+                            num_prompt_tokens=child.num_prompt_tokens,
+                            num_local_cached_tokens=inherited_tokens,
+                            num_external_cached_tokens=0,
+                        )
+            self._published_state_fork_sources.add(source.request_id)
+            logger.info(
+                "Published StateAxis state fork source=%s generation=%d "
+                "children=%d inherited_tokens=%d",
+                source.request_id,
+                intent.fork_at_tokens,
+                len(children),
+                children[0].num_computed_tokens if children else 0,
+            )
+        except (AssertionError, RuntimeError, ValueError) as exc:
+            # Preparation failures occur before the coordinator commits any
+            # child ownership. Preserve correctness by reverting the opt-in
+            # children to ordinary independent HUST requests.
+            self._reject_state_fork_children(source.request_id, str(exc))
+
+    def _reject_state_fork_children(self, source_request_id: str, reason: str) -> None:
+        """Fall back to independent requests when a fork cannot be published."""
+        self._published_state_fork_sources.discard(source_request_id)
+        for child_id in self._state_fork_children.pop(source_request_id, set()):
+            child = self.requests.get(child_id)
+            if child is None or child.is_finished():
+                continue
+            child.state_fork_rejection_reason = reason
+            child.state_fork = None
+        logger.warning(
+            "Rejected StateAxis state fork source=%s reason=%s",
+            source_request_id,
+            reason,
+        )
+
     def _free_blocks(self, request: Request):
         assert request.is_finished()
         self._free_request_blocks(request)
+        state_fork = request.state_fork
+        if state_fork is not None and state_fork.child_index > 0:
+            if state_fork.source_request_id not in self._published_state_fork_sources:
+                self._reject_state_fork_children(
+                    state_fork.source_request_id,
+                    "child finished before fork publication",
+                )
+            children = self._state_fork_children.get(state_fork.source_request_id)
+            if children is not None:
+                children.discard(request.request_id)
+                if not children:
+                    self._state_fork_children.pop(state_fork.source_request_id, None)
+                    self._published_state_fork_sources.discard(
+                        state_fork.source_request_id
+                    )
+        elif request.request_id not in self._state_fork_children:
+            self._published_state_fork_sources.discard(request.request_id)
         del self.requests[request.request_id]
 
     @property

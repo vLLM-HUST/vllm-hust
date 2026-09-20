@@ -301,6 +301,29 @@ class KVCacheManager:
 
         return self.create_kv_cache_blocks(computed_blocks), num_new_computed_tokens
 
+    def fork_cached_prefixes(
+        self,
+        source_request_id: str,
+        child_requests: Sequence[Request],
+        fork_at_tokens: int,
+    ) -> int:
+        """Attach the source's completed immutable prefix to all children."""
+        if not self.enable_caching:
+            raise ValueError("state fork requires prefix caching")
+        if not child_requests:
+            raise ValueError("state fork requires at least one child")
+        first = child_requests[0]
+        if any(
+            child.block_hashes != first.block_hashes for child in child_requests[1:]
+        ):
+            raise ValueError("state fork children do not have identical block hashes")
+        return self.coordinator.fork_cached_prefixes(
+            source_request_id=source_request_id,
+            child_request_ids=[child.request_id for child in child_requests],
+            block_hashes=first.block_hashes,
+            max_cache_hit_length=fork_at_tokens - 1,
+        )
+
     def can_fit_full_sequence(
         self,
         request: Request,

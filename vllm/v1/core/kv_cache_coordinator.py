@@ -257,6 +257,103 @@ class KVCacheCoordinator(ABC):
             )
             offset = next_offset
 
+    def fork_cached_prefixes(
+        self,
+        source_request_id: str,
+        child_request_ids: Sequence[str],
+        block_hashes: list[BlockHash],
+        max_cache_hit_length: int,
+    ) -> int:
+        """Atomically attach one completed source prefix to child requests.
+
+        The source must still own every non-null block selected by the normal
+        cache-hit policy. All child manager plans and the shared-pool touch
+        plan are prepared and validated before any reference count or request
+        table is changed. This is the scheduler-side ownership transaction;
+        device completion is fenced by its caller before entry.
+
+        Returns the common number of source tokens inherited by every child.
+        """
+        children = tuple(child_request_ids)
+        if not children:
+            raise ValueError("state fork requires at least one child")
+        if len(set(children)) != len(children):
+            raise ValueError("state fork child request IDs must be unique")
+        if source_request_id in children:
+            raise ValueError("state fork source cannot also be a child")
+
+        computed_blocks, num_computed_tokens = self.find_longest_cache_hit(
+            block_hashes, max_cache_hit_length
+        )
+        if num_computed_tokens <= 0:
+            raise ValueError("state fork source has no reusable completed prefix")
+
+        # Bind the hit to this source, rather than accepting an unrelated
+        # request with equal content from the global prefix cache.
+        for manager, group_blocks in zip(
+            self.single_type_managers, computed_blocks, strict=True
+        ):
+            source_blocks = manager.req_to_blocks.get(source_request_id)
+            if source_blocks is None:
+                raise ValueError(
+                    f"state fork source {source_request_id!r} is not tracked "
+                    f"by cache group {manager.kv_cache_group_id}"
+                )
+            source_block_objects = {id(block) for block in source_blocks}
+            for block in group_blocks:
+                if block.is_null:
+                    continue
+                if id(block) not in source_block_objects:
+                    raise ValueError(
+                        "state fork cache hit is not owned by the declared source "
+                        f"in group {manager.kv_cache_group_id}"
+                    )
+
+        prepared_by_child: tuple[tuple[PreparedComputedBlocksAllocation, ...], ...] = (
+            tuple(
+                tuple(
+                    manager.prepare_computed_blocks_allocation(
+                        child_id,
+                        computed_blocks[group_idx],
+                        num_computed_tokens,
+                        0,
+                    )
+                    for group_idx, manager in enumerate(self.single_type_managers)
+                )
+                for child_id in children
+            )
+        )
+        for child_plans in prepared_by_child:
+            for manager, group_plan in zip(
+                self.single_type_managers, child_plans, strict=True
+            ):
+                manager.validate_prepared_computed_blocks_allocation(group_plan)
+
+        # Repeated entries are intentional: each child acquires one reference
+        # to the same immutable source block.
+        touch_blocks = tuple(
+            block
+            for child_plans in prepared_by_child
+            for group_plan in child_plans
+            for block in group_plan.local_touch_blocks
+        )
+        pool_plan = self.block_pool.prepare_computed_block_allocation(touch_blocks, 0)
+        self.block_pool.validate_prepared_computed_block_allocation(pool_plan)
+        external_blocks = self.block_pool.commit_prepared_computed_block_allocation(
+            pool_plan
+        )
+        assert not external_blocks
+
+        # Commits only assign prevalidated tables and cached extents; all
+        # potentially failing preparation and shared-pool selection is above.
+        for child_plans in prepared_by_child:
+            for manager, group_plan in zip(
+                self.single_type_managers, child_plans, strict=True
+            ):
+                manager.commit_prepared_computed_blocks_allocation(group_plan, ())
+
+        return num_computed_tokens
+
     def allocate_new_blocks(
         self,
         request_id: str,
