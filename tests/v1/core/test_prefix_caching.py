@@ -852,6 +852,72 @@ def test_hybrid_release_commits_all_groups_and_mamba_auxiliary_state():
     assert manager.block_pool.get_num_free_blocks() == 15
 
 
+@pytest.mark.parametrize(
+    "fault_method",
+    ["prepare_allocate_new_blocks", "validate_prepared_allocation"],
+)
+def test_hybrid_scheduled_allocation_failure_is_atomic(monkeypatch, fault_method: str):
+    block_size = 16
+    manager = make_kv_cache_manager(
+        _make_hybrid_kv_cache_config(
+            block_size, num_blocks=16, spec_types=["full", "mamba_align"]
+        ),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    group_managers = manager.coordinator.single_type_managers
+    before_free_blocks = manager.block_pool.get_num_free_blocks()
+    before_ref_counts = tuple(block.ref_cnt for block in manager.block_pool.blocks)
+
+    def fail_later_group(*_args):
+        raise RuntimeError("injected later-group allocation failure")
+
+    monkeypatch.setattr(group_managers[1], fault_method, fail_later_group)
+    with pytest.raises(RuntimeError, match="injected later-group allocation failure"):
+        manager.coordinator.allocate_new_blocks(
+            "allocation", num_tokens=32, num_tokens_main_model=32
+        )
+
+    assert manager.block_pool.get_num_free_blocks() == before_free_blocks
+    assert (
+        tuple(block.ref_cnt for block in manager.block_pool.blocks) == before_ref_counts
+    )
+    assert all("allocation" not in group.req_to_blocks for group in group_managers)
+    assert all(not group.new_block_ids for group in group_managers)
+    mamba_manager = group_managers[1]
+    assert "allocation" not in mamba_manager._allocated_block_reqs
+    assert "allocation" not in mamba_manager.last_state_block_idx
+
+
+def test_hybrid_scheduled_allocation_reserves_then_commits_all_groups():
+    block_size = 16
+    manager = make_kv_cache_manager(
+        _make_hybrid_kv_cache_config(
+            block_size, num_blocks=16, spec_types=["full", "mamba_align"]
+        ),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    group_managers = manager.coordinator.single_type_managers
+
+    allocated = manager.coordinator.allocate_new_blocks(
+        "allocation", num_tokens=32, num_tokens_main_model=32
+    )
+
+    assert len(allocated) == 2
+    assert len(group_managers[0].req_to_blocks["allocation"]) == 2
+    assert len(group_managers[1].req_to_blocks["allocation"]) == 2
+    assert group_managers[1].req_to_blocks["allocation"][0].is_null
+    assert not group_managers[1].req_to_blocks["allocation"][1].is_null
+    assert "allocation" in group_managers[1]._allocated_block_reqs
+    assert manager.block_pool.get_num_free_blocks() == 12
+
+    manager.coordinator.free("allocation")
+    assert manager.block_pool.get_num_free_blocks() == 15
+
+
 # Test cases covering various combinations of KV cache spec types:
 # - Varying number of groups (2, 3, or 4)
 # - 0, 1, or 2 full attention groups

@@ -48,6 +48,22 @@ class PreparedRequestFree:
     auxiliary_state: tuple[object, ...]
 
 
+@dataclass(frozen=True)
+class PreparedRequestAllocation:
+    """Immutable plan for one manager's scheduled block allocation."""
+
+    request_id: str
+    tracked: bool
+    original_blocks: tuple[KVCacheBlock, ...]
+    original_new_block_ids: tuple[int, ...]
+    original_auxiliary_state: tuple[object, ...]
+    final_blocks: tuple[KVCacheBlock | None, ...]
+    final_auxiliary_state: tuple[object, ...]
+    num_new_blocks: int
+    return_start: int
+    record_new_block_ids: bool
+
+
 class SingleTypeKVCacheManager(ABC):
     """
     An abstract base class for a manager that handle the kv cache management
@@ -294,39 +310,93 @@ class SingleTypeKVCacheManager(ABC):
         ):
             self.new_block_ids.extend(b.block_id for b in allocated_blocks)
 
+    def prepare_allocate_new_blocks(
+        self, request_id: str, num_tokens: int, num_tokens_main_model: int
+    ) -> PreparedRequestAllocation:
+        """Prepare scheduled allocation without mutating manager or pool."""
+        tracked = request_id in self.req_to_blocks
+        original_blocks = tuple(self.req_to_blocks.get(request_id, ()))
+        num_required_blocks = cdiv(num_tokens, self.block_size)
+        num_new_blocks = max(0, num_required_blocks - len(original_blocks))
+        record_new_block_ids = type(self.kv_cache_spec) in (
+            FullAttentionSpec,
+            TQFullAttentionSpec,
+            MLAAttentionSpec,
+            HiddenStateCacheSpec,
+        )
+        auxiliary_state = self._get_allocation_auxiliary_state(request_id)
+        return PreparedRequestAllocation(
+            request_id=request_id,
+            tracked=tracked,
+            original_blocks=original_blocks,
+            original_new_block_ids=tuple(self.new_block_ids),
+            original_auxiliary_state=auxiliary_state,
+            final_blocks=original_blocks + (None,) * num_new_blocks,
+            final_auxiliary_state=auxiliary_state,
+            num_new_blocks=num_new_blocks,
+            return_start=len(original_blocks),
+            record_new_block_ids=record_new_block_ids,
+        )
+
+    def _get_allocation_auxiliary_state(self, request_id: str) -> tuple[object, ...]:
+        return ()
+
+    def validate_prepared_allocation(self, prepared: PreparedRequestAllocation) -> None:
+        """Reject a stale plan before reserving any shared-pool block."""
+        blocks = self.req_to_blocks.get(prepared.request_id)
+        assert prepared.tracked == (blocks is not None), (
+            "request allocation bookkeeping changed after prepare"
+        )
+        if blocks is not None:
+            assert len(blocks) == len(prepared.original_blocks) and all(
+                current is expected
+                for current, expected in zip(
+                    blocks, prepared.original_blocks, strict=True
+                )
+            ), "request blocks changed after allocation prepare"
+        assert tuple(self.new_block_ids) == prepared.original_new_block_ids, (
+            "new-block event bookkeeping changed after allocation prepare"
+        )
+        assert (
+            self._get_allocation_auxiliary_state(prepared.request_id)
+            == prepared.original_auxiliary_state
+        ), "request auxiliary bookkeeping changed after allocation prepare"
+
+    def _commit_allocation_auxiliary_state(
+        self, request_id: str, state: tuple[object, ...]
+    ) -> None:
+        return None
+
+    def commit_prepared_allocation(
+        self,
+        prepared: PreparedRequestAllocation,
+        reserved_blocks: Sequence[KVCacheBlock],
+    ) -> list[KVCacheBlock]:
+        """Commit a prevalidated plan using its disjoint reserved-block slice."""
+        reserved = iter(reserved_blocks)
+        final_blocks = [
+            next(reserved) if block is None else block
+            for block in prepared.final_blocks
+        ]
+        req_blocks = self.req_to_blocks[prepared.request_id]
+        req_blocks[:] = final_blocks
+        self._commit_allocation_auxiliary_state(
+            prepared.request_id, prepared.final_auxiliary_state
+        )
+        if prepared.record_new_block_ids:
+            self.new_block_ids.extend(block.block_id for block in reserved_blocks)
+        return req_blocks[prepared.return_start :]
+
     def allocate_new_blocks(
         self, request_id: str, num_tokens: int, num_tokens_main_model: int
     ) -> list[KVCacheBlock]:
-        """
-        Allocate new blocks for the request to give it at least `num_tokens`
-        token slots.
-
-        Args:
-            request_id: The request ID.
-            num_tokens: The total number of tokens that need a slot (including
-                tokens that are already allocated).
-            num_tokens_main_model: The number of tokens for the main model (aka target
-                model in spec decode). w/o spec decode, it is num_tokens;
-                with spec decode, it is num_tokens - num_lookahead_tokens.
-        Returns:
-            The new allocated blocks.
-        """
-        req_blocks = self.req_to_blocks[request_id]
-        num_required_blocks = cdiv(num_tokens, self.block_size)
-        num_new_blocks = num_required_blocks - len(req_blocks)
-        if num_new_blocks <= 0:
-            return []
-        else:
-            new_blocks = self.block_pool.get_new_blocks(num_new_blocks)
-            req_blocks.extend(new_blocks)
-            if type(self.kv_cache_spec) in (
-                FullAttentionSpec,
-                TQFullAttentionSpec,
-                MLAAttentionSpec,
-                HiddenStateCacheSpec,
-            ):
-                self.new_block_ids.extend(b.block_id for b in new_blocks)
-            return new_blocks
+        """Allocate through the same prepared contract used by coordinators."""
+        prepared = self.prepare_allocate_new_blocks(
+            request_id, num_tokens, num_tokens_main_model
+        )
+        self.validate_prepared_allocation(prepared)
+        reserved_blocks = self.block_pool.get_new_blocks(prepared.num_new_blocks)
+        return self.commit_prepared_allocation(prepared, reserved_blocks)
 
     def take_new_block_ids(self) -> list[int]:
         """Drain and return block IDs allocated since the last call."""
@@ -1306,7 +1376,7 @@ class MambaManager(SingleTypeKVCacheManager):
             num_new_blocks = (
                 num_required_blocks
                 - len(new_computed_blocks)
-                - len(self.req_to_blocks[request_id])
+                - len(self.req_to_blocks.get(request_id, ()))
             )
             if num_new_blocks > 0:
                 if request_id in self._allocated_block_reqs:
@@ -1323,81 +1393,109 @@ class MambaManager(SingleTypeKVCacheManager):
             )
             return num_new_blocks + num_evictable_computed_blocks
 
-    def allocate_new_blocks(
+    def prepare_allocate_new_blocks(
         self, request_id: str, num_tokens: int, num_tokens_main_model: int
-    ) -> list[KVCacheBlock]:
+    ) -> PreparedRequestAllocation:
         assert isinstance(self.kv_cache_spec, MambaSpec)
         if self.mamba_cache_mode != "align":
             # Allocate extra `num_speculative_blocks` blocks for
             # speculative decoding (MTP/EAGLE) with linear attention.
             if self.num_speculative_blocks > 0:
                 num_tokens += self.block_size * self.num_speculative_blocks
-            return super().allocate_new_blocks(
+            return super().prepare_allocate_new_blocks(
                 request_id, num_tokens, num_tokens_main_model
             )
-        else:
-            # We don't allocate blocks for lookahead tokens in align mode, because if
-            # x * block_size tokens are scheduled, num_tokens is
-            # x * block_size + num_lookahead_tokens and breaks the alignment.
-            # We can ignore lookahead tokens because current draft models don't have
-            # mamba layers.
-            num_tokens = num_tokens_main_model
-            req_blocks: list[KVCacheBlock] = self.req_to_blocks[request_id]
-            # NOTE(tdouble): this is an over-estimate of how many blocks we need because
-            # num_tokens can include draft tokens that will later be rejected.
-            num_required_blocks = (
-                cdiv(num_tokens, self.block_size) + self.num_speculative_blocks
+
+        # We don't allocate blocks for lookahead tokens in align mode because
+        # draft models currently have no Mamba layers.
+        num_tokens = num_tokens_main_model
+        tracked = request_id in self.req_to_blocks
+        original_blocks = tuple(self.req_to_blocks.get(request_id, ()))
+        original_auxiliary_state = self._get_release_auxiliary_state(request_id)
+        num_required_blocks = (
+            cdiv(num_tokens, self.block_size) + self.num_speculative_blocks
+        )
+        if num_required_blocks <= len(original_blocks):
+            return PreparedRequestAllocation(
+                request_id=request_id,
+                tracked=tracked,
+                original_blocks=original_blocks,
+                original_new_block_ids=tuple(self.new_block_ids),
+                original_auxiliary_state=original_auxiliary_state,
+                final_blocks=original_blocks,
+                final_auxiliary_state=original_auxiliary_state,
+                num_new_blocks=0,
+                return_start=len(original_blocks),
+                record_new_block_ids=False,
             )
-            # `num_required_blocks` might be less than `len(req_blocks)` if blocks are
-            # over-allocated at last round.
-            if num_required_blocks <= len(req_blocks):
-                return []
-            else:
-                prev_block_len = len(req_blocks)
-                blocks_allocated = request_id in self._allocated_block_reqs
-                # Record the last state block
-                if blocks_allocated:
-                    # We always save the running state at the last
-                    # (1 + num_speculative_blocks) block
-                    self.last_state_block_idx[request_id] = (
-                        prev_block_len - 1 - self.num_speculative_blocks
-                    )
-                elif prev_block_len > 0:
-                    # When a new request hits the prefix cache, the last block
-                    # saves the hit state.
-                    self.last_state_block_idx[request_id] = prev_block_len - 1
 
-                num_skipped_blocks = (
-                    num_required_blocks - self.num_speculative_blocks - 1
-                )
-                # null blocks
-                if prev_block_len < num_skipped_blocks:
-                    req_blocks.extend(
-                        [
-                            self._null_block
-                            for _ in range(prev_block_len, num_skipped_blocks)
-                        ]
-                    )
+        final_blocks: list[KVCacheBlock | None] = list(original_blocks)
+        prev_block_len = len(final_blocks)
+        blocks_allocated = request_id in self._allocated_block_reqs
+        _, last_state_present, last_state_value = original_auxiliary_state
+        if blocks_allocated:
+            last_state_present = True
+            last_state_value = prev_block_len - 1 - self.num_speculative_blocks
+        elif prev_block_len > 0:
+            last_state_present = True
+            last_state_value = prev_block_len - 1
 
-                if blocks_allocated:
-                    # reuse previous speculative blocks in this step
-                    for block_idx in range(
-                        prev_block_len - self.num_speculative_blocks, prev_block_len
-                    ):
-                        if block_idx < num_skipped_blocks:
-                            req_blocks.append(req_blocks[block_idx])
-                            req_blocks[block_idx] = self._null_block
-                        else:
-                            break
-                num_new_blocks = num_required_blocks - len(req_blocks)
-                if blocks_allocated:
-                    assert num_new_blocks <= 1
+        num_skipped_blocks = num_required_blocks - self.num_speculative_blocks - 1
+        if prev_block_len < num_skipped_blocks:
+            final_blocks.extend(
+                self._null_block for _ in range(prev_block_len, num_skipped_blocks)
+            )
+
+        if blocks_allocated:
+            for block_idx in range(
+                prev_block_len - self.num_speculative_blocks, prev_block_len
+            ):
+                if block_idx < num_skipped_blocks:
+                    final_blocks.append(final_blocks[block_idx])
+                    final_blocks[block_idx] = self._null_block
                 else:
-                    assert num_new_blocks <= self.num_speculative_blocks + 1
-                new_blocks = self.block_pool.get_new_blocks(num_new_blocks)
-                req_blocks.extend(new_blocks)
-                self._allocated_block_reqs.add(request_id)
-                return req_blocks[prev_block_len:]
+                    break
+
+        num_new_blocks = num_required_blocks - len(final_blocks)
+        if blocks_allocated:
+            assert num_new_blocks <= 1
+        else:
+            assert num_new_blocks <= self.num_speculative_blocks + 1
+        final_blocks.extend([None] * num_new_blocks)
+        return PreparedRequestAllocation(
+            request_id=request_id,
+            tracked=tracked,
+            original_blocks=original_blocks,
+            original_new_block_ids=tuple(self.new_block_ids),
+            original_auxiliary_state=original_auxiliary_state,
+            final_blocks=tuple(final_blocks),
+            final_auxiliary_state=(
+                True,
+                last_state_present,
+                last_state_value,
+            ),
+            num_new_blocks=num_new_blocks,
+            return_start=prev_block_len,
+            record_new_block_ids=False,
+        )
+
+    def _get_allocation_auxiliary_state(self, request_id: str) -> tuple[object, ...]:
+        return self._get_release_auxiliary_state(request_id)
+
+    def _commit_allocation_auxiliary_state(
+        self, request_id: str, state: tuple[object, ...]
+    ) -> None:
+        if self.mamba_cache_mode != "align":
+            return
+        allocated, last_state_present, last_state_value = state
+        if allocated:
+            self._allocated_block_reqs.add(request_id)
+        else:
+            self._allocated_block_reqs.discard(request_id)
+        if last_state_present:
+            self.last_state_block_idx[request_id] = last_state_value
+        else:
+            self.last_state_block_idx.pop(request_id, None)
 
     def _get_release_auxiliary_state(self, request_id: str) -> tuple[object, ...]:
         if self.mamba_cache_mode != "align":

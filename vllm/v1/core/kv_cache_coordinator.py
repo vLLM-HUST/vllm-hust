@@ -15,6 +15,7 @@ from vllm.v1.core.kv_cache_utils import (
 )
 from vllm.v1.core.single_type_kv_cache_manager import (
     CrossAttentionManager,
+    PreparedRequestAllocation,
     PreparedRequestFree,
     SingleTypeKVCacheManager,
     get_manager_for_kv_cache_spec,
@@ -255,8 +256,8 @@ class KVCacheCoordinator(ABC):
         Returns:
             The new allocated blocks.
         """
-        return tuple(
-            manager.allocate_new_blocks(
+        prepared: tuple[PreparedRequestAllocation, ...] = tuple(
+            manager.prepare_allocate_new_blocks(
                 request_id,
                 num_encoder_tokens
                 if isinstance(manager, CrossAttentionManager)
@@ -265,6 +266,30 @@ class KVCacheCoordinator(ABC):
             )
             for manager in self.single_type_managers
         )
+        for manager, group_allocation in zip(
+            self.single_type_managers, prepared, strict=True
+        ):
+            manager.validate_prepared_allocation(group_allocation)
+
+        # Reserve from the shared pool once, after every group has prepared.
+        # The following commits only assign prevalidated block tables and
+        # manager-local auxiliary state.
+        reserved_blocks = self.block_pool.get_new_blocks(
+            sum(plan.num_new_blocks for plan in prepared)
+        )
+        offset = 0
+        allocated_by_group: list[list[KVCacheBlock]] = []
+        for manager, group_allocation in zip(
+            self.single_type_managers, prepared, strict=True
+        ):
+            next_offset = offset + group_allocation.num_new_blocks
+            allocated_by_group.append(
+                manager.commit_prepared_allocation(
+                    group_allocation, reserved_blocks[offset:next_offset]
+                )
+            )
+            offset = next_offset
+        return tuple(allocated_by_group)
 
     def cache_blocks(self, request: Request, num_computed_tokens: int) -> int:
         """
