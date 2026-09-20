@@ -199,6 +199,40 @@ class KVCacheEvictionEvent:
     reuse_gaps_seconds: tuple[float, ...]
 
 
+STATE_FORK_REJECTION_REASONS = (
+    "source_finished",
+    "child_finished",
+    "intent_mismatch",
+    "child_indices_invalid",
+    "child_not_waiting",
+    "child_already_owns_state",
+    "child_incompatible",
+    "cache_attachment_failed",
+)
+
+
+@dataclass
+class StateForkStats:
+    """Bounded StateAxis fork lifecycle deltas plus current ownership."""
+
+    accepted_groups: int = 0
+    accepted_children: int = 0
+    inherited_tokens: int = 0
+    shared_block_references: int = 0
+    rejected_groups: int = 0
+    rejected_children: int = 0
+    rejection_reasons: dict[str, int] = field(default_factory=dict)
+    active_groups: int = 0
+    active_children: int = 0
+
+    def record_rejection(self, reason: str, children: int) -> None:
+        if reason not in STATE_FORK_REJECTION_REASONS:
+            raise ValueError(f"unknown state fork rejection reason: {reason}")
+        self.rejected_groups += 1
+        self.rejected_children += children
+        self.rejection_reasons[reason] = self.rejection_reasons.get(reason, 0) + 1
+
+
 @dataclass
 class SchedulerStats:
     """Stats associated with the scheduler."""
@@ -230,6 +264,8 @@ class SchedulerStats:
     cudagraph_stats: CUDAGraphStat | None = None
 
     perf_stats: PerfStats | None = None
+
+    state_fork_stats: StateForkStats = field(default_factory=StateForkStats)
 
 
 @dataclass

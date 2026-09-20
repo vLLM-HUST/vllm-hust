@@ -12,6 +12,7 @@ from vllm.v1.metrics.reader import Counter, Gauge, get_metrics_snapshot
 from vllm.v1.metrics.stats import (
     PrefixCacheStats,
     SchedulerStats,
+    StateForkStats,
     StructuredOutputCacheStats,
 )
 
@@ -32,6 +33,7 @@ def stats_vllm_config():
         model_config=SimpleNamespace(
             served_model_name="test-model",
             max_model_len=1024,
+            is_diffusion=False,
         ),
     )
 
@@ -45,6 +47,19 @@ def _get_counter_value(metrics: list[Counter], name: str) -> int:
 def _get_gauge_value(metrics: list[Counter | Gauge], name: str) -> float:
     metric = next(m for m in metrics if m.name == name)
     assert isinstance(metric, Gauge)
+    return metric.value
+
+
+def _get_labeled_counter_value(
+    metrics: list[Counter | Gauge], name: str, **labels: str
+) -> int:
+    metric = next(
+        item
+        for item in metrics
+        if item.name == name
+        and all(item.labels.get(key) == value for key, value in labels.items())
+    )
+    assert isinstance(metric, Counter)
     return metric.value
 
 
@@ -129,3 +144,61 @@ def test_prometheus_stat_logger_records_prefix_cache_block_counters(
     assert _get_counter_value(metrics, "vllm:prefix_cache_block_queries") == 6
     assert _get_counter_value(metrics, "vllm:prefix_cache_block_hits") == 3
     assert _get_counter_value(metrics, "vllm:prefix_cache_blocks_cached") == 3
+
+
+def test_prometheus_stat_logger_records_state_fork_lifecycle_metrics(
+    stats_vllm_config,
+):
+    logger = PrometheusStatLogger(stats_vllm_config)
+    scheduler_stats = SchedulerStats(
+        state_fork_stats=StateForkStats(
+            accepted_groups=2,
+            accepted_children=6,
+            inherited_tokens=288,
+            shared_block_references=18,
+            rejected_groups=1,
+            rejected_children=2,
+            rejection_reasons={"child_indices_invalid": 1},
+            active_groups=3,
+            active_children=8,
+        )
+    )
+
+    logger.record(scheduler_stats=scheduler_stats, iteration_stats=None)
+
+    metrics = get_metrics_snapshot()
+    assert _get_counter_value(metrics, "vllm:stateaxis_state_fork_accepted_groups") == 2
+    assert (
+        _get_counter_value(metrics, "vllm:stateaxis_state_fork_accepted_children") == 6
+    )
+    assert (
+        _get_counter_value(metrics, "vllm:stateaxis_state_fork_inherited_tokens") == 288
+    )
+    assert (
+        _get_counter_value(metrics, "vllm:stateaxis_state_fork_shared_block_references")
+        == 18
+    )
+    assert (
+        _get_labeled_counter_value(
+            metrics,
+            "vllm:stateaxis_state_fork_rejected_groups",
+            reason="child_indices_invalid",
+        )
+        == 1
+    )
+    assert (
+        _get_counter_value(metrics, "vllm:stateaxis_state_fork_rejected_children") == 2
+    )
+    assert _get_gauge_value(metrics, "vllm:stateaxis_state_fork_active_groups") == 3
+    assert _get_gauge_value(metrics, "vllm:stateaxis_state_fork_active_children") == 8
+
+
+def test_state_fork_rejection_reason_vocabulary_is_fail_closed():
+    stats = StateForkStats()
+
+    with pytest.raises(ValueError, match="unknown state fork rejection reason"):
+        stats.record_rejection("request-id-or-exception-text", children=1)
+
+    assert stats.rejected_groups == 0
+    assert stats.rejected_children == 0
+    assert stats.rejection_reasons == {}

@@ -1109,11 +1109,11 @@ def test_hybrid_state_fork_acquires_joint_child_ownership():
     groups = manager.coordinator.single_type_managers
     before_refs = tuple(block.ref_cnt for block in manager.block_pool.blocks)
 
-    inherited_tokens = manager.fork_cached_prefixes(
+    allocation = manager.fork_cached_prefixes(
         source.request_id, children, fork_at_tokens=source.num_prompt_tokens
     )
 
-    assert inherited_tokens == 48
+    assert allocation.inherited_tokens == 48
     for group in groups:
         source_blocks = group.req_to_blocks[source.request_id]
         first_child_blocks = group.req_to_blocks[children[0].request_id]
@@ -1135,6 +1135,7 @@ def test_hybrid_state_fork_acquires_joint_child_ownership():
             for block in group.req_to_blocks[child.request_id]:
                 if not block.is_null:
                     expected_ref_increments[block.block_id] += 1
+    assert allocation.shared_block_references == sum(expected_ref_increments)
     assert tuple(block.ref_cnt for block in manager.block_pool.blocks) == tuple(
         before + expected_ref_increments[idx] for idx, before in enumerate(before_refs)
     )

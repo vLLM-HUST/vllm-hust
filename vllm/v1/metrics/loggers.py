@@ -21,6 +21,7 @@ from vllm.v1.engine import FinishReason
 from vllm.v1.metrics.perf import PerfMetricsLogging, PerfMetricsProm
 from vllm.v1.metrics.prometheus import unregister_vllm_metrics
 from vllm.v1.metrics.stats import (
+    STATE_FORK_REJECTION_REASONS,
     CachingMetrics,
     IterationStats,
     MultiModalCacheStats,
@@ -621,6 +622,80 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             counter_prefix_cache_blocks_cached, per_engine_labelvalues
         )
 
+        counter_state_fork_accepted_groups = self._counter_cls(
+            name="vllm:stateaxis_state_fork_accepted_groups",
+            documentation="Accepted StateAxis hybrid-state fork groups.",
+            labelnames=labelnames,
+        )
+        self.counter_state_fork_accepted_groups = create_metric_per_engine(
+            counter_state_fork_accepted_groups, per_engine_labelvalues
+        )
+        counter_state_fork_accepted_children = self._counter_cls(
+            name="vllm:stateaxis_state_fork_accepted_children",
+            documentation="Children admitted through a StateAxis state fork.",
+            labelnames=labelnames,
+        )
+        self.counter_state_fork_accepted_children = create_metric_per_engine(
+            counter_state_fork_accepted_children, per_engine_labelvalues
+        )
+        counter_state_fork_inherited_tokens = self._counter_cls(
+            name="vllm:stateaxis_state_fork_inherited_tokens",
+            documentation="Per-child prompt tokens inherited by StateAxis forks.",
+            labelnames=labelnames,
+        )
+        self.counter_state_fork_inherited_tokens = create_metric_per_engine(
+            counter_state_fork_inherited_tokens, per_engine_labelvalues
+        )
+        counter_state_fork_shared_block_references = self._counter_cls(
+            name="vllm:stateaxis_state_fork_shared_block_references",
+            documentation=(
+                "Non-null cache-block references acquired by StateAxis fork children."
+            ),
+            labelnames=labelnames,
+        )
+        self.counter_state_fork_shared_block_references = create_metric_per_engine(
+            counter_state_fork_shared_block_references, per_engine_labelvalues
+        )
+        counter_state_fork_rejected_groups = self._counter_cls(
+            name="vllm:stateaxis_state_fork_rejected_groups",
+            documentation="Rejected StateAxis fork groups by bounded reason.",
+            labelnames=labelnames + ["reason"],
+        )
+        self.counter_state_fork_rejected_groups = {}
+        for reason in STATE_FORK_REJECTION_REASONS:
+            values_with_reason = {
+                idx: values + [reason] for idx, values in per_engine_labelvalues.items()
+            }
+            self.counter_state_fork_rejected_groups[reason] = create_metric_per_engine(
+                counter_state_fork_rejected_groups, values_with_reason
+            )
+        counter_state_fork_rejected_children = self._counter_cls(
+            name="vllm:stateaxis_state_fork_rejected_children",
+            documentation="Children returned to independent execution after rejection.",
+            labelnames=labelnames,
+        )
+        self.counter_state_fork_rejected_children = create_metric_per_engine(
+            counter_state_fork_rejected_children, per_engine_labelvalues
+        )
+        gauge_state_fork_active_groups = self._gauge_cls(
+            name="vllm:stateaxis_state_fork_active_groups",
+            documentation="StateAxis fork groups with live dependent ownership.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_state_fork_active_groups = create_metric_per_engine(
+            gauge_state_fork_active_groups, per_engine_labelvalues
+        )
+        gauge_state_fork_active_children = self._gauge_cls(
+            name="vllm:stateaxis_state_fork_active_children",
+            documentation="Live children tracked by StateAxis fork groups.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_state_fork_active_children = create_metric_per_engine(
+            gauge_state_fork_active_children, per_engine_labelvalues
+        )
+
         #
         # External - KV connector prefix cache
         #
@@ -1184,6 +1259,33 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             )
             self.counter_prefix_cache_blocks_cached[engine_idx].inc(
                 scheduler_stats.prefix_cache_stats.blocks_cached
+            )
+
+            fork_stats = scheduler_stats.state_fork_stats
+            self.counter_state_fork_accepted_groups[engine_idx].inc(
+                fork_stats.accepted_groups
+            )
+            self.counter_state_fork_accepted_children[engine_idx].inc(
+                fork_stats.accepted_children
+            )
+            self.counter_state_fork_inherited_tokens[engine_idx].inc(
+                fork_stats.inherited_tokens
+            )
+            self.counter_state_fork_shared_block_references[engine_idx].inc(
+                fork_stats.shared_block_references
+            )
+            self.counter_state_fork_rejected_children[engine_idx].inc(
+                fork_stats.rejected_children
+            )
+            for reason in STATE_FORK_REJECTION_REASONS:
+                self.counter_state_fork_rejected_groups[reason][engine_idx].inc(
+                    fork_stats.rejection_reasons.get(reason, 0)
+                )
+            self.gauge_state_fork_active_groups[engine_idx].set(
+                fork_stats.active_groups
+            )
+            self.gauge_state_fork_active_children[engine_idx].set(
+                fork_stats.active_children
             )
 
             if scheduler_stats.connector_prefix_cache_stats is not None:
