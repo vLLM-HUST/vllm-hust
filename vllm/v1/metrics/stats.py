@@ -208,6 +208,7 @@ STATE_FORK_REJECTION_REASONS = (
     "child_already_owns_state",
     "child_incompatible",
     "cache_attachment_failed",
+    "cache_invalidated",
 )
 
 

@@ -2350,6 +2350,38 @@ class Scheduler(SchedulerInterface):
             reason,
         )
 
+    def _invalidate_published_state_forks(self, reason: str) -> None:
+        """Dissolve fork dependencies before their shared cache is invalidated."""
+        running_ids = {request.request_id for request in self.running}
+        for source_request_id in tuple(self._published_state_fork_sources):
+            member_ids = (
+                source_request_id,
+                *tuple(self._state_fork_children.get(source_request_id, ())),
+            )
+            self._reject_state_fork_children(
+                source_request_id,
+                "cache_invalidated",
+                reason,
+            )
+            for request_id in member_ids:
+                request = self.requests.get(request_id)
+                if request is None or request.is_finished():
+                    continue
+                request.state_fork = None
+                request.state_fork_rejection_reason = reason
+                if request_id in running_ids:
+                    # The caller's preemption loop releases running members.
+                    continue
+                # Published children can own shared blocks while still in the
+                # waiting queue. They are outside the normal preemption loop,
+                # so release and rewind them explicitly before pool reset.
+                self._free_request_blocks(request)
+                self.encoder_cache_manager.free(request)
+                self._inflight_prefills.discard(request)
+                request.num_computed_tokens = 0
+                if request.spec_token_ids:
+                    request.spec_token_ids = []
+
     def _free_blocks(self, request: Request):
         assert request.is_finished()
         self._free_request_blocks(request)
@@ -2457,6 +2489,14 @@ class Scheduler(SchedulerInterface):
         is no running requests taking KV cache.
         """
         if reset_running_requests:
+            # Published fork children depend on source-owned cached state. A
+            # forced reset frees that ownership and resets every preempted
+            # request to token zero, so the old publication can no longer be
+            # resumed or republished. Dissolve it before freeing any request;
+            # all members then follow ordinary independent recomputation.
+            self._invalidate_published_state_forks(
+                "prefix cache reset invalidated published fork ownership"
+            )
             # For logging.
             timestamp = time.monotonic()
             # Invalidate all the current running requests KV's by pushing them to
