@@ -918,6 +918,163 @@ def test_hybrid_scheduled_allocation_reserves_then_commits_all_groups():
     assert manager.block_pool.get_num_free_blocks() == 15
 
 
+def _computed_prefix_pool_state(block_pool: BlockPool) -> tuple:
+    free_ids = []
+    block = block_pool.free_block_queue.fake_free_list_head.next_free_block
+    while block is not block_pool.free_block_queue.fake_free_list_tail:
+        assert block is not None
+        free_ids.append(block.block_id)
+        block = block.next_free_block
+    cache = {}
+    for key, blocks in block_pool.cached_block_hash_to_block._cache.items():
+        if isinstance(blocks, KVCacheBlock):
+            cache[key] = (blocks.block_id,)
+        else:
+            cache[key] = tuple(sorted(blocks))
+    return (
+        tuple(free_ids),
+        tuple(block.ref_cnt for block in block_pool.blocks),
+        tuple(block.block_hash for block in block_pool.blocks),
+        tuple(sorted(cache.items())),
+    )
+
+
+def _make_hybrid_computed_prefix_case():
+    block_size = 16
+    manager = make_kv_cache_manager(
+        _make_hybrid_kv_cache_config(
+            block_size, num_blocks=16, spec_types=["full", "mamba_align"]
+        ),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    full_hit = manager.block_pool.blocks[1]
+    mamba_skipped_hit = manager.block_pool.blocks[2]
+    full_key = make_block_hash_with_group_id(BlockHash(b"full-hit"), 0)
+    mamba_key = make_block_hash_with_group_id(BlockHash(b"mamba-hit"), 1)
+    for block, key in (
+        (full_hit, full_key),
+        (mamba_skipped_hit, mamba_key),
+    ):
+        block.set_block_hash(key, num_tokens=block_size)
+        manager.block_pool.cached_block_hash_to_block.insert(key, block)
+    computed = ((full_hit,), (mamba_skipped_hit,))
+    return manager, computed, full_key, mamba_key
+
+
+@pytest.mark.parametrize(
+    ("fault_owner", "fault_method"),
+    [
+        ("manager", "prepare_computed_blocks_allocation"),
+        ("manager", "validate_prepared_computed_blocks_allocation"),
+        ("pool", "prepare_computed_block_allocation"),
+        ("pool", "validate_prepared_computed_block_allocation"),
+    ],
+)
+def test_hybrid_computed_prefix_failure_is_atomic(
+    monkeypatch, fault_owner: str, fault_method: str
+):
+    manager, computed, _, _ = _make_hybrid_computed_prefix_case()
+    group_managers = manager.coordinator.single_type_managers
+    before_pool = _computed_prefix_pool_state(manager.block_pool)
+
+    def fail_transaction(*_args):
+        raise RuntimeError("injected computed-prefix transaction failure")
+
+    owner = group_managers[1] if fault_owner == "manager" else manager.block_pool
+    monkeypatch.setattr(owner, fault_method, fail_transaction)
+    with pytest.raises(
+        RuntimeError, match="injected computed-prefix transaction failure"
+    ):
+        manager.coordinator.allocate_new_computed_blocks(
+            "computed",
+            computed,
+            num_local_computed_tokens=16,
+            num_external_computed_tokens=16,
+        )
+
+    assert _computed_prefix_pool_state(manager.block_pool) == before_pool
+    assert all("computed" not in group.req_to_blocks for group in group_managers)
+    assert all("computed" not in group.num_cached_block for group in group_managers)
+    assert all(not group.new_block_ids for group in group_managers)
+
+
+def test_hybrid_computed_prefix_touch_reserve_commit_preserves_order():
+    manager, computed, full_key, mamba_key = _make_hybrid_computed_prefix_case()
+    group_managers = manager.coordinator.single_type_managers
+    full_hit = computed[0][0]
+    mamba_skipped_hit = computed[1][0]
+
+    manager.coordinator.allocate_new_computed_blocks(
+        "computed",
+        computed,
+        num_local_computed_tokens=16,
+        num_external_computed_tokens=16,
+    )
+
+    assert group_managers[0].req_to_blocks["computed"] == [
+        full_hit,
+        mamba_skipped_hit,
+    ]
+    mamba_blocks = group_managers[1].req_to_blocks["computed"]
+    assert mamba_blocks[0].is_null
+    assert mamba_blocks[1] is manager.block_pool.blocks[3]
+    assert group_managers[0].num_cached_block["computed"] == 1
+    assert group_managers[1].num_cached_block["computed"] == 1
+    assert full_hit.ref_cnt == 1
+    assert full_hit.block_hash == full_key
+    assert manager.block_pool.cached_block_hash_to_block.contain(
+        full_key, full_hit.block_id
+    )
+    assert mamba_skipped_hit.ref_cnt == 1
+    assert mamba_skipped_hit.block_hash is None
+    assert not manager.block_pool.cached_block_hash_to_block.contain(
+        mamba_key, mamba_skipped_hit.block_id
+    )
+    assert group_managers[0].new_block_ids == [mamba_skipped_hit.block_id]
+    assert manager.block_pool.get_num_free_blocks() == 12
+
+
+def test_hybrid_computed_prefix_transaction_matches_sequential_reference():
+    candidate, candidate_computed, _, _ = _make_hybrid_computed_prefix_case()
+    control, control_computed, _, _ = _make_hybrid_computed_prefix_case()
+
+    candidate.coordinator.allocate_new_computed_blocks(
+        "computed",
+        candidate_computed,
+        num_local_computed_tokens=16,
+        num_external_computed_tokens=16,
+    )
+    for index, group in enumerate(control.coordinator.single_type_managers):
+        group.add_local_computed_blocks(
+            "computed",
+            control_computed[index],
+            num_local_computed_tokens=16,
+            num_external_computed_tokens=16,
+        )
+    for group in control.coordinator.single_type_managers:
+        group.allocate_external_computed_blocks(
+            "computed",
+            num_local_computed_tokens=16,
+            num_external_computed_tokens=16,
+        )
+
+    assert _computed_prefix_pool_state(
+        candidate.block_pool
+    ) == _computed_prefix_pool_state(control.block_pool)
+    for candidate_group, control_group in zip(
+        candidate.coordinator.single_type_managers,
+        control.coordinator.single_type_managers,
+        strict=True,
+    ):
+        assert [
+            block.block_id for block in candidate_group.req_to_blocks["computed"]
+        ] == [block.block_id for block in control_group.req_to_blocks["computed"]]
+        assert candidate_group.num_cached_block == control_group.num_cached_block
+        assert candidate_group.new_block_ids == control_group.new_block_ids
+
+
 # Test cases covering various combinations of KV cache spec types:
 # - Varying number of groups (2, 3, or 4)
 # - 0, 1, or 2 full attention groups

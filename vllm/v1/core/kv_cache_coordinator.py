@@ -15,6 +15,7 @@ from vllm.v1.core.kv_cache_utils import (
 )
 from vllm.v1.core.single_type_kv_cache_manager import (
     CrossAttentionManager,
+    PreparedComputedBlocksAllocation,
     PreparedRequestAllocation,
     PreparedRequestFree,
     SingleTypeKVCacheManager,
@@ -213,24 +214,48 @@ class KVCacheCoordinator(ABC):
             assert all(len(blocks) == 0 for blocks in new_computed_blocks)
             return
 
-        # Two-phase allocation (issue #33775): first touch every group's local
-        # cache-hit blocks, then allocate external blocks for every group. This
-        # ensures an earlier group's external `get_new_blocks` cannot evict a
-        # later group's not-yet-touched cache-hit blocks.
-        for i, manager in enumerate(self.single_type_managers):
-            manager.add_local_computed_blocks(
+        prepared: tuple[PreparedComputedBlocksAllocation, ...] = tuple(
+            manager.prepare_computed_blocks_allocation(
                 request_id,
                 new_computed_blocks[i],
                 num_local_computed_tokens,
                 num_external_computed_tokens,
             )
-        if num_external_computed_tokens > 0:
-            for manager in self.single_type_managers:
-                manager.allocate_external_computed_blocks(
-                    request_id,
-                    num_local_computed_tokens,
-                    num_external_computed_tokens,
-                )
+            for i, manager in enumerate(self.single_type_managers)
+        )
+        for manager, group_allocation in zip(
+            self.single_type_managers, prepared, strict=True
+        ):
+            manager.validate_prepared_computed_blocks_allocation(group_allocation)
+
+        # Freeze the external-block selection while excluding every local hit
+        # that will leave the free queue when touched. Committing the pool plan
+        # touches all groups first, preserving issue #33775, then obtains the
+        # same blocks that the old sequential external allocations would use.
+        touch_blocks = tuple(
+            block
+            for group_allocation in prepared
+            for block in group_allocation.local_touch_blocks
+        )
+        pool_allocation = self.block_pool.prepare_computed_block_allocation(
+            touch_blocks,
+            sum(plan.num_external_blocks for plan in prepared),
+        )
+        self.block_pool.validate_prepared_computed_block_allocation(pool_allocation)
+        external_blocks = self.block_pool.commit_prepared_computed_block_allocation(
+            pool_allocation
+        )
+
+        offset = 0
+        for manager, group_allocation in zip(
+            self.single_type_managers, prepared, strict=True
+        ):
+            next_offset = offset + group_allocation.num_external_blocks
+            manager.commit_prepared_computed_blocks_allocation(
+                group_allocation,
+                external_blocks[offset:next_offset],
+            )
+            offset = next_offset
 
     def allocate_new_blocks(
         self,

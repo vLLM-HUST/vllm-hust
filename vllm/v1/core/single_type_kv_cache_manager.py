@@ -64,6 +64,24 @@ class PreparedRequestAllocation:
     record_new_block_ids: bool
 
 
+@dataclass(frozen=True)
+class PreparedComputedBlocksAllocation:
+    """One manager's part of a computed-prefix attachment transaction."""
+
+    request_id: str
+    active: bool
+    tracked: bool
+    original_blocks: tuple[KVCacheBlock, ...]
+    cached_entry_present: bool
+    original_num_cached_blocks: int | None
+    original_new_block_ids: tuple[int, ...]
+    local_touch_blocks: tuple[KVCacheBlock, ...]
+    final_prefix_blocks: tuple[KVCacheBlock, ...]
+    num_cached_blocks: int
+    num_external_blocks: int
+    record_new_block_ids: bool
+
+
 class SingleTypeKVCacheManager(ABC):
     """
     An abstract base class for a manager that handle the kv cache management
@@ -265,6 +283,109 @@ class SingleTypeKVCacheManager(ABC):
         # them so cache_blocks() will not try to re-cache blocks that already
         # have a block_hash set.
         self.num_cached_block[request_id] = len(req_blocks)
+
+    def prepare_computed_blocks_allocation(
+        self,
+        request_id: str,
+        new_computed_blocks: Sequence[KVCacheBlock],
+        num_local_computed_tokens: int,
+        num_external_computed_tokens: int,
+    ) -> PreparedComputedBlocksAllocation:
+        """Plan local-hit attachment and external allocation without mutation."""
+        tracked = request_id in self.req_to_blocks
+        original_blocks = tuple(self.req_to_blocks.get(request_id, ()))
+        assert not original_blocks, (
+            "computed-prefix allocation requires an empty request block table"
+        )
+        num_total_computed_tokens = (
+            num_local_computed_tokens + num_external_computed_tokens
+        )
+        num_skipped_tokens = self.get_num_skipped_tokens(num_total_computed_tokens)
+        num_skipped_blocks = num_skipped_tokens // self.block_size
+        local_touch_blocks = tuple(new_computed_blocks[num_skipped_blocks:])
+        if not self.enable_caching:
+            assert not local_touch_blocks, (
+                "Computed blocks should be empty when prefix caching is disabled"
+            )
+        final_prefix_blocks = (
+            self._null_block,
+        ) * num_skipped_blocks + local_touch_blocks
+
+        effective_external_tokens = num_external_computed_tokens
+        if num_skipped_tokens > 0:
+            effective_external_tokens = min(
+                num_total_computed_tokens - num_skipped_tokens,
+                effective_external_tokens,
+            )
+        num_external_blocks = 0
+        if effective_external_tokens > 0:
+            num_external_blocks = cdiv(
+                num_total_computed_tokens, self.block_size
+            ) - len(final_prefix_blocks)
+            assert num_external_blocks >= 0
+
+        return PreparedComputedBlocksAllocation(
+            request_id=request_id,
+            active=True,
+            tracked=tracked,
+            original_blocks=original_blocks,
+            cached_entry_present=request_id in self.num_cached_block,
+            original_num_cached_blocks=self.num_cached_block.get(request_id),
+            original_new_block_ids=tuple(self.new_block_ids),
+            local_touch_blocks=local_touch_blocks,
+            final_prefix_blocks=final_prefix_blocks,
+            num_cached_blocks=len(final_prefix_blocks),
+            num_external_blocks=num_external_blocks,
+            record_new_block_ids=type(self.kv_cache_spec)
+            in (
+                FullAttentionSpec,
+                TQFullAttentionSpec,
+                MLAAttentionSpec,
+                HiddenStateCacheSpec,
+            ),
+        )
+
+    def validate_prepared_computed_blocks_allocation(
+        self, prepared: PreparedComputedBlocksAllocation
+    ) -> None:
+        """Reject stale manager state before shared-pool commit."""
+        blocks = self.req_to_blocks.get(prepared.request_id)
+        assert prepared.tracked == (blocks is not None), (
+            "computed-prefix request bookkeeping changed after prepare"
+        )
+        if blocks is not None:
+            assert len(blocks) == len(prepared.original_blocks) and all(
+                current is expected
+                for current, expected in zip(
+                    blocks, prepared.original_blocks, strict=True
+                )
+            ), "computed-prefix request blocks changed after prepare"
+        assert prepared.cached_entry_present == (
+            prepared.request_id in self.num_cached_block
+        ), "computed-prefix cache bookkeeping changed after prepare"
+        if prepared.cached_entry_present:
+            assert (
+                self.num_cached_block[prepared.request_id]
+                == prepared.original_num_cached_blocks
+            ), "computed-prefix cached extent changed after prepare"
+        assert tuple(self.new_block_ids) == prepared.original_new_block_ids, (
+            "computed-prefix new-block bookkeeping changed after prepare"
+        )
+
+    def commit_prepared_computed_blocks_allocation(
+        self,
+        prepared: PreparedComputedBlocksAllocation,
+        external_blocks: Sequence[KVCacheBlock],
+    ) -> None:
+        """Commit a prevalidated manager plan with its external-block slice."""
+        if not prepared.active:
+            return
+        req_blocks = self.req_to_blocks[prepared.request_id]
+        req_blocks[:] = prepared.final_prefix_blocks
+        req_blocks.extend(external_blocks)
+        self.num_cached_block[prepared.request_id] = prepared.num_cached_blocks
+        if prepared.record_new_block_ids:
+            self.new_block_ids.extend(block.block_id for block in external_blocks)
 
     def allocate_external_computed_blocks(
         self,
@@ -1551,6 +1672,30 @@ class MambaManager(SingleTypeKVCacheManager):
 
 class CrossAttentionManager(SingleTypeKVCacheManager):
     """Manager for cross-attention KV cache in encoder-decoder models."""
+
+    def prepare_computed_blocks_allocation(
+        self,
+        request_id: str,
+        new_computed_blocks: Sequence[KVCacheBlock],
+        num_local_computed_tokens: int,
+        num_external_computed_tokens: int,
+    ) -> PreparedComputedBlocksAllocation:
+        assert len(new_computed_blocks) == 0
+        original_blocks = tuple(self.req_to_blocks.get(request_id, ()))
+        return PreparedComputedBlocksAllocation(
+            request_id=request_id,
+            active=False,
+            tracked=request_id in self.req_to_blocks,
+            original_blocks=original_blocks,
+            cached_entry_present=request_id in self.num_cached_block,
+            original_num_cached_blocks=self.num_cached_block.get(request_id),
+            original_new_block_ids=tuple(self.new_block_ids),
+            local_touch_blocks=(),
+            final_prefix_blocks=original_blocks,
+            num_cached_blocks=self.num_cached_block.get(request_id, 0),
+            num_external_blocks=0,
+            record_new_block_ids=False,
+        )
 
     def add_local_computed_blocks(
         self,

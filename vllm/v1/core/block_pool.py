@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from vllm.distributed.kv_events import (
@@ -29,6 +30,18 @@ from vllm.v1.core.kv_cache_utils import (
 from vllm.v1.request import Request
 
 logger = init_logger(__name__)
+
+
+@dataclass(frozen=True)
+class PreparedComputedBlockAllocation:
+    """Shared-pool portion of a cross-group computed-prefix transaction."""
+
+    touch_blocks: tuple[KVCacheBlock, ...]
+    touch_ref_counts: tuple[int, ...]
+    touch_cache_states: tuple[tuple[object, ...], ...]
+    new_blocks: tuple[KVCacheBlock, ...]
+    new_cache_states: tuple[tuple[object, ...], ...]
+    free_block_count: int
 
 
 class BlockHashToBlockMap:
@@ -611,6 +624,126 @@ class BlockPool:
             if self.metrics_collector:
                 self.metrics_collector.on_block_accessed(block)
 
+    def _select_new_blocks_avoiding(
+        self, num_blocks: int, excluded_block_ids: set[int]
+    ) -> tuple[KVCacheBlock, ...]:
+        selected: list[KVCacheBlock] = []
+        block = self.free_block_queue.fake_free_list_head.next_free_block
+        tail = self.free_block_queue.fake_free_list_tail
+        while block is not None and block is not tail and len(selected) < num_blocks:
+            if block.block_id not in excluded_block_ids:
+                selected.append(block)
+            block = block.next_free_block
+        if len(selected) != num_blocks:
+            raise ValueError(
+                f"Cannot get {num_blocks} free blocks after protecting "
+                f"{len(excluded_block_ids)} computed-prefix blocks"
+            )
+        return tuple(selected)
+
+    def prepare_computed_block_allocation(
+        self,
+        touch_blocks: Sequence[KVCacheBlock],
+        num_new_blocks: int,
+    ) -> PreparedComputedBlockAllocation:
+        """Plan local-hit touches and later allocation without pool mutation."""
+        if num_new_blocks < 0:
+            raise ValueError("num_new_blocks must be non-negative")
+        touch_blocks_tuple = tuple(touch_blocks)
+        protected_block_ids = {
+            block.block_id
+            for block in touch_blocks_tuple
+            if block.ref_cnt == 0 and not block.is_null
+        }
+        for block in touch_blocks_tuple:
+            if (
+                block.ref_cnt == 0
+                and not block.is_null
+                and (block.prev_free_block is None or block.next_free_block is None)
+            ):
+                raise ValueError(
+                    f"computed-prefix block {block.block_id} is not in the free queue"
+                )
+        new_blocks = self._select_new_blocks_avoiding(
+            num_new_blocks, protected_block_ids
+        )
+        return PreparedComputedBlockAllocation(
+            touch_blocks=touch_blocks_tuple,
+            touch_ref_counts=tuple(block.ref_cnt for block in touch_blocks_tuple),
+            touch_cache_states=tuple(
+                self._computed_block_cache_state(block) for block in touch_blocks_tuple
+            ),
+            new_blocks=new_blocks,
+            new_cache_states=tuple(
+                self._computed_block_cache_state(block) for block in new_blocks
+            ),
+            free_block_count=self.get_num_free_blocks(),
+        )
+
+    def _computed_block_cache_state(self, block: KVCacheBlock) -> tuple[object, ...]:
+        return (
+            block.block_hash,
+            block.block_hash_num_tokens,
+            frozenset(self.cached_block_hashes_by_block.get(block.block_id, ())),
+        )
+
+    def validate_prepared_computed_block_allocation(
+        self, prepared: PreparedComputedBlockAllocation
+    ) -> None:
+        """Reject a stale pool plan before touching or allocating any block."""
+        assert self.get_num_free_blocks() == prepared.free_block_count, (
+            "free block count changed after computed-prefix prepare"
+        )
+        assert all(
+            block.ref_cnt == ref_count
+            for block, ref_count in zip(
+                prepared.touch_blocks,
+                prepared.touch_ref_counts,
+                strict=True,
+            )
+        ), "computed-prefix block reference count changed after prepare"
+        assert all(
+            self._computed_block_cache_state(block) == cache_state
+            for block, cache_state in zip(
+                prepared.touch_blocks,
+                prepared.touch_cache_states,
+                strict=True,
+            )
+        ), "computed-prefix cache identity changed after prepare"
+        protected_block_ids = {
+            block.block_id
+            for block, ref_count in zip(
+                prepared.touch_blocks,
+                prepared.touch_ref_counts,
+                strict=True,
+            )
+            if ref_count == 0 and not block.is_null
+        }
+        current_new_blocks = self._select_new_blocks_avoiding(
+            len(prepared.new_blocks), protected_block_ids
+        )
+        assert len(current_new_blocks) == len(prepared.new_blocks) and all(
+            current is expected
+            for current, expected in zip(
+                current_new_blocks, prepared.new_blocks, strict=True
+            )
+        ), "external-computed block selection changed after prepare"
+        assert all(
+            self._computed_block_cache_state(block) == cache_state
+            for block, cache_state in zip(
+                prepared.new_blocks,
+                prepared.new_cache_states,
+                strict=True,
+            )
+        ), "external-computed cache eviction plan changed after prepare"
+
+    def commit_prepared_computed_block_allocation(
+        self, prepared: PreparedComputedBlockAllocation
+    ) -> list[KVCacheBlock]:
+        """Touch all local hits, then allocate the preselected external blocks."""
+        self.touch(prepared.touch_blocks)
+        return self.get_new_blocks(len(prepared.new_blocks))
+
     def free_blocks(
         self,
         ordered_blocks: Iterable[KVCacheBlock],
@@ -645,7 +778,8 @@ class BlockPool:
         if prepend:
             self.free_block_queue.prependleft_n(blocks_without_hash + blocks_with_hash)
         else:
-            # Blocks without hash always get evicted first - prepend them last to the tail
+            # Blocks without hash always get evicted first, so prepend them
+            # last to the tail.
             self.free_block_queue.prepend_n(blocks_without_hash)
             self.free_block_queue.append_n(blocks_with_hash)
 
