@@ -15,6 +15,7 @@ from vllm.v1.core.kv_cache_utils import (
 )
 from vllm.v1.core.single_type_kv_cache_manager import (
     CrossAttentionManager,
+    PreparedRequestFree,
     SingleTypeKVCacheManager,
     get_manager_for_kv_cache_spec,
 )
@@ -296,11 +297,38 @@ class KVCacheCoordinator(ABC):
         Args:
             request_id: The request ID.
         """
-        for manager in self.single_type_managers:
-            manager.free(
-                request_id,
+        prepared = self._prepare_request_free(request_id)
+        blocks_by_manager = self._commit_request_free(prepared)
+        # Preserve the existing per-manager block-reuse order, but return no
+        # physical block until every state group's bookkeeping is committed.
+        for blocks in blocks_by_manager:
+            self.block_pool.free_blocks(
+                reversed(blocks),
                 prioritize_uncached_for_reuse=prioritize_uncached_for_reuse,
             )
+
+    def _prepare_request_free(self, request_id: str) -> tuple[PreparedRequestFree, ...]:
+        """Prepare and validate release for every group without mutation."""
+        prepared = tuple(
+            manager.prepare_free(request_id) for manager in self.single_type_managers
+        )
+        for manager, group_free in zip(
+            self.single_type_managers, prepared, strict=True
+        ):
+            manager.validate_prepared_free(group_free)
+        return prepared
+
+    def _commit_request_free(
+        self, prepared: tuple[PreparedRequestFree, ...]
+    ) -> tuple[list[KVCacheBlock], ...]:
+        """Commit an already validated cross-group release."""
+        assert len(prepared) == len(self.single_type_managers)
+        return tuple(
+            manager.commit_prepared_free(group_free)
+            for manager, group_free in zip(
+                self.single_type_managers, prepared, strict=True
+            )
+        )
 
     def pop_blocks_for_free(self, request_id: str) -> list[KVCacheBlock]:
         """
@@ -316,10 +344,12 @@ class KVCacheCoordinator(ABC):
         Returns:
             The request's blocks in allocation order.
         """
-        blocks: list[KVCacheBlock] = []
-        for manager in self.single_type_managers:
-            blocks.extend(manager.pop_blocks_for_free(request_id))
-        return blocks
+        prepared = self._prepare_request_free(request_id)
+        return [
+            block
+            for group_blocks in self._commit_request_free(prepared)
+            for block in group_blocks
+        ]
 
     def get_num_common_prefix_blocks(self, running_request_id: str) -> list[int]:
         """

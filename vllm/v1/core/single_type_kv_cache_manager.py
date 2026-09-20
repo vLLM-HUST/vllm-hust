@@ -4,6 +4,7 @@ import itertools
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from vllm.utils.math_utils import cdiv
 from vllm.v1.core.block_pool import BlockPool
@@ -28,6 +29,23 @@ from vllm.v1.kv_cache_interface import (
 )
 from vllm.v1.kv_cache_spec_registry import KVCacheSpecRegistry
 from vllm.v1.request import Request
+
+
+@dataclass(frozen=True)
+class PreparedRequestFree:
+    """Immutable snapshot of one manager's request-release bookkeeping.
+
+    Coordinators prepare every state group before mutating any of them.  The
+    object records identity, not just block IDs, so the coordinator can prove
+    that the bookkeeping did not change between prepare and commit.
+    """
+
+    request_id: str
+    tracked: bool
+    blocks: tuple[KVCacheBlock, ...]
+    cached_entry_present: bool
+    num_cached_blocks: int | None
+    auxiliary_state: tuple[object, ...]
 
 
 class SingleTypeKVCacheManager(ABC):
@@ -382,6 +400,54 @@ class SingleTypeKVCacheManager(ABC):
         """
         return None
 
+    def prepare_free(self, request_id: str) -> PreparedRequestFree:
+        """Read one request's release state without mutating the manager."""
+        blocks = self.req_to_blocks.get(request_id)
+        return PreparedRequestFree(
+            request_id=request_id,
+            tracked=blocks is not None,
+            blocks=tuple(blocks or ()),
+            cached_entry_present=request_id in self.num_cached_block,
+            num_cached_blocks=self.num_cached_block.get(request_id),
+            auxiliary_state=self._get_release_auxiliary_state(request_id),
+        )
+
+    def _get_release_auxiliary_state(self, request_id: str) -> tuple[object, ...]:
+        return ()
+
+    def validate_prepared_free(self, prepared: PreparedRequestFree) -> None:
+        """Fail before commit if a prepared release became stale."""
+        blocks = self.req_to_blocks.get(prepared.request_id)
+        assert prepared.tracked == (blocks is not None), (
+            "request release bookkeeping changed after prepare"
+        )
+        if blocks is not None:
+            assert len(blocks) == len(prepared.blocks) and all(
+                current is expected
+                for current, expected in zip(blocks, prepared.blocks, strict=True)
+            ), "request blocks changed after release prepare"
+        assert prepared.cached_entry_present == (
+            prepared.request_id in self.num_cached_block
+        ), "request cache bookkeeping changed after release prepare"
+        if prepared.cached_entry_present:
+            assert (
+                self.num_cached_block[prepared.request_id] == prepared.num_cached_blocks
+            ), "request cache extent changed after release prepare"
+        assert (
+            self._get_release_auxiliary_state(prepared.request_id)
+            == prepared.auxiliary_state
+        ), "request auxiliary bookkeeping changed after release prepare"
+
+    def _commit_release_auxiliary_state(self, request_id: str) -> None:
+        return None
+
+    def commit_prepared_free(self, prepared: PreparedRequestFree) -> list[KVCacheBlock]:
+        """Commit a prevalidated release using no-throw dictionary removals."""
+        self._commit_release_auxiliary_state(prepared.request_id)
+        self.req_to_blocks.pop(prepared.request_id, None)
+        self.num_cached_block.pop(prepared.request_id, None)
+        return list(prepared.blocks)
+
     def pop_blocks_for_free(self, request_id: str) -> list[KVCacheBlock]:
         """
         Pop the request's bookkeeping and return its blocks without yet
@@ -395,10 +461,9 @@ class SingleTypeKVCacheManager(ABC):
         Returns:
             The request's blocks in allocation order.
         """
-        # Default to [] in case a request is freed (aborted) before alloc.
-        req_blocks = self.req_to_blocks.pop(request_id, [])
-        self.num_cached_block.pop(request_id, None)
-        return req_blocks
+        prepared = self.prepare_free(request_id)
+        self.validate_prepared_free(prepared)
+        return self.commit_prepared_free(prepared)
 
     def free(
         self,
@@ -1334,11 +1399,19 @@ class MambaManager(SingleTypeKVCacheManager):
                 self._allocated_block_reqs.add(request_id)
                 return req_blocks[prev_block_len:]
 
-    def pop_blocks_for_free(self, request_id: str) -> list[KVCacheBlock]:
+    def _get_release_auxiliary_state(self, request_id: str) -> tuple[object, ...]:
+        if self.mamba_cache_mode != "align":
+            return ()
+        return (
+            request_id in self._allocated_block_reqs,
+            request_id in self.last_state_block_idx,
+            self.last_state_block_idx.get(request_id),
+        )
+
+    def _commit_release_auxiliary_state(self, request_id: str) -> None:
         if self.mamba_cache_mode == "align":
             self._allocated_block_reqs.discard(request_id)
             self.last_state_block_idx.pop(request_id, None)
-        return super().pop_blocks_for_free(request_id)
 
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
@@ -1557,7 +1630,9 @@ def register_all_kvcache_specs(vllm_config):
         uniform_type_base_spec=FullAttentionSpec,
     )
     KVCacheSpecRegistry.register(
-        MLAAttentionSpec, full_attention_manager, uniform_type_base_spec=FullAttentionSpec
+        MLAAttentionSpec,
+        full_attention_manager,
+        uniform_type_base_spec=FullAttentionSpec,
     )
     KVCacheSpecRegistry.register(
         RSWASpec, RSWAManager, uniform_type_base_spec=FullAttentionSpec

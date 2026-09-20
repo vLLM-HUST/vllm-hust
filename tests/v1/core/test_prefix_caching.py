@@ -780,6 +780,78 @@ def _make_hybrid_kv_cache_config(
     )
 
 
+def _allocate_hybrid_release_request() -> tuple[KVCacheManager, Request]:
+    block_size = 16
+    manager = make_kv_cache_manager(
+        _make_hybrid_kv_cache_config(
+            block_size, num_blocks=16, spec_types=["full", "mamba_align"]
+        ),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    request = make_request("release", list(range(32)), block_size, sha256)
+    computed_blocks, num_computed_tokens = manager.get_computed_blocks(request)
+    assert num_computed_tokens == 0
+    assert (
+        manager.allocate_slots(
+            request,
+            num_new_tokens=request.num_tokens,
+            num_new_computed_tokens=0,
+            new_computed_blocks=computed_blocks,
+        )
+        is not None
+    )
+    return manager, request
+
+
+@pytest.mark.parametrize("release_method", ["free", "pop_blocks_for_free"])
+def test_hybrid_release_prepare_failure_is_atomic(monkeypatch, release_method: str):
+    manager, request = _allocate_hybrid_release_request()
+    group_managers = manager.coordinator.single_type_managers
+    before_blocks = [
+        tuple(group.req_to_blocks[request.request_id]) for group in group_managers
+    ]
+    before_free_blocks = manager.block_pool.get_num_free_blocks()
+
+    def fail_prepare(_request_id: str):
+        raise RuntimeError("injected later-group release failure")
+
+    monkeypatch.setattr(group_managers[1], "prepare_free", fail_prepare)
+    with pytest.raises(RuntimeError, match="injected later-group release failure"):
+        getattr(manager, release_method)(request)
+
+    assert manager.block_pool.get_num_free_blocks() == before_free_blocks
+    for group, expected in zip(group_managers, before_blocks, strict=True):
+        assert request.request_id in group.req_to_blocks
+        assert len(group.req_to_blocks[request.request_id]) == len(expected)
+        assert all(
+            current is original
+            for current, original in zip(
+                group.req_to_blocks[request.request_id], expected, strict=True
+            )
+        )
+
+
+def test_hybrid_release_commits_all_groups_and_mamba_auxiliary_state():
+    manager, request = _allocate_hybrid_release_request()
+    group_managers = manager.coordinator.single_type_managers
+    mamba_manager = group_managers[1]
+    assert request.request_id in mamba_manager._allocated_block_reqs
+
+    manager.free(request)
+
+    assert all(
+        request.request_id not in group.req_to_blocks for group in group_managers
+    )
+    assert all(
+        request.request_id not in group.num_cached_block for group in group_managers
+    )
+    assert request.request_id not in mamba_manager._allocated_block_reqs
+    assert request.request_id not in mamba_manager.last_state_block_idx
+    assert manager.block_pool.get_num_free_blocks() == 15
+
+
 # Test cases covering various combinations of KV cache spec types:
 # - Varying number of groups (2, 3, or 4)
 # - 0, 1, or 2 full attention groups
