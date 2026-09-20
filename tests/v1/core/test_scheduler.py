@@ -315,8 +315,11 @@ def test_state_fork_cache_reset_invalidates_published_dependency(monkeypatch, tm
     _mark_state_fork_requests(requests)
     for request in requests:
         scheduler.add_request(request)
+    initial_leases = tuple(request.state_lease_generation for request in requests)
+    assert initial_leases == (1, 2)
 
     first = scheduler.schedule()
+    assert first.scheduled_new_reqs[0].state_lease_generation == initial_leases[0]
     scheduler.update_from_output(
         first,
         ModelRunnerOutput(
@@ -333,6 +336,9 @@ def test_state_fork_cache_reset_invalidates_published_dependency(monkeypatch, tm
     assert "source" in scheduler._published_state_fork_sources
 
     assert scheduler.reset_prefix_cache(reset_running_requests=True)
+    reset_leases = tuple(request.state_lease_generation for request in requests)
+    assert all(new > old for new, old in zip(reset_leases, initial_leases, strict=True))
+    assert len(set(reset_leases)) == len(reset_leases)
 
     assert not scheduler._published_state_fork_sources
     assert not scheduler._state_fork_children
@@ -371,6 +377,8 @@ def test_state_fork_cache_reset_releases_waiting_child_ownership(
     _mark_state_fork_requests(requests)
     for request in requests:
         scheduler.add_request(request)
+    initial_leases = tuple(request.state_lease_generation for request in requests)
+    assert initial_leases == (1, 2)
 
     first = scheduler.schedule()
     scheduler.update_from_output(
@@ -388,6 +396,9 @@ def test_state_fork_cache_reset_releases_waiting_child_ownership(
     assert requests[1].num_computed_tokens == 48
 
     assert scheduler.reset_prefix_cache(reset_running_requests=True)
+    reset_leases = tuple(request.state_lease_generation for request in requests)
+    assert all(new > old for new, old in zip(reset_leases, initial_leases, strict=True))
+    assert len(set(reset_leases)) == len(reset_leases)
 
     assert requests[1].num_computed_tokens == 0
     assert requests[1].state_fork is None

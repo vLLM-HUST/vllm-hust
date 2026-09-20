@@ -200,6 +200,10 @@ class Request:
         # only by the scheduler and is never accepted from the client.
         self.state_fork = state_fork
         self.state_fork_rejection_reason: str | None = None
+        # Scheduler-issued ownership incarnation. Zero means the request has
+        # not entered a scheduler yet; every allocation lifetime uses a
+        # positive, scheduler-local generation.
+        self.state_lease_generation = 0
 
     @classmethod
     def from_engine_core_request(

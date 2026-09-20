@@ -39,6 +39,7 @@ class NewRequestData:
     lora_request: LoRARequest | None
     prompt_embeds: "torch.Tensor | None" = None
     prompt_is_token_ids: list[bool] | None = None
+    state_lease_generation: int = 0
 
     # Only used for v2 model runner.
     prefill_token_ids: list[int] | None = None
@@ -50,6 +51,7 @@ class NewRequestData:
         block_ids: tuple[list[int], ...],
         prefill_token_ids: list[int] | None = None,
     ) -> "NewRequestData":
+        assert request.state_lease_generation > 0
         return cls(
             req_id=request.request_id,
             prompt_token_ids=request.prompt_token_ids,
@@ -61,6 +63,7 @@ class NewRequestData:
             lora_request=request.lora_request,
             prompt_embeds=request.prompt_embeds,
             prompt_is_token_ids=request.prompt_is_token_ids,
+            state_lease_generation=request.state_lease_generation,
             prefill_token_ids=prefill_token_ids,
         )
 
@@ -77,6 +80,7 @@ class NewRequestData:
             f"sampling_params={self.sampling_params},"
             f"block_ids={self.block_ids},"
             f"num_computed_tokens={self.num_computed_tokens},"
+            f"state_lease_generation={self.state_lease_generation},"
             f"lora_request={self.lora_request},"
             f"prompt_embeds_shape={prompt_embeds_shape}"
             ")"
@@ -102,6 +106,7 @@ class NewRequestData:
             f"sampling_params={self.sampling_params},"
             f"block_ids={self.block_ids},"
             f"num_computed_tokens={self.num_computed_tokens},"
+            f"state_lease_generation={self.state_lease_generation},"
             f"lora_request={self.lora_request},"
             f"prompt_embeds_shape={prompt_embeds_shape}"
             ")"
