@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import dataclasses
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -176,12 +177,49 @@ def _mark_state_fork_requests(requests: list[Request]) -> None:
         )
 
 
-def _create_state_fork_scheduler(monkeypatch):
+def _create_state_fork_scheduler(
+    monkeypatch,
+    model: str = "facebook/opt-125m",
+    max_num_seqs: int = 16,
+):
     import vllm.platforms
     from vllm.platforms.cpu import CpuPlatform
 
     monkeypatch.setattr(vllm.platforms, "_current_platform", CpuPlatform())
-    return create_scheduler(enable_prefix_caching=True, block_size=16)
+    return create_scheduler(
+        model=model,
+        max_num_seqs=max_num_seqs,
+        enable_prefix_caching=True,
+        block_size=16,
+    )
+
+
+def _write_state_fork_model(tmp_path):
+    model = tmp_path / "opt-fixture"
+    model.mkdir()
+    (model / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["OPTForCausalLM"],
+                "bos_token_id": 2,
+                "do_layer_norm_before": True,
+                "eos_token_id": 2,
+                "ffn_dim": 32,
+                "hidden_size": 16,
+                "max_position_embeddings": 2048,
+                "model_type": "opt",
+                "num_attention_heads": 2,
+                "num_hidden_layers": 2,
+                "pad_token_id": 1,
+                "torch_dtype": "float16",
+                "use_cache": True,
+                "vocab_size": 128,
+                "word_embed_proj_dim": 16,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return model
 
 
 def test_state_fork_children_wait_for_completed_source_then_share_prefix(monkeypatch):
@@ -262,6 +300,104 @@ def test_state_fork_children_wait_for_completed_source_then_share_prefix(monkeyp
     assert final_stats is not None
     assert final_stats.state_fork_stats.active_groups == 0
     assert final_stats.state_fork_stats.active_children == 0
+
+
+def test_state_fork_cache_reset_invalidates_published_dependency(monkeypatch, tmp_path):
+    model = _write_state_fork_model(tmp_path)
+    scheduler = _create_state_fork_scheduler(monkeypatch, str(model))
+    requests = create_requests(
+        num_requests=2,
+        num_tokens=49,
+        same_prompt=True,
+        block_size=16,
+        req_ids=["source", "child"],
+    )
+    _mark_state_fork_requests(requests)
+    for request in requests:
+        scheduler.add_request(request)
+
+    first = scheduler.schedule()
+    scheduler.update_from_output(
+        first,
+        ModelRunnerOutput(
+            req_ids=["source"],
+            req_id_to_index={"source": 0},
+            sampled_token_ids=[[101]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
+    )
+    second = scheduler.schedule()
+    assert set(second.num_scheduled_tokens) == {"source", "child"}
+    assert "source" in scheduler._published_state_fork_sources
+
+    assert scheduler.reset_prefix_cache(reset_running_requests=True)
+
+    assert not scheduler._published_state_fork_sources
+    assert not scheduler._state_fork_children
+    assert requests[0].state_fork is None
+    assert requests[1].state_fork is None
+    assert requests[1].state_fork_rejection_reason == (
+        "prefix cache reset invalidated published fork ownership"
+    )
+    resumed = scheduler.schedule()
+    assert set(resumed.num_scheduled_tokens) == {"source", "child"}
+    assert resumed.num_scheduled_tokens["source"] > 0
+    assert resumed.num_scheduled_tokens["child"] > 0
+    stats = scheduler.make_stats()
+    assert stats is not None
+    assert stats.state_fork_stats.rejected_groups == 1
+    assert stats.state_fork_stats.rejected_children == 1
+    assert stats.state_fork_stats.rejection_reasons == {"cache_invalidated": 1}
+    assert stats.state_fork_stats.active_groups == 0
+    assert stats.state_fork_stats.active_children == 0
+
+
+def test_state_fork_cache_reset_releases_waiting_child_ownership(
+    monkeypatch, tmp_path
+):
+    model = _write_state_fork_model(tmp_path)
+    scheduler = _create_state_fork_scheduler(
+        monkeypatch, str(model), max_num_seqs=1
+    )
+    requests = create_requests(
+        num_requests=2,
+        num_tokens=49,
+        same_prompt=True,
+        block_size=16,
+        req_ids=["source", "child"],
+    )
+    _mark_state_fork_requests(requests)
+    for request in requests:
+        scheduler.add_request(request)
+
+    first = scheduler.schedule()
+    scheduler.update_from_output(
+        first,
+        ModelRunnerOutput(
+            req_ids=["source"],
+            req_id_to_index={"source": 0},
+            sampled_token_ids=[[101]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
+    )
+    assert requests[1].status == RequestStatus.WAITING
+    assert requests[1].num_computed_tokens == 48
+
+    assert scheduler.reset_prefix_cache(reset_running_requests=True)
+
+    assert requests[1].num_computed_tokens == 0
+    assert requests[1].state_fork is None
+    assert all(
+        "child" not in manager.req_to_blocks
+        for manager in scheduler.kv_cache_manager.coordinator.single_type_managers
+    )
+    scheduler.finish_requests("source", RequestStatus.FINISHED_ABORTED)
+    resumed = scheduler.schedule()
+    assert resumed.num_scheduled_tokens == {"child": 49}
 
 
 def test_state_fork_source_abort_falls_back_without_stranding_children(monkeypatch):
