@@ -853,6 +853,16 @@ class WorkerProc:
     def worker_main(*args, **kwargs):
         """Worker initialization and execution loops.
         This runs a background process"""
+        from vllm.plugins.evidence import bind_process_identity
+
+        parallel_config = kwargs["vllm_config"].parallel_config
+        worker_rank = kwargs.get("rank", 0)
+        worker_ordinal = (
+            parallel_config.data_parallel_index * (parallel_config.world_size)
+            + worker_rank
+        )
+        bind_process_identity("worker", worker_ordinal)
+
         # Signal handler used for graceful termination.
         # SystemExit exception is only raised once to allow this and worker
         # processes to terminate without error
