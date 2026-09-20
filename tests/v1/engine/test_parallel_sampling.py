@@ -6,8 +6,9 @@ import pytest
 from vllm import SamplingParams
 from vllm.outputs import CompletionOutput
 from vllm.sampling_params import RequestOutputKind
-from vllm.v1.engine import EngineCoreRequest
+from vllm.v1.engine import EngineCoreOutputs, EngineCoreRequest
 from vllm.v1.engine.parallel_sampling import ParentRequest
+from vllm.v1.metrics.stats import SchedulerStats, StateForkStats
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 
 
@@ -107,6 +108,30 @@ def test_state_fork_intent_survives_engine_core_wire_round_trip() -> None:
     decoded = MsgpackDecoder(EngineCoreRequest).decode(encoded)
 
     assert decoded.state_fork == request.state_fork
+
+
+def test_state_fork_stats_survive_engine_core_wire_round_trip() -> None:
+    outputs = EngineCoreOutputs(
+        scheduler_stats=SchedulerStats(
+            state_fork_stats=StateForkStats(
+                accepted_groups=1,
+                accepted_children=2,
+                inherited_tokens=96,
+                shared_block_references=6,
+                rejection_reasons={"child_finished": 1},
+                active_groups=1,
+                active_children=2,
+            )
+        )
+    )
+
+    encoded = MsgpackEncoder().encode(outputs)
+    decoded = MsgpackDecoder(EngineCoreOutputs).decode(encoded)
+
+    assert decoded.scheduler_stats is not None
+    assert decoded.scheduler_stats.state_fork_stats == (
+        outputs.scheduler_stats.state_fork_stats
+    )
 
 
 def test_state_fork_rejects_prompt_embeddings() -> None:

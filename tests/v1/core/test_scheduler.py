@@ -202,7 +202,7 @@ def test_state_fork_children_wait_for_completed_source_then_share_prefix(monkeyp
     assert requests[1].status == RequestStatus.WAITING
     assert requests[2].status == RequestStatus.WAITING
 
-    scheduler.update_from_output(
+    engine_outputs = scheduler.update_from_output(
         first,
         ModelRunnerOutput(
             req_ids=["source"],
@@ -227,6 +227,25 @@ def test_state_fork_children_wait_for_completed_source_then_share_prefix(monkeyp
                 for block in child_blocks
             )
 
+    stats = next(
+        output.scheduler_stats
+        for output in engine_outputs.values()
+        if output.scheduler_stats is not None
+    )
+    assert stats is not None
+    assert stats.state_fork_stats.accepted_groups == 1
+    assert stats.state_fork_stats.accepted_children == 2
+    assert stats.state_fork_stats.inherited_tokens == 96
+    assert stats.state_fork_stats.shared_block_references == 6
+    assert stats.state_fork_stats.active_groups == 1
+    assert stats.state_fork_stats.active_children == 2
+    drained = scheduler.make_stats()
+    assert drained is not None
+    assert drained.state_fork_stats.accepted_groups == 0
+    assert drained.state_fork_stats.inherited_tokens == 0
+    assert drained.state_fork_stats.active_groups == 1
+    assert drained.state_fork_stats.active_children == 2
+
     scheduler.finish_requests("source", RequestStatus.FINISHED_ABORTED)
     assert "source" in scheduler._published_state_fork_sources
     assert requests[1].state_fork is not None
@@ -239,6 +258,10 @@ def test_state_fork_children_wait_for_completed_source_then_share_prefix(monkeyp
     assert requests[2].state_fork is not None
     scheduler.finish_requests("child-2", RequestStatus.FINISHED_ABORTED)
     assert "source" not in scheduler._published_state_fork_sources
+    final_stats = scheduler.make_stats()
+    assert final_stats is not None
+    assert final_stats.state_fork_stats.active_groups == 0
+    assert final_stats.state_fork_stats.active_children == 0
 
 
 def test_state_fork_source_abort_falls_back_without_stranding_children(monkeypatch):
@@ -259,6 +282,12 @@ def test_state_fork_source_abort_falls_back_without_stranding_children(monkeypat
     assert requests[1].state_fork_rejection_reason == (
         "source finished before fork publication"
     )
+    stats = scheduler.make_stats()
+    assert stats is not None
+    assert stats.state_fork_stats.rejected_groups == 1
+    assert stats.state_fork_stats.rejected_children == 1
+    assert stats.state_fork_stats.rejection_reasons == {"source_finished": 1}
+    assert stats.state_fork_stats.active_groups == 0
 
     output = scheduler.schedule()
     assert output.num_scheduled_tokens == {"child": 49}
@@ -284,6 +313,11 @@ def test_state_fork_child_abort_releases_siblings_to_independent_execution(
     assert requests[2].state_fork_rejection_reason == (
         "child finished before fork publication"
     )
+    stats = scheduler.make_stats()
+    assert stats is not None
+    assert stats.state_fork_stats.rejected_groups == 1
+    assert stats.state_fork_stats.rejected_children == 1
+    assert stats.state_fork_stats.rejection_reasons == {"child_finished": 1}
 
     output = scheduler.schedule()
     assert set(output.num_scheduled_tokens) == {"source", "child-2"}
@@ -314,7 +348,7 @@ def test_state_fork_duplicate_child_index_falls_back_atomically(monkeypatch):
         scheduler.add_request(request)
 
     first = scheduler.schedule()
-    scheduler.update_from_output(
+    engine_outputs = scheduler.update_from_output(
         first,
         ModelRunnerOutput(
             req_ids=["source"],
@@ -332,6 +366,15 @@ def test_state_fork_duplicate_child_index_falls_back_atomically(monkeypatch):
         assert child.state_fork_rejection_reason == (
             "state fork child indices are incomplete or duplicated"
         )
+    stats = next(
+        output.scheduler_stats
+        for output in engine_outputs.values()
+        if output.scheduler_stats is not None
+    )
+    assert stats is not None
+    assert stats.state_fork_stats.rejected_groups == 1
+    assert stats.state_fork_stats.rejected_children == 2
+    assert stats.state_fork_stats.rejection_reasons == {"child_indices_invalid": 1}
 
 
 def test_state_fork_cache_prepare_failure_falls_back_without_stranding(
@@ -357,7 +400,7 @@ def test_state_fork_cache_prepare_failure_falls_back_without_stranding(
     monkeypatch.setattr(
         scheduler.kv_cache_manager, "fork_cached_prefixes", fail_prepare
     )
-    scheduler.update_from_output(
+    engine_outputs = scheduler.update_from_output(
         first,
         ModelRunnerOutput(
             req_ids=["source"],
@@ -373,6 +416,15 @@ def test_state_fork_cache_prepare_failure_falls_back_without_stranding(
     assert child.num_computed_tokens == 0
     assert child.state_fork is None
     assert child.state_fork_rejection_reason == ("injected state-fork prepare failure")
+    stats = next(
+        output.scheduler_stats
+        for output in engine_outputs.values()
+        if output.scheduler_stats is not None
+    )
+    assert stats is not None
+    assert stats.state_fork_stats.rejected_groups == 1
+    assert stats.state_fork_stats.rejected_children == 1
+    assert stats.state_fork_stats.rejection_reasons == {"cache_attachment_failed": 1}
     assert scheduler.schedule().num_scheduled_tokens["child"] > 0
 
 

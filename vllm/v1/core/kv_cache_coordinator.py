@@ -31,6 +31,11 @@ from vllm.v1.kv_cache_interface import (
 from vllm.v1.request import Request
 
 
+class ForkedPrefixAllocation(NamedTuple):
+    inherited_tokens: int
+    shared_block_references: int
+
+
 def _validate_prefix_cache_retention_interval(
     retention_interval: int | None,
     scheduler_block_size: int,
@@ -263,7 +268,7 @@ class KVCacheCoordinator(ABC):
         child_request_ids: Sequence[str],
         block_hashes: list[BlockHash],
         max_cache_hit_length: int,
-    ) -> int:
+    ) -> ForkedPrefixAllocation:
         """Atomically attach one completed source prefix to child requests.
 
         The source must still own every non-null block selected by the normal
@@ -272,7 +277,8 @@ class KVCacheCoordinator(ABC):
         table is changed. This is the scheduler-side ownership transaction;
         device completion is fenced by its caller before entry.
 
-        Returns the common number of source tokens inherited by every child.
+        Returns the common source tokens inherited by every child and the
+        total non-null block references acquired across all children/groups.
         """
         children = tuple(child_request_ids)
         if not children:
@@ -352,7 +358,7 @@ class KVCacheCoordinator(ABC):
             ):
                 manager.commit_prepared_computed_blocks_allocation(group_plan, ())
 
-        return num_computed_tokens
+        return ForkedPrefixAllocation(num_computed_tokens, len(touch_blocks))
 
     def allocate_new_blocks(
         self,

@@ -9,7 +9,10 @@ from typing import Literal, overload
 from vllm import envs
 from vllm.distributed.kv_events import BlockStored, KVCacheEvent
 from vllm.logger import init_logger
-from vllm.v1.core.kv_cache_coordinator import get_kv_cache_coordinator
+from vllm.v1.core.kv_cache_coordinator import (
+    ForkedPrefixAllocation,
+    get_kv_cache_coordinator,
+)
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock
 from vllm.v1.kv_cache_interface import (
@@ -306,7 +309,7 @@ class KVCacheManager:
         source_request_id: str,
         child_requests: Sequence[Request],
         fork_at_tokens: int,
-    ) -> int:
+    ) -> ForkedPrefixAllocation:
         """Attach the source's completed immutable prefix to all children."""
         if not self.enable_caching:
             raise ValueError("state fork requires prefix caching")

@@ -55,7 +55,7 @@ from vllm.v1.core.sched.utils import check_stop, remove_all
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.perf import ModelMetrics, PerfStats
-from vllm.v1.metrics.stats import PrefixCacheStats, SchedulerStats
+from vllm.v1.metrics.stats import PrefixCacheStats, SchedulerStats, StateForkStats
 from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm.v1.spec_decode.dynamic.utils import build_dynamic_sd_schedule_lookup
@@ -64,6 +64,12 @@ from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
 
 logger = init_logger(__name__)
+
+
+class _StateForkPublicationError(ValueError):
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 class Scheduler(SchedulerInterface):
@@ -176,6 +182,7 @@ class Scheduler(SchedulerInterface):
         # inert for ordinary HUST requests and never change their queueing.
         self._state_fork_children: defaultdict[str, set[str]] = defaultdict(set)
         self._published_state_fork_sources: set[str] = set()
+        self.state_fork_stats = StateForkStats()
         # Scheduling policy
         try:
             self.policy = SchedulingPolicy(self.scheduler_config.policy)
@@ -2189,7 +2196,9 @@ class Scheduler(SchedulerInterface):
             and request.request_id not in self._published_state_fork_sources
         ):
             self._reject_state_fork_children(
-                request.request_id, "source finished before fork publication"
+                request.request_id,
+                "source_finished",
+                "source finished before fork publication",
             )
 
         self._inflight_prefills.discard(request)
@@ -2241,12 +2250,19 @@ class Scheduler(SchedulerInterface):
                     or child_intent.group_id != intent.group_id
                     or child_intent.num_children != intent.num_children
                 ):
-                    raise ValueError("state fork child/source intent mismatch")
+                    raise _StateForkPublicationError(
+                        "intent_mismatch", "state fork child/source intent mismatch"
+                    )
                 child_indices.add(child_intent.child_index)
                 if child.status != RequestStatus.WAITING:
-                    raise ValueError("state fork child left the waiting state")
+                    raise _StateForkPublicationError(
+                        "child_not_waiting", "state fork child left the waiting state"
+                    )
                 if child.num_computed_tokens != 0:
-                    raise ValueError("state fork child already owns computed state")
+                    raise _StateForkPublicationError(
+                        "child_already_owns_state",
+                        "state fork child already owns computed state",
+                    )
                 if (
                     child.prompt_token_ids != source.prompt_token_ids
                     or child.prompt_embeds is not None
@@ -2256,27 +2272,39 @@ class Scheduler(SchedulerInterface):
                     or child.cache_salt != source.cache_salt
                     or child.lora_request != source.lora_request
                 ):
-                    raise ValueError("state fork child is incompatible with its source")
+                    raise _StateForkPublicationError(
+                        "child_incompatible",
+                        "state fork child is incompatible with its source",
+                    )
 
             if child_indices != set(range(1, intent.num_children)):
-                raise ValueError(
-                    "state fork child indices are incomplete or duplicated"
+                raise _StateForkPublicationError(
+                    "child_indices_invalid",
+                    "state fork child indices are incomplete or duplicated",
                 )
 
             if children:
-                inherited_tokens = self.kv_cache_manager.fork_cached_prefixes(
+                allocation = self.kv_cache_manager.fork_cached_prefixes(
                     source_request_id=source.request_id,
                     child_requests=children,
                     fork_at_tokens=intent.fork_at_tokens,
                 )
                 for child in children:
-                    child.num_computed_tokens = inherited_tokens
+                    child.num_computed_tokens = allocation.inherited_tokens
                     if child.prefill_stats is not None:
                         child.prefill_stats.set(
                             num_prompt_tokens=child.num_prompt_tokens,
-                            num_local_cached_tokens=inherited_tokens,
+                            num_local_cached_tokens=allocation.inherited_tokens,
                             num_external_cached_tokens=0,
                         )
+                self.state_fork_stats.accepted_groups += 1
+                self.state_fork_stats.accepted_children += len(children)
+                self.state_fork_stats.inherited_tokens += (
+                    allocation.inherited_tokens * len(children)
+                )
+                self.state_fork_stats.shared_block_references += (
+                    allocation.shared_block_references
+                )
             self._published_state_fork_sources.add(source.request_id)
             logger.info(
                 "Published StateAxis state fork source=%s generation=%d "
@@ -2286,24 +2314,39 @@ class Scheduler(SchedulerInterface):
                 len(children),
                 children[0].num_computed_tokens if children else 0,
             )
+        except _StateForkPublicationError as exc:
+            self._reject_state_fork_children(
+                source.request_id, exc.reason_code, str(exc)
+            )
         except (AssertionError, RuntimeError, ValueError) as exc:
             # Preparation failures occur before the coordinator commits any
             # child ownership. Preserve correctness by reverting the opt-in
             # children to ordinary independent HUST requests.
-            self._reject_state_fork_children(source.request_id, str(exc))
+            self._reject_state_fork_children(
+                source.request_id, "cache_attachment_failed", str(exc)
+            )
 
-    def _reject_state_fork_children(self, source_request_id: str, reason: str) -> None:
+    def _reject_state_fork_children(
+        self, source_request_id: str, reason_code: str, reason: str
+    ) -> None:
         """Fall back to independent requests when a fork cannot be published."""
         self._published_state_fork_sources.discard(source_request_id)
-        for child_id in self._state_fork_children.pop(source_request_id, set()):
+        child_ids = self._state_fork_children.pop(source_request_id, None)
+        if child_ids is None:
+            return
+        rejected_children = 0
+        for child_id in child_ids:
             child = self.requests.get(child_id)
             if child is None or child.is_finished():
                 continue
+            rejected_children += 1
             child.state_fork_rejection_reason = reason
             child.state_fork = None
+        self.state_fork_stats.record_rejection(reason_code, rejected_children)
         logger.warning(
-            "Rejected StateAxis state fork source=%s reason=%s",
+            "Rejected StateAxis state fork source=%s reason_code=%s reason=%s",
             source_request_id,
+            reason_code,
             reason,
         )
 
@@ -2315,6 +2358,7 @@ class Scheduler(SchedulerInterface):
             if state_fork.source_request_id not in self._published_state_fork_sources:
                 self._reject_state_fork_children(
                     state_fork.source_request_id,
+                    "child_finished",
                     "child finished before fork publication",
                 )
             children = self._state_fork_children.get(state_fork.source_request_id)
@@ -2509,6 +2553,12 @@ class Scheduler(SchedulerInterface):
         connector_stats_payload = (
             kv_connector_stats.data if kv_connector_stats else None
         )
+        state_fork_stats = self.state_fork_stats
+        state_fork_stats.active_groups = len(self._state_fork_children)
+        state_fork_stats.active_children = sum(
+            len(children) for children in self._state_fork_children.values()
+        )
+        self.state_fork_stats = StateForkStats()
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
@@ -2523,6 +2573,7 @@ class Scheduler(SchedulerInterface):
             kv_connector_stats=connector_stats_payload,
             cudagraph_stats=cudagraph_stats,
             perf_stats=perf_stats,
+            state_fork_stats=state_fork_stats,
         )
 
     def make_spec_decoding_stats(
