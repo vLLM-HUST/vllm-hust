@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import pytest
+
 from vllm import SamplingParams
 from vllm.outputs import CompletionOutput
 from vllm.sampling_params import RequestOutputKind
 from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.engine.parallel_sampling import ParentRequest
+from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 
 
 def test_parent_request_to_output_stream() -> None:
@@ -66,6 +69,55 @@ def test_parent_request_to_output_final_only() -> None:
     assert ([output_0, output_1], True) == parent_request.get_outputs(
         "child_id_1", output_1
     )
+
+
+def test_parent_request_emits_opt_in_state_fork_intent() -> None:
+    request = make_request(
+        SamplingParams(n=3, extra_args={"stateaxis_state_fork": True})
+    )
+    request.prompt_token_ids = [11, 12, 13, 14]
+    parent_request = ParentRequest(request)
+
+    source = parent_request.get_state_fork(0)
+    child = parent_request.get_state_fork(2)
+    assert source is not None and child is not None
+    assert source.group_id == "parent_id"
+    assert source.source_request_id == "0_parent_id"
+    assert source.fork_at_tokens == 4
+    assert source.child_index == 0
+    assert source.num_children == 3
+    assert child.source_request_id == source.source_request_id
+    assert child.child_index == 2
+
+
+def test_parent_request_preserves_parallel_sampling_default() -> None:
+    parent_request = ParentRequest(make_request(SamplingParams(n=2)))
+    assert parent_request.get_state_fork(0) is None
+    assert parent_request.get_state_fork(1) is None
+
+
+def test_state_fork_intent_survives_engine_core_wire_round_trip() -> None:
+    request = make_request(
+        SamplingParams(n=2, extra_args={"stateaxis_state_fork": True})
+    )
+    request.prompt_token_ids = [11, 12, 13]
+    request.state_fork = ParentRequest(request).get_state_fork(1)
+
+    encoded = MsgpackEncoder().encode(request)
+    decoded = MsgpackDecoder(EngineCoreRequest).decode(encoded)
+
+    assert decoded.state_fork == request.state_fork
+
+
+def test_state_fork_rejects_prompt_embeddings() -> None:
+    request = make_request(
+        SamplingParams(n=2, extra_args={"stateaxis_state_fork": True})
+    )
+    request.prompt_token_ids = [11, 12, 13]
+    request.prompt_embeds = object()
+
+    with pytest.raises(ValueError, match="token-ID prompts"):
+        ParentRequest(request)
 
 
 def make_request(sampling_params: SamplingParams) -> EngineCoreRequest:

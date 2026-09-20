@@ -278,11 +278,17 @@ class LLMEngine:
 
         # Fan out child requests (for n>1).
         parent_req = ParentRequest(request)
-        for idx in range(n):
+        child_indices = list(range(n))
+        if parent_req.state_fork_enabled:
+            # Register every dependent before the source can execute in a
+            # concurrent EngineCore. The scheduler still runs the source first.
+            child_indices = [*range(1, n), 0]
+        for position, idx in enumerate(child_indices):
             request_id, child_params = parent_req.get_child_info(idx)
-            child_request = request if idx == n - 1 else copy(request)
+            child_request = request if position == n - 1 else copy(request)
             child_request.request_id = request_id
             child_request.sampling_params = child_params
+            child_request.state_fork = parent_req.get_state_fork(idx)
 
             # Make a new RequestState and queue.
             self.output_processor.add_request(

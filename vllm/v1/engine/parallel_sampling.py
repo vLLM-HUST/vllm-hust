@@ -6,7 +6,7 @@ from typing import cast
 
 from vllm.outputs import CompletionOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
-from vllm.v1.engine import EngineCoreRequest
+from vllm.v1.engine import EngineCoreRequest, StateForkRequest
 from vllm.v1.metrics.stats import IterationStats
 
 
@@ -32,6 +32,8 @@ class ParentRequest:
 
     # To efficiently obtain child sampling params
     cached_child_sampling_params: SamplingParams | None
+    state_fork_enabled: bool
+    fork_at_tokens: int
 
     def __init__(self, request: EngineCoreRequest) -> None:
         assert request.external_req_id is not None
@@ -48,6 +50,22 @@ class ParentRequest:
         )
         self.max_num_generation_tokens = 0
         self.cached_child_sampling_params = None
+        extra_args = sampling_params.extra_args or {}
+        self.state_fork_enabled = extra_args.get("stateaxis_state_fork") is True
+        if self.state_fork_enabled:
+            if request.prompt_token_ids is None or request.prompt_embeds is not None:
+                raise ValueError(
+                    "stateaxis_state_fork requires token-ID prompts; prompt "
+                    "embeddings and mixed prompts are not supported"
+                )
+            if request.cache_salt is not None:
+                raise ValueError(
+                    "stateaxis_state_fork does not support cache_salt because "
+                    "children must inherit the source cache identity"
+                )
+            self.fork_at_tokens = len(request.prompt_token_ids)
+        else:
+            self.fork_at_tokens = 0
 
     def _get_child_sampling_params(
         self,
@@ -92,6 +110,18 @@ class ParentRequest:
         child_req_id = f"{index}_{self.request_id}"
         self.child_requests.add(child_req_id)
         return child_req_id, self._get_child_sampling_params(index)
+
+    def get_state_fork(self, index: int) -> StateForkRequest | None:
+        """Return the opt-in lifecycle carried across the EngineCore wire."""
+        if not self.state_fork_enabled:
+            return None
+        return StateForkRequest(
+            group_id=self.request_id,
+            source_request_id=f"0_{self.request_id}",
+            fork_at_tokens=self.fork_at_tokens,
+            child_index=index,
+            num_children=self.n,
+        )
 
     @property
     def n(self) -> int:
