@@ -183,6 +183,7 @@ class Scheduler(SchedulerInterface):
         self._state_fork_children: defaultdict[str, set[str]] = defaultdict(set)
         self._published_state_fork_sources: set[str] = set()
         self.state_fork_stats = StateForkStats()
+        self._next_state_lease_generation = 1
         # Scheduling policy
         try:
             self.policy = SchedulingPolicy(self.scheduler_config.policy)
@@ -1207,6 +1208,7 @@ class Scheduler(SchedulerInterface):
         if request.spec_token_ids:
             request.spec_token_ids = []
         request.num_preemptions += 1
+        self._renew_state_lease(request)
         if self.log_stats:
             request.record_event(EngineCoreEventType.PREEMPTED, timestamp)
 
@@ -2091,6 +2093,7 @@ class Scheduler(SchedulerInterface):
                 # Streaming-input session finished.
                 self.finish_requests(request.request_id, RequestStatus.FINISHED_ABORTED)
         else:
+            self._renew_state_lease(request)
             state_fork = request.state_fork
             if state_fork is not None:
                 if state_fork.fork_at_tokens != request.num_prompt_tokens:
@@ -2122,6 +2125,11 @@ class Scheduler(SchedulerInterface):
                 self.connector.on_new_request(request)
             if self.log_stats:
                 request.record_event(EngineCoreEventType.QUEUED)
+
+    def _renew_state_lease(self, request: Request) -> None:
+        """Assign a fresh scheduler-local generation to one ownership lifetime."""
+        request.state_lease_generation = self._next_state_lease_generation
+        self._next_state_lease_generation += 1
 
     def finish_requests(
         self, request_ids: str | Iterable[str] | None, finished_status: RequestStatus
@@ -2381,6 +2389,7 @@ class Scheduler(SchedulerInterface):
                 request.num_computed_tokens = 0
                 if request.spec_token_ids:
                     request.spec_token_ids = []
+                self._renew_state_lease(request)
 
     def _free_blocks(self, request: Request):
         assert request.is_finished()
