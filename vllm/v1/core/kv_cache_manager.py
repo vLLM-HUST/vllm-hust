@@ -23,6 +23,7 @@ from vllm.v1.core.kv_materialization import (
     emit_kv_materialization_runtime_event,
 )
 from vllm.v1.core.single_type_kv_cache_manager import MambaManager
+from vllm.v1.core.length_prediction import predicted_full_sequence_tokens
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     CrossAttentionSpec,
@@ -502,6 +503,7 @@ class KVCacheManager:
         reserved_blocks: int = 0,
         has_scheduled_reqs: bool = True,
         skip_zeroing_group_ids: tuple[int, ...] = (),
+        predicted_length: int | None = None,
     ) -> KVCacheBlocks | None:
         """Add slots for a request with new tokens to append.
 
@@ -536,6 +538,11 @@ class KVCacheManager:
                 this step, controls whether watermark is applied.
             skip_zeroing_group_ids: Groups whose external-token blocks will be
                 written by an async load and must not be zeroed concurrently.
+            predicted_length: Expected total output length in tokens from an
+                external predictor, or None. When set and the request is still
+                prefilling, the full-sequence gate plans for the predicted
+                output as well, clamped to the request's own output budget and
+                to ``max_model_len``. None keeps upstream behaviour.
 
         Blocks layout:
         ```
@@ -640,8 +647,12 @@ class KVCacheManager:
         prefill_end = max(request.num_prompt_tokens, request.num_tokens - 1)
 
         if full_sequence_must_fit:
-            # First check and fail if the full request sequence won't fit.
-            full_num_tokens = min(request.num_tokens, self.max_model_len)
+            # First check and fail if the full request sequence won't fit. A
+            # length prediction extends the plan by the predicted output, so
+            # admission becomes a prediction-aware reserve gate.
+            full_num_tokens = predicted_full_sequence_tokens(
+                request, predicted_length, self.max_model_len
+            )
 
             num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
                 request_id=request.request_id,
