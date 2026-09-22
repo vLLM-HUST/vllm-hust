@@ -65,6 +65,12 @@ from vllm.v1.core.sched.request_queue import (
 )
 from vllm.v1.core.sched.utils import check_stop, remove_all
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
+from vllm.v1.events import (
+    EventBus,
+    RequestFinished,
+    RequestKvReclaimed,
+    RequestPreempted,
+)
 from vllm.v1.kv_cache_interface import (
     KVCacheConfig,
     MambaSpec,
@@ -395,9 +401,14 @@ class Scheduler(SchedulerInterface):
         # is called once per scheduled step in FIFO order, so these stay in sync.
         self.sched_step_seq = 0
         self.processed_step_seq = 0
-        # FIFO of (fence_seq, blocks): blocks become safe to free once
-        # processed_step_seq >= fence_seq.
-        self.deferred_frees: deque[tuple[int, list[KVCacheBlock]]] = deque()
+        # FIFO of (fence_seq, blocks, request_id, session_id): blocks become
+        # safe to free once processed_step_seq >= fence_seq. The request
+        # identity travels with the entry so a deferred release can still
+        # name the request whose KV was returned; CoW-retained entries have
+        # no owning request and carry None.
+        self.deferred_frees: deque[
+            tuple[int, list[KVCacheBlock], str | None, str | None]
+        ] = deque()
 
         self.perf_metrics: ModelMetrics | None = None
         if self.log_stats and vllm_config.observability_config.enable_mfu_metrics:
@@ -1634,7 +1645,10 @@ class Scheduler(SchedulerInterface):
         )
         if self.aux_output_connector is not None:
             self.aux_output_connector.request_finished(request)
-        self._free_request_blocks(request)
+        kv_blocks, kv_reclaimed_now = self._free_request_blocks(request)
+        # Whether the preemption handed the block release to the deferred
+        # FIFO instead of returning the blocks to the pool now.
+        kv_reclaim_deferred = not kv_reclaimed_now
         self.encoder_cache_manager.free(request)
         self._inflight_prefills.discard(request)
         request.status = RequestStatus.PREEMPTED
@@ -1660,6 +1674,23 @@ class Scheduler(SchedulerInterface):
         # Put the request back to the waiting queue.
         self.waiting.prepend_request(request)
         self.reset_preempted_req_ids.add(request.request_id)
+
+        # Default-off typed event: this request lost its running slot and was
+        # re-queued. Emitted after the release above so name, timing and
+        # payload match the real lifecycle. A deferred release means the
+        # blocks are not back in the pool yet; that reclaim is reported later
+        # by RequestKvReclaimed.
+        if EventBus.enabled:
+            EventBus.emit(
+                RequestPreempted(
+                    request_id=request.request_id,
+                    # session_id only exists on session-scoped forks.
+                    session_id=getattr(request, "session_id", None),
+                    num_preemptions=request.num_preemptions,
+                    kv_blocks=kv_blocks,
+                    kv_reclaim_deferred=kv_reclaim_deferred,
+                )
+            )
 
     def _select_preemption_victim(self, request: Request, timestamp: float) -> Request:
         candidates = tuple(
@@ -2716,15 +2747,40 @@ class Scheduler(SchedulerInterface):
             self.finished_req_ids_dict[request.client_index].add(request_id)
 
         delay_free_blocks |= connector_delay_free_blocks
+        kv_blocks = 0
+        kv_reclaim_pending = delay_free_blocks
         if not delay_free_blocks:
-            self._free_blocks(request)
+            kv_blocks, reclaimed_now = self._free_blocks(request)
+            kv_reclaim_pending = not reclaimed_now
+
+        # Default-off typed event: this request ended (stopped, aborted or
+        # failed). Emitted after the block release so the event matches the
+        # real lifecycle; a connector-deferred release is reported by the
+        # flag and completed by a later RequestKvReclaimed.
+        if EventBus.enabled:
+            EventBus.emit(
+                RequestFinished(
+                    request_id=request.request_id,
+                    # session_id only exists on session-scoped forks.
+                    session_id=getattr(request, "session_id", None),
+                    prompt_tokens=request.num_prompt_tokens,
+                    output_tokens=request.num_output_tokens,
+                    sequence_tokens=(
+                        request.num_prompt_tokens + request.num_output_tokens
+                    ),
+                    kv_blocks=kv_blocks,
+                    kv_reclaim_deferred=kv_reclaim_pending,
+                    finished_reason=str(request.get_finished_reason()),
+                )
+            )
 
         return kv_xfer_params, ec_xfer_params
 
-    def _free_blocks(self, request: Request):
+    def _free_blocks(self, request: Request) -> tuple[int, bool]:
         assert request.is_finished()
-        self._free_request_blocks(request)
+        result = self._free_request_blocks(request)
         del self.requests[request.request_id]
+        return result
 
     @property
     def pause_state(self) -> PauseState:
@@ -2741,16 +2797,75 @@ class Scheduler(SchedulerInterface):
             request.last_sched_seq <= self.processed_step_seq
         )
 
-    def _free_request_blocks(self, request: Request):
+    def _request_kv_block_count(self, request: Request) -> int:
+        """Count the KV blocks the request currently holds.
+
+        Must be called *before* the blocks are released: the coordinator
+        drops the request's block bookkeeping on free. Only queried while
+        events are enabled, so the default path pays nothing for it.
+
+        Args:
+            request: The request whose blocks are counted.
+
+        Returns:
+            The number of blocks held, or 0 for a request that never
+            received blocks (for example one aborted while still waiting).
+
+        """
+        try:
+            return sum(
+                len(block_ids)
+                for block_ids in self.kv_cache_manager.get_block_ids(request.request_id)
+            )
+        except Exception:
+            # Observability must never disturb the scheduler hot path.
+            logger.debug(
+                "KV block count unavailable for request %s",
+                request.request_id,
+                exc_info=True,
+            )
+            return 0
+
+    def _free_request_blocks(self, request: Request) -> tuple[int, bool]:
         """Free the request's KV blocks, deferring the return to the block
         pool when an in-flight GPU step may still write them.
+
+        Args:
+            request: The request whose blocks are released.
+
+        Returns:
+            A ``(blocks, reclaimed_now)`` pair. ``reclaimed_now`` is False
+            when the release was queued in the deferred FIFO instead of
+            returning the blocks to the pool, and ``blocks`` is 0 when
+            events are disabled.
+
         """
         if self._request_blocks_can_be_freed(request):
+            kv_blocks = self._request_kv_block_count(request) if EventBus.enabled else 0
             self.kv_cache_manager.free(request)
-            return
+            # Default-off typed event: the blocks are back in the pool now.
+            if EventBus.enabled:
+                EventBus.emit(
+                    RequestKvReclaimed(
+                        request_id=request.request_id,
+                        session_id=getattr(request, "session_id", None),
+                        kv_blocks=kv_blocks,
+                        path="immediate",
+                    )
+                )
+            return kv_blocks, True
         blocks = self.kv_cache_manager.pop_blocks_for_free(request)
-        if blocks:
-            self.deferred_frees.append((self.sched_step_seq, blocks))
+        if not blocks:
+            return 0, True
+        self.deferred_frees.append(
+            (
+                self.sched_step_seq,
+                blocks,
+                request.request_id,
+                getattr(request, "session_id", None),
+            )
+        )
+        return len(blocks), False
 
     def _free_cow_retained_blocks(
         self, blocks: list[KVCacheBlock], fence_seq: int
@@ -2761,7 +2876,7 @@ class Scheduler(SchedulerInterface):
         if not self.defer_block_free or fence_seq <= self.processed_step_seq:
             self.kv_cache_manager.block_pool.free_blocks(blocks)
             return
-        self.deferred_frees.append((fence_seq, blocks[::-1]))
+        self.deferred_frees.append((fence_seq, blocks[::-1], None, None))
 
     def _drain_deferred_frees(self):
         """Return deferred blocks whose fence step has completed.
@@ -2771,12 +2886,24 @@ class Scheduler(SchedulerInterface):
         pending one; any satisfied entry behind it is merely freed later.
         """
         while self.deferred_frees:
-            fence, _ = self.deferred_frees[0]
+            fence, _, _, _ = self.deferred_frees[0]
             if fence > self.processed_step_seq:
                 break
-            _, blocks = self.deferred_frees.popleft()
+            _, blocks, request_id, session_id = self.deferred_frees.popleft()
             # Free in reverse order so that the tail blocks are evicted first.
             self.kv_cache_manager.block_pool.free_blocks(reversed(blocks))
+            # Default-off typed event: the deferred release lands here, which
+            # is the point where those blocks actually return to the pool.
+            # CoW-retained bookkeeping has no owning request and stays silent.
+            if EventBus.enabled and request_id is not None:
+                EventBus.emit(
+                    RequestKvReclaimed(
+                        request_id=request_id,
+                        session_id=session_id,
+                        kv_blocks=len(blocks),
+                        path="deferred",
+                    )
+                )
 
     def get_num_unfinished_requests(self) -> int:
         if self._pause_state == PauseState.PAUSED_ALL:
