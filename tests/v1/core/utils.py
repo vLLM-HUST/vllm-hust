@@ -240,6 +240,7 @@ def create_requests(
     same_prompt: bool = False,
     block_size: int = 16,
     req_ids: list[str] | None = None,
+    predicted_length: int | list[int | None] | None = None,
 ) -> list[Request]:
     global _none_hash_initialized
     if not _none_hash_initialized:
@@ -305,6 +306,11 @@ def create_requests(
             mm_features.append(mm_feature)
 
         prompt_token_ids = [0] * num_tokens if same_prompt else [i] * num_tokens
+        if isinstance(predicted_length, list):
+            request_predicted_length = predicted_length[i]
+        else:
+            request_predicted_length = predicted_length
+
         request = Request(
             request_id=req_ids[i],
             prompt_token_ids=prompt_token_ids,
@@ -312,6 +318,7 @@ def create_requests(
             pooling_params=None,
             mm_features=mm_features if mm_features else None,
             block_hasher=block_hasher,
+            predicted_length=request_predicted_length,
         )
         requests.append(request)
     return requests
