@@ -158,6 +158,10 @@ class EngineCoreRequest(
     abort_immediately: bool = False
 
     session_id: str | None = None
+
+    # Predicted total output length (tokens) from an external length
+    # predictor, read before admission. None means no prediction.
+    predicted_length: int | None = None
     kv_hints: KvHintsEnvelope | None = None
 
     @property

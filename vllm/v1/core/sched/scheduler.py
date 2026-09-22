@@ -1219,6 +1219,7 @@ class Scheduler(SchedulerInterface):
                     full_sequence_must_fit=self.scheduler_reserve_full_isl,
                     reserved_blocks=reserved_blocks,
                     has_scheduled_reqs=bool(self.running),
+                    predicted_length=request.predicted_length,
                 )
 
                 if new_blocks is None:

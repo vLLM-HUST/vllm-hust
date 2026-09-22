@@ -447,6 +447,13 @@ class InputProcessor:
                     )
                 )
 
+        # Client-supplied decode-length prediction. It travels inside
+        # sampling_params.extra_args so the value survives the msgspec request
+        # channel; see vllm.v1.core.length_prediction for how it is bounded.
+        predicted_length: int | None = None
+        if sampling_params is not None and sampling_params.extra_args:
+            predicted_length = sampling_params.extra_args.get("predicted_length")
+
         return EngineCoreRequest(
             request_id=request_id,
             prompt_token_ids=prompt_token_ids,
@@ -464,6 +471,7 @@ class InputProcessor:
             resumable=resumable,
             session_id=session_id,
             kv_hints=kv_hints,
+            predicted_length=predicted_length,
         )
 
     def _validate_prompt_len(
