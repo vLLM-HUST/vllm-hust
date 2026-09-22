@@ -16,6 +16,7 @@ from vllm.v1.core.kv_cache_coordinator import (
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock, KVCacheBlockCopy
 from vllm.v1.core.single_type_kv_cache_manager import MambaManager
+from vllm.v1.core.length_prediction import predicted_full_sequence_tokens
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     CrossAttentionSpec,
@@ -381,6 +382,7 @@ class KVCacheManager:
         full_sequence_must_fit: bool = False,
         reserved_blocks: int = 0,
         has_scheduled_reqs: bool = True,
+        predicted_length: int | None = None,
     ) -> KVCacheBlocks | None:
         """Add slots for a request with new tokens to append.
 
@@ -413,6 +415,11 @@ class KVCacheManager:
                 blocks an already in-flight (prefilling) sequence is relying on.
             has_scheduled_reqs: Whether any requests are already scheduled to run
                 this step, controls whether watermark is applied.
+            predicted_length: Expected total output length in tokens from an
+                external predictor, or None. When set and the request is still
+                prefilling, the full-sequence gate plans for the predicted
+                output as well, clamped to the request's own output budget and
+                to ``max_model_len``. None keeps upstream behaviour.
 
         Blocks layout:
         ```
@@ -513,8 +520,12 @@ class KVCacheManager:
             watermark_blocks = self.watermark_blocks
 
         if full_sequence_must_fit:
-            # First check and fail if the full request sequence won't fit.
-            full_num_tokens = min(request.num_tokens, self.max_model_len)
+            # First check and fail if the full request sequence won't fit. A
+            # length prediction extends the plan by the predicted output, so
+            # admission becomes a prediction-aware reserve gate.
+            full_num_tokens = predicted_full_sequence_tokens(
+                request, predicted_length, self.max_model_len
+            )
 
             num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
                 request_id=request.request_id,
