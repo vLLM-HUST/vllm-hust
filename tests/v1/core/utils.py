@@ -7,6 +7,7 @@ import vllm.envs as envs
 from tests.v1.kv_connector.unit.utils import MockKVConfig
 from vllm.config import (
     CacheConfig,
+    DiffusionConfig,
     ECTransferConfig,
     KVTransferConfig,
     ModelConfig,
@@ -79,6 +80,8 @@ def create_scheduler(
     preemption_policy: str | type[object] | None = None,
     batch_admission_policy: str | type[object] | None = None,
     scheduling_policy: SchedulerPolicy = "fcfs",
+    diffusion_canvas_length: int | None = None,
+    scheduler_cls: type[Scheduler] | None = None,
 ) -> Scheduler | AsyncScheduler:
     """Create scheduler under test.
 
@@ -182,6 +185,12 @@ def create_scheduler(
         else None
     )
 
+    diffusion_config: DiffusionConfig | None = None
+    if diffusion_canvas_length is not None:
+        # A diffusion checkpoint declares its canvas in the HF config.
+        model_config.hf_config.canvas_length = diffusion_canvas_length
+        diffusion_config = DiffusionConfig(canvas_length=diffusion_canvas_length)
+
     vllm_config = VllmConfig(
         scheduler_config=scheduler_config,
         model_config=model_config,
@@ -192,6 +201,7 @@ def create_scheduler(
         ),
         kv_transfer_config=kv_transfer_config,
         speculative_config=speculative_config,
+        diffusion_config=diffusion_config,
         ec_transfer_config=ec_transfer_config,
         observability_config=ObservabilityConfig(
             per_request_spec_decode_metrics=per_request_spec_decode_metrics,
@@ -211,7 +221,8 @@ def create_scheduler(
     )
     cache_config.num_gpu_blocks = num_blocks
     register_all_kvcache_specs(vllm_config)
-    scheduler_cls = AsyncScheduler if async_scheduling else Scheduler
+    if scheduler_cls is None:
+        scheduler_cls = AsyncScheduler if async_scheduling else Scheduler
     scheduler = scheduler_cls(
         vllm_config=vllm_config,
         kv_cache_config=kv_cache_config,
