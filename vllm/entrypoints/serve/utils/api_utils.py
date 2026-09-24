@@ -30,7 +30,13 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 logger = init_logger(__name__)
 
-_ASCEND_TORCH_PREFLIGHT_TIMEOUT_S = 20
+try:
+    _ASCEND_TORCH_PREFLIGHT_TIMEOUT_S = max(
+        1.0,
+        float(os.environ.get("VLLM_ASCEND_TORCH_PREFLIGHT_TIMEOUT_S", "20")),
+    )
+except ValueError:
+    _ASCEND_TORCH_PREFLIGHT_TIMEOUT_S = 20.0
 _ASCEND_TORCH_PREFLIGHT_CMDS = {"serve", "launch"}
 _ASCEND_EXPLICIT_BACKENDS = {"ascend", "npu"}
 
