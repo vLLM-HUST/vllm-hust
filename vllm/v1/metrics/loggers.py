@@ -531,6 +531,12 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             gauge_kv_cache_usage, per_engine_labelvalues
         )
 
+        self.gauge_output_budget_admission_events = self._gauge_cls(
+            name="vllm:output_budget_admission_events",
+            documentation="Cumulative declared-output-budget admission checks.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames + ["event"],
+        )
         self.gauge_preemption_policy_events = self._gauge_cls(
             name="vllm:preemption_policy_events",
             documentation=(
@@ -1118,6 +1124,13 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 scheduler_stats.num_skipped_waiting_reqs
             )
             self.gauge_kv_cache_usage[engine_idx].set(scheduler_stats.kv_cache_usage)
+            if (
+                budget_stats := scheduler_stats.output_budget_admission_stats
+            ) is not None:
+                for budget_event in ("checks", "extended_checks", "deferred", "passed"):
+                    self.gauge_output_budget_admission_events.labels(
+                        *self.per_engine_labelvalues[engine_idx], budget_event
+                    ).set(budget_stats[budget_event])
             if (policy_stats := scheduler_stats.preemption_policy_stats) is not None:
                 labels = self.per_engine_labelvalues[engine_idx]
                 policy = str(policy_stats["policy_name"])

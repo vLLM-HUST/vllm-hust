@@ -933,7 +933,11 @@ class Scheduler(SchedulerInterface):
                     num_external_computed_tokens=num_external_computed_tokens,
                     delay_cache_blocks=load_kv_async,
                     num_encoder_tokens=num_encoder_tokens,
-                    full_sequence_must_fit=self.scheduler_reserve_full_isl,
+                    full_sequence_must_fit=(
+                        self.scheduler_reserve_full_isl
+                        or self.scheduler_config.scheduler_reserve_output_budget
+                    ),
+                    reserve_output_budget=self.scheduler_config.scheduler_reserve_output_budget,
                     reserved_blocks=reserved_blocks,
                     has_scheduled_reqs=bool(self.running),
                 )
@@ -2441,6 +2445,9 @@ class Scheduler(SchedulerInterface):
             num_skipped_waiting_reqs=len(self.skipped_waiting),
             kv_cache_usage=self.kv_cache_manager.usage,
             preemption_policy_stats=self.preemption_policy.export_stats(),
+            output_budget_admission_stats=dict(
+                self.kv_cache_manager.output_budget_admission_stats
+            ),
             batch_admission_policy_stats=(self.batch_admission_policy.export_stats()),
             prefix_cache_stats=prefix_cache_stats,
             connector_prefix_cache_stats=connector_prefix_cache_stats,

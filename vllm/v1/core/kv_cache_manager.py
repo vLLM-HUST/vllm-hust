@@ -12,6 +12,7 @@ from vllm.utils.math_utils import cdiv
 from vllm.v1.core.kv_cache_coordinator import get_kv_cache_coordinator
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock
+from vllm.v1.core.output_budget import admission_sequence_tokens
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     CrossAttentionSpec,
@@ -139,6 +140,12 @@ class KVCacheManager:
         self.use_eagle = use_eagle
         self.log_stats = log_stats
         self.metrics_collector = metrics_collector
+        self.output_budget_admission_stats = {
+            "checks": 0,
+            "extended_checks": 0,
+            "deferred": 0,
+            "passed": 0,
+        }
         # FIXME: make prefix cache stats conditional on log_stats. We still need
         # this comment because when the log stats is enabled there are still
         # potential configs we could expose in the future.
@@ -256,6 +263,7 @@ class KVCacheManager:
         delay_cache_blocks: bool = False,
         num_encoder_tokens: int = 0,
         full_sequence_must_fit: bool = False,
+        reserve_output_budget: bool = False,
         reserved_blocks: int = 0,
         has_scheduled_reqs: bool = True,
     ) -> KVCacheBlocks | None:
@@ -375,7 +383,13 @@ class KVCacheManager:
 
         if full_sequence_must_fit:
             # First check and fail if the full request sequence won't fit.
-            full_num_tokens = min(request.num_tokens, self.max_model_len)
+            full_num_tokens = admission_sequence_tokens(
+                request, self.max_model_len, reserve_output_budget=reserve_output_budget
+            )
+            if reserve_output_budget:
+                self.output_budget_admission_stats["checks"] += 1
+                if full_num_tokens > min(request.num_tokens, self.max_model_len):
+                    self.output_budget_admission_stats["extended_checks"] += 1
 
             num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
                 request_id=request.request_id,
@@ -388,7 +402,11 @@ class KVCacheManager:
             )
             required_blocks = num_blocks_to_allocate + watermark_blocks
             if required_blocks > self.block_pool.get_num_free_blocks():
+                if reserve_output_budget:
+                    self.output_budget_admission_stats["deferred"] += 1
                 return None
+            if reserve_output_budget:
+                self.output_budget_admission_stats["passed"] += 1
 
         num_tokens_main_model = total_computed_tokens + num_new_tokens
         num_tokens_need_slot = min(

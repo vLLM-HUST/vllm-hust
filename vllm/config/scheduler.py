@@ -165,6 +165,11 @@ class SchedulerConfig:
     checking the first chunk. Prevents over-admission and KV cache thrashing
     with chunked prefill."""
 
+    scheduler_reserve_output_budget: bool = False
+    """Include declared output budgets in the full-sequence admission check
+    for ignore_eos requests. This is a known-budget mode, not a learned length
+    predictor; requests with natural stopping keep the native check."""
+
     watermark: float = Field(default=0.0, ge=0.0, lt=1.0)
     """Fraction of total KV cache blocks to keep free (the watermark) when
     admitting waiting or preempted requests into the running queue. This headroom

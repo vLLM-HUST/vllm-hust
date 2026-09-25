@@ -181,6 +181,7 @@ class SchedulerStats:
     current_wave: int = 0
 
     kv_cache_usage: float = 0.0
+    output_budget_admission_stats: dict[str, int] | None = None
     preemption_policy_stats: dict[str, str | int | bool] | None = None
     batch_admission_policy_stats: dict[str, str | int | bool] | None = None
 
