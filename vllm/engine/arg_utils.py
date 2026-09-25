@@ -652,6 +652,13 @@ class EngineArgs:
     enable_mm_processor_stats: bool = ObservabilityConfig.enable_mm_processor_stats
     scheduling_policy: SchedulerPolicy = SchedulerConfig.policy
     scheduler_cls: str | type[object] | None = SchedulerConfig.scheduler_cls
+    preemption_policy: str | type[object] | None = SchedulerConfig.preemption_policy
+    batch_admission_policy: str | type[object] | None = (
+        SchedulerConfig.batch_admission_policy
+    )
+    batch_admission_policy_config: dict[str, Any] | None = (
+        SchedulerConfig.batch_admission_policy_config
+    )
 
     pooler_config: PoolerConfig | None = ModelConfig.pooler_config
     compilation_config: CompilationConfig = get_field(VllmConfig, "compilation_config")
@@ -1449,6 +1456,17 @@ class EngineArgs:
             "--scheduler-cls", **scheduler_kwargs["scheduler_cls"]
         )
         scheduler_group.add_argument(
+            "--preemption-policy", **scheduler_kwargs["preemption_policy"]
+        )
+        scheduler_group.add_argument(
+            "--batch-admission-policy",
+            **scheduler_kwargs["batch_admission_policy"],
+        )
+        scheduler_group.add_argument(
+            "--batch-admission-policy-config",
+            **scheduler_kwargs["batch_admission_policy_config"],
+        )
+        scheduler_group.add_argument(
             "--scheduler-reserve-full-isl",
             **scheduler_kwargs["scheduler_reserve_full_isl"],
         )
@@ -2161,6 +2179,9 @@ class EngineArgs:
             scheduler_cls=self.scheduler_cls,
             max_num_partial_prefills=self.max_num_partial_prefills,
             max_long_partial_prefills=self.max_long_partial_prefills,
+            preemption_policy=self.preemption_policy,
+            batch_admission_policy=self.batch_admission_policy,
+            batch_admission_policy_config=self.batch_admission_policy_config,
             long_prefill_token_threshold=self.long_prefill_token_threshold,
             scheduler_reserve_full_isl=self.scheduler_reserve_full_isl,
             watermark=self.watermark,

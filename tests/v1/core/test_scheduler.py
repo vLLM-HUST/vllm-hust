@@ -26,7 +26,12 @@ from vllm.sampling_params import SamplingParams, StructuredOutputsParams
 from vllm.utils.hashing import sha256
 from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
+from vllm.v1.core.sched.batch_admission import (
+    BatchAdmission,
+    BatchAdmissionContext,
+)
 from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
+from vllm.v1.core.sched.preemption import PreemptionContext
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.engine import FinishReason
 from vllm.v1.kv_cache_interface import (
@@ -41,6 +46,22 @@ from vllm.v1.structured_output import StructuredOutputManager
 from .utils import EOS_TOKEN_ID, create_requests, create_scheduler, mock_kv
 
 pytestmark = pytest.mark.cpu_test
+
+
+class SelectFirstPreemptionPolicy:
+    """Select the opposite victim from the built-in FCFS policy."""
+
+    def select_victim(self, context: PreemptionContext) -> str:
+        return context.candidates[0].request_id
+
+
+class OneRequestPerBatchPolicy:
+    def admit_batch(self, context: BatchAdmissionContext) -> BatchAdmission | None:
+        for request in context.requests:
+            batch_id = f"batch-{request.request_id}"
+            if batch_id not in context.in_flight_batch_ids:
+                return BatchAdmission(batch_id, (request.request_id,))
+        return None
 
 
 def test_add_requests():
@@ -984,6 +1005,84 @@ def test_preempt_during_execution():
     # sampled token id.
     assert len(requests[1].output_token_ids) == 1
     assert requests[1].output_token_ids[0] == 42
+
+
+def test_custom_preemption_policy_is_called_during_scheduling():
+    scheduler = create_scheduler(
+        max_num_batched_tokens=100,
+        block_size=16,
+        num_blocks=11,
+        enable_prefix_caching=False,
+        preemption_policy=SelectFirstPreemptionPolicy,
+    )
+    requests = create_requests(num_requests=2, num_tokens=80, block_size=16)
+
+    scheduler.add_request(requests[0])
+    output0 = scheduler.schedule()
+    scheduler.add_request(requests[1])
+    scheduler.schedule()
+    scheduler.update_from_output(
+        output0,
+        ModelRunnerOutput(
+            req_ids=[requests[0].request_id],
+            req_id_to_index={requests[0].request_id: 0},
+            sampled_token_ids=[[0]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
+    )
+
+    scheduler_output = scheduler.schedule()
+
+    assert requests[0].status == RequestStatus.PREEMPTED
+    assert scheduler.running == [requests[1]]
+    assert scheduler_output.preempted_req_ids == {requests[0].request_id}
+    assert scheduler.preemption_policy.export_stats()["calls"] == 1
+    assert scheduler.preemption_policy.export_stats()["selections"] == 1
+
+
+def test_batch_admission_policy_filters_without_mutating_scheduler_output():
+    scheduler = create_scheduler(
+        max_num_batched_tokens=100,
+        pipeline_parallel_size=2,
+        batch_admission_policy=OneRequestPerBatchPolicy,
+    )
+    requests = create_requests(num_requests=2, num_tokens=10)
+    for request in requests:
+        scheduler.add_request(request)
+
+    first = scheduler.schedule_batch(frozenset())
+    assert first is not None
+    first_batch_id, first_output = first
+    assert first_batch_id == f"batch-{requests[0].request_id}"
+    assert set(first_output.num_scheduled_tokens) == {requests[0].request_id}
+    assert not hasattr(first_output, "batch_id")
+
+    second = scheduler.schedule_batch(frozenset({first_batch_id}))
+    assert second is not None
+    second_batch_id, second_output = second
+    assert second_batch_id == f"batch-{requests[1].request_id}"
+    assert set(second_output.num_scheduled_tokens) == {requests[1].request_id}
+
+    scheduler.on_batch_complete(first_batch_id)
+    stats = scheduler.batch_admission_policy.export_stats()
+    assert stats["calls"] == 2
+    assert stats["admissions"] == 2
+    assert stats["completions"] == 1
+
+
+def test_batch_admission_policy_bypasses_requestless_maintenance_step(monkeypatch):
+    scheduler = create_scheduler(
+        pipeline_parallel_size=2,
+        batch_admission_policy=OneRequestPerBatchPolicy,
+    )
+    maintenance_output = Mock(spec=SchedulerOutput)
+    monkeypatch.setattr(scheduler, "_make_batch_request_snapshots", lambda _: ())
+    monkeypatch.setattr(scheduler, "schedule", lambda _: maintenance_output)
+
+    assert scheduler.schedule_batch(frozenset(), True) == (None, maintenance_output)
+    assert scheduler.batch_admission_policy.export_stats()["calls"] == 0
 
 
 def test_scheduler_reset_prefix_cache():
@@ -5211,3 +5310,14 @@ def test_async_load_reservation_prevents_wedge_e2e():
     assert b.status == RequestStatus.WAITING
     assert b.num_preemptions == 0
     assert b.request_id not in req_to_blocks
+
+
+def test_batch_snapshot_uses_engine_queue_tokens_without_request_mutation():
+    scheduler = create_scheduler(pipeline_parallel_size=2)
+    request = create_requests(num_requests=1, num_tokens=10)[0]
+    scheduler.add_request(request)
+    assert not hasattr(request, "num_in_flight_tokens")
+    snapshot = scheduler._make_batch_request_snapshots({request.request_id: 7})[0]
+    assert snapshot.num_in_flight_tokens == 7
+    assert scheduler._make_batch_request_snapshots()[0].num_in_flight_tokens == 0
+    assert not hasattr(request, "num_in_flight_tokens")

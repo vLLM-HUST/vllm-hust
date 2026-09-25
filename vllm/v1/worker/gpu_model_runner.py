@@ -896,6 +896,11 @@ class GPUModelRunner(
         self.valid_sampled_token_count_cpu: torch.Tensor | None = None
         self.draft_token_ids_cpu: torch.Tensor | None = None
         self.num_accepted_tokens_event: torch.Event | None = None
+        # Previous-step feedback must not alias the batch rows that condense()
+        # and request admission mutate before _prepare_inputs consumes it.
+        self.accepted_tokens_feedback_cpu = torch.ones_like(
+            self.input_batch.num_accepted_tokens_cpu_tensor, pin_memory=PIN_MEMORY
+        )
         if self.num_spec_tokens:
             self.draft_token_ids_event = torch.Event()
             self.num_accepted_tokens_event = torch.Event()
@@ -1548,9 +1553,7 @@ class GPUModelRunner(
                 bufs=self._get_mamba_bufs(),
                 num_reqs=num_reqs,
                 num_accepted_tokens_gpu=self.num_accepted_tokens.gpu,
-                num_accepted_tokens_cpu_tensor=(
-                    self.input_batch.num_accepted_tokens_cpu_tensor
-                ),
+                num_accepted_tokens_cpu_tensor=(self.accepted_tokens_feedback_cpu),
                 input_batch=self.input_batch,
                 kv_cache_config=self.kv_cache_config,
                 forward_context=self.compilation_config.static_forward_context,
@@ -2068,24 +2071,25 @@ class GPUModelRunner(
         if needs_cpu_accepted_counts:
             assert self.num_accepted_tokens_event is not None
             self.num_accepted_tokens_event.synchronize()
+            accepted_feedback = (
+                self.accepted_tokens_feedback_cpu.numpy()
+                if self.cache_config.mamba_cache_mode == "align"
+                else self.input_batch.num_accepted_tokens_cpu
+            )
             # Async mode: condense() reordered indices, use prev_positions mapping
-            if self.use_async_scheduling and prev_req_id_to_index:
+            if self.use_async_scheduling:
                 prev_idx = self.prev_positions.np[:num_reqs]
                 new_mask = prev_idx < 0
-                self.num_accepted_tokens.np[:num_reqs] = (
-                    self.input_batch.num_accepted_tokens_cpu[
-                        np.where(new_mask, 0, prev_idx)
-                    ]
-                )
+                self.num_accepted_tokens.np[:num_reqs] = accepted_feedback[
+                    np.where(new_mask, 0, prev_idx)
+                ]
                 self.num_accepted_tokens.np[:num_reqs][new_mask] = 1
-                self.input_batch.num_accepted_tokens_cpu[:num_reqs] = (
-                    self.num_accepted_tokens.np[:num_reqs]
-                )
             else:
                 # Non-async mode: use values directly
-                self.num_accepted_tokens.np[:num_reqs] = (
-                    self.input_batch.num_accepted_tokens_cpu[:num_reqs]
-                )
+                self.num_accepted_tokens.np[:num_reqs] = accepted_feedback[:num_reqs]
+            self.input_batch.num_accepted_tokens_cpu[:num_reqs] = (
+                self.num_accepted_tokens.np[:num_reqs]
+            )
             self.num_accepted_tokens.np[num_reqs:].fill(1)
             self.num_accepted_tokens.copy_to_gpu()
         else:

@@ -38,12 +38,23 @@ from vllm.v1.core.kv_cache_coordinator import HybridKVCacheCoordinator
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock
+from vllm.v1.core.sched.batch_admission import (
+    BatchAdmissionContext,
+    BatchAdmissionPolicyController,
+    BatchRequest,
+    BatchRequestState,
+)
 from vllm.v1.core.sched.interface import PauseState, SchedulerInterface
 from vllm.v1.core.sched.output import (
     CachedRequestData,
     GrammarOutput,
     NewRequestData,
     SchedulerOutput,
+)
+from vllm.v1.core.sched.preemption import (
+    PreemptionCandidate,
+    PreemptionContext,
+    PreemptionPolicyController,
 )
 from vllm.v1.core.sched.request_queue import (
     RequestQueue,
@@ -182,6 +193,9 @@ class Scheduler(SchedulerInterface):
         # requests skipped in waiting flow due async deps or constraints.
         self.skipped_waiting = create_request_queue(self.policy)
         self.running: list[Request] = []
+        self.preemption_policy = PreemptionPolicyController(vllm_config)
+        self.batch_admission_policy = BatchAdmissionPolicyController(vllm_config)
+        self._batch_eligible_request_ids: frozenset[str] | None = None
 
         # The request IDs that are finished in between the previous and the
         # current steps. This is used to notify the workers about the finished
@@ -441,6 +455,9 @@ class Scheduler(SchedulerInterface):
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+            if not self._is_batch_eligible(request.request_id):
+                req_index += 1
+                continue
 
             if (
                 request.num_output_placeholders > 0
@@ -542,34 +559,36 @@ class Scheduler(SchedulerInterface):
                         # The request can be scheduled.
                         break
 
-                    # The request cannot be scheduled.
-                    # Preempt the lowest-priority request.
-                    if self.policy == SchedulingPolicy.PRIORITY:
-                        preempted_req = max(
-                            self.running,
-                            key=lambda r: (r.priority, r.arrival_time),
+                    # The request cannot be scheduled. Select a victim using an
+                    # immutable snapshot so policies cannot mutate scheduler state.
+                    preempted_req = self._select_preemption_victim(
+                        request, scheduled_timestamp
+                    )
+                    # Record the index of the preemption victim to maintain
+                    # accurate loop state for both built-in and custom policies.
+                    victim_index = self.running.index(preempted_req)
+                    del self.running[victim_index]
+                    if victim_index < req_index:
+                        req_index -= 1
+
+                    if preempted_req in scheduled_running_reqs:
+                        preempted_req_id = preempted_req.request_id
+                        scheduled_running_reqs.remove(preempted_req)
+                        restored = num_scheduled_tokens.pop(preempted_req_id)
+                        token_budget += restored
+                        req_to_new_blocks.pop(preempted_req_id)
+                        scheduled_spec_decode_tokens.pop(preempted_req_id, None)
+                        preempted_encoder_inputs = scheduled_encoder_inputs.pop(
+                            preempted_req_id, None
                         )
-                        self.running.remove(preempted_req)
-                        if preempted_req in scheduled_running_reqs:
-                            preempted_req_id = preempted_req.request_id
-                            scheduled_running_reqs.remove(preempted_req)
-                            token_budget += num_scheduled_tokens.pop(preempted_req_id)
-                            req_to_new_blocks.pop(preempted_req_id)
-                            scheduled_spec_decode_tokens.pop(preempted_req_id, None)
-                            preempted_encoder_inputs = scheduled_encoder_inputs.pop(
-                                preempted_req_id, None
+                        if preempted_encoder_inputs:
+                            # Restore encoder compute budget if the preempted
+                            # request had encoder inputs scheduled in this step.
+                            num_embeds_to_restore = sum(
+                                preempted_req.get_num_encoder_embeds(i)
+                                for i in preempted_encoder_inputs
                             )
-                            if preempted_encoder_inputs:
-                                # Restore encoder compute budget if the preempted
-                                # request had encoder inputs scheduled in this step.
-                                num_embeds_to_restore = sum(
-                                    preempted_req.get_num_encoder_embeds(i)
-                                    for i in preempted_encoder_inputs
-                                )
-                                encoder_compute_budget += num_embeds_to_restore
-                            req_index -= 1
-                    else:
-                        preempted_req = self.running.pop()
+                            encoder_compute_budget += num_embeds_to_restore
 
                     self._preempt_request(preempted_req, scheduled_timestamp)
                     preempted_reqs.append(preempted_req)
@@ -649,6 +668,11 @@ class Scheduler(SchedulerInterface):
 
                 request = request_queue.peek_request()
                 request_id = request.request_id
+
+                if not self._is_batch_eligible(request_id):
+                    request_queue.pop_request()
+                    step_skipped_waiting.prepend_request(request)
+                    continue
 
                 # try to promote blocked statuses while traversing skipped queue.
                 if self._is_blocked_waiting_status(
@@ -1132,6 +1156,96 @@ class Scheduler(SchedulerInterface):
             self._update_after_schedule(scheduler_output)
         return scheduler_output
 
+    def schedule_batch(
+        self,
+        in_flight_batch_ids: frozenset[str],
+        throttle_prefills: bool = False,
+        *,
+        in_flight_tokens: dict[str, int] | None = None,
+    ) -> tuple[str | None, SchedulerOutput] | None:
+        """Schedule one policy-selected logical batch for EngineCore."""
+        controller = self.batch_admission_policy
+        if not controller.enabled:
+            return None, self.schedule(throttle_prefills)
+
+        requests = self._make_batch_request_snapshots(in_flight_tokens)
+        if not requests:
+            # Scheduler maintenance can outlive all request queues (for
+            # example, finished requests awaiting connector cleanup). It must
+            # still produce a built-in empty step so EngineCore can drain the
+            # lifecycle state; there is no request admission decision to make.
+            return None, self.schedule(throttle_prefills)
+
+        context = BatchAdmissionContext(
+            requests=requests,
+            in_flight_batch_ids=in_flight_batch_ids,
+            max_concurrent_batches=self.vllm_config.max_concurrent_batches,
+            pipeline_parallel_size=self.parallel_config.pipeline_parallel_size,
+            now=time.monotonic(),
+        )
+        admission = controller.admit_batch(context)
+        if admission is None:
+            if not controller.enabled:
+                return None, self.schedule(throttle_prefills)
+            return None
+
+        self._batch_eligible_request_ids = frozenset(admission.request_ids)
+        try:
+            scheduler_output = self.schedule(throttle_prefills)
+        finally:
+            self._batch_eligible_request_ids = None
+        scheduled_ids = set(scheduler_output.num_scheduled_tokens)
+        if not scheduled_ids.issubset(admission.request_ids):
+            raise AssertionError(
+                "batch admission policy allowed request IDs do not cover "
+                f"scheduled IDs {sorted(scheduled_ids)!r}"
+            )
+        return admission.batch_id, scheduler_output
+
+    def on_batch_complete(self, batch_id: str | None) -> None:
+        if batch_id is not None:
+            self.batch_admission_policy.on_batch_complete(batch_id)
+
+    def on_batch_abort(self, batch_id: str | None) -> None:
+        if batch_id is not None:
+            self.batch_admission_policy.on_batch_abort(batch_id)
+
+    def _is_batch_eligible(self, request_id: str) -> bool:
+        eligible = self._batch_eligible_request_ids
+        return eligible is None or request_id in eligible
+
+    def _make_batch_request_snapshots(
+        self, in_flight_tokens: dict[str, int] | None = None
+    ) -> tuple[BatchRequest, ...]:
+        snapshots: list[BatchRequest] = []
+        seen: set[str] = set()
+        request_groups: tuple[tuple[BatchRequestState, Iterable[Request]], ...] = (
+            ("running", self.running),
+            ("waiting", self.waiting),
+            ("waiting", self.skipped_waiting),
+        )
+        for state, requests in request_groups:
+            for request in requests:
+                if request.request_id in seen:
+                    continue
+                seen.add(request.request_id)
+                snapshots.append(
+                    BatchRequest(
+                        request_id=request.request_id,
+                        state=state,
+                        priority=request.priority,
+                        arrival_time=request.arrival_time,
+                        num_prompt_tokens=request.num_prompt_tokens,
+                        num_output_tokens=request.num_output_tokens,
+                        num_computed_tokens=request.num_computed_tokens,
+                        num_in_flight_tokens=(in_flight_tokens or {}).get(
+                            request.request_id, 0
+                        ),
+                        max_tokens=request.max_tokens,
+                    )
+                )
+        return tuple(snapshots)
+
     def _build_kv_connector_meta(
         self, connector: KVConnectorBase_V1, scheduler_output: SchedulerOutput
     ) -> KVConnectorMetadata:
@@ -1160,6 +1274,30 @@ class Scheduler(SchedulerInterface):
         # Put the request back to the waiting queue.
         self.waiting.prepend_request(request)
         self.reset_preempted_req_ids.add(request.request_id)
+
+    def _select_preemption_victim(self, request: Request, timestamp: float) -> Request:
+        candidates = tuple(
+            PreemptionCandidate(
+                request_id=candidate.request_id,
+                priority=candidate.priority,
+                arrival_time=candidate.arrival_time,
+                num_prompt_tokens=candidate.num_prompt_tokens,
+                num_output_tokens=candidate.num_output_tokens,
+                num_computed_tokens=candidate.num_computed_tokens,
+                num_preemptions=candidate.num_preemptions,
+                max_tokens=candidate.max_tokens,
+            )
+            for candidate in self.running
+        )
+        context = PreemptionContext(
+            candidates=candidates,
+            scheduling_policy=self.policy.value,
+            requesting_request_id=request.request_id,
+            kv_cache_usage=self.kv_cache_manager.usage,
+            now=timestamp,
+        )
+        victim_id = self.preemption_policy.select_victim(context)
+        return self.requests[victim_id]
 
     def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
         # Advance the number of computed tokens for the request AFTER
@@ -2302,6 +2440,8 @@ class Scheduler(SchedulerInterface):
             num_waiting_reqs=len(self.waiting),
             num_skipped_waiting_reqs=len(self.skipped_waiting),
             kv_cache_usage=self.kv_cache_manager.usage,
+            preemption_policy_stats=self.preemption_policy.export_stats(),
+            batch_admission_policy_stats=(self.batch_admission_policy.export_stats()),
             prefix_cache_stats=prefix_cache_stats,
             connector_prefix_cache_stats=connector_prefix_cache_stats,
             kv_cache_eviction_events=eviction_events,

@@ -61,6 +61,8 @@ def create_scheduler(
     use_ec_connector: bool = False,
     ec_role: str | None = None,
     use_v2_model_runner: bool | None = None,
+    preemption_policy: str | type[object] | None = None,
+    batch_admission_policy: str | type[object] | None = None,
 ) -> Scheduler | AsyncScheduler:
     """Create scheduler under test.
 
@@ -95,6 +97,8 @@ def create_scheduler(
         is_encoder_decoder=model_config.is_encoder_decoder,
         # Ensure admission/preemption mechanics are deterministic
         watermark=0.0,
+        preemption_policy=preemption_policy,
+        batch_admission_policy=batch_admission_policy,
     )
     # Cache config, optionally force APC
     cache_config = CacheConfig(
