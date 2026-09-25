@@ -1395,6 +1395,10 @@ class EngineCoreProc(EngineCore):
     @staticmethod
     def run_engine_core(*args, dp_rank: int = 0, local_dp_rank: int = 0, **kwargs):
         """Launch EngineCore busy loop in background process."""
+        from vllm.plugins.evidence import bind_process_identity
+
+        bind_process_identity("engine-core-scheduler", dp_rank)
+
         # Ensure we can serialize transformer config after spawning
         maybe_register_config_serialize_by_value()
 
