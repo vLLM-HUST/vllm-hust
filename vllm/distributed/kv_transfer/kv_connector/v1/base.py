@@ -174,6 +174,15 @@ class KVConnectorBase_V1(ABC):
     """
 
     @property
+    def supports_independent_hybrid_cache_hits(self) -> bool:
+        """Whether missing recurrent state is restored at the attention hit boundary.
+
+        Otherwise local prefix reuse must stop at a boundary cached by every
+        group, even when an attention group has a longer cached prefix.
+        """
+        return False
+
+    @property
     def prefer_cross_layer_blocks(self) -> bool:
         """
         Indicates whether this connector prefers KV blocks that hold KV data for all

@@ -77,6 +77,11 @@ logger = init_logger(__name__)
 
 
 class NixlBaseConnector(KVConnectorBase_V1, SupportsHMA):
+    @property
+    def supports_independent_hybrid_cache_hits(self) -> bool:
+        # NIXL restores the recurrent state at the attention hit boundary.
+        return True
+
     """Base connector with common logic shared by pull and push modes."""
 
     @property

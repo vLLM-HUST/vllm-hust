@@ -712,6 +712,7 @@ class Scheduler(SchedulerInterface):
                     # Get locally-cached tokens.
                     if (
                         self.connector is not None
+                        and self.connector.supports_independent_hybrid_cache_hits
                         and self.has_mamba_layers
                         and isinstance(
                             self.kv_cache_manager.coordinator,
