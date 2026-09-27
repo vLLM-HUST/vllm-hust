@@ -1184,6 +1184,14 @@ class DPAsyncMPClient(AsyncMPClient):
         assert self.stats_update_address is not None
         stats_addr: str = self.stats_update_address
         assert len(self.engine_ranks_managed) > 0
+        from vllm.v1.engine.dp_metadata_hooks import new_consumer
+
+        metadata_replica = (
+            new_consumer(self.vllm_config.parallel_config.data_parallel_size)
+            if isinstance(self, DPLBAsyncMPClient)
+            else None
+        )
+        self._adm_metadata_replica = metadata_replica
 
         async def run_engine_stats_update_task():
             with (
@@ -1274,7 +1282,15 @@ class DPAsyncMPClient(AsyncMPClient):
                         continue
 
                     # Update local load-balancing state.
-                    counts, wave, running = msgspec.msgpack.decode(buf)
+                    decoded = msgspec.msgpack.decode(buf)
+                    if metadata_replica is None:
+                        counts, wave, running = decoded
+                    else:
+                        if not metadata_replica.apply(decoded):
+                            continue
+                        counts = metadata_replica.snapshot_counts()
+                        wave = metadata_replica.current_wave
+                        running = metadata_replica.engines_running
                     self.current_wave = wave
                     self.engines_running = running
                     if counts is not None:
@@ -1354,6 +1370,9 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
                 request.pooling_params, len(self.core_engines)
             )
         ) is None:
+            metadata_replica = getattr(self, "_adm_metadata_replica", None)
+            if metadata_replica is not None and metadata_replica.generation is not None:
+                metadata_replica.counts_for_route()
             current_counts = self.lb_engines
             # TODO use P2C alg for larger DP sizes
             num_engines = len(current_counts)

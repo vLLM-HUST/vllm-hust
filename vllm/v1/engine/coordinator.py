@@ -80,6 +80,12 @@ class DPCoordinator:
     ):
         dp_size = parallel_config.data_parallel_size
         assert dp_size > 1, "Coordinator only used for data parallel"
+        from vllm.v1.engine.dp_metadata_hooks import enabled as metadata_hooks_enabled
+
+        if metadata_hooks_enabled() and parallel_config.data_parallel_external_lb:
+            raise RuntimeError(
+                "DP metadata replica requires internal load balancing"
+            )
 
         host = parallel_config.data_parallel_master_ip
 
@@ -173,6 +179,12 @@ class DPCoordinatorProc:
         min_stats_update_interval_ms: int = 100,
         enable_wave_coordination: bool = True,
     ):
+        # The coordinator is a separate spawned process; general plugins are
+        # not loaded here. Load only the dedicated DP metadata hook group.
+        from vllm.plugins import load_plugins_by_group
+
+        for register_hook in load_plugins_by_group("vllm.dp_metadata_plugins").values():
+            register_hook()
         coordinator = DPCoordinatorProc(
             engine_count=engine_count,
             min_stats_update_interval_ms=min_stats_update_interval_ms,
@@ -199,6 +211,9 @@ class DPCoordinatorProc:
         zmq_addr_pipe=None,
     ):
         decoder = MsgpackDecoder(EngineCoreOutputs)
+        from vllm.v1.engine.dp_metadata_hooks import new_publisher
+
+        metadata_publisher = new_publisher(len(self.engines))
 
         # For tracking request wave progression.
         current_wave = 0
@@ -279,7 +294,11 @@ class DPCoordinatorProc:
                         engine_req_counts_list = self._get_engine_counts()
                         stats_changed = False
 
-                    to_publish = (engine_req_counts_list, current_wave, engines_running)
+                    to_publish = (
+                        metadata_publisher.publish(current_wave, engines_running)
+                        if metadata_publisher is not None
+                        else (engine_req_counts_list, current_wave, engines_running)
+                    )
                     publish_front.send(msgspec.msgpack.encode(to_publish))
                     last_publish_time = int(time.time() * 1000)
                     continue
@@ -315,6 +334,10 @@ class DPCoordinatorProc:
                         and len(decoded) == 2
                         and decoded[0] == "SCALE_ELASTIC_EP"
                     ):
+                        if metadata_publisher is not None:
+                            raise RuntimeError(
+                                "DP metadata replica does not support elastic EP scaling"
+                            )
                         # Handle scale up notification
                         new_engine_count = decoded[1]
                         current_count = len(self.engines)
@@ -376,7 +399,16 @@ class DPCoordinatorProc:
 
                     eng_index = outputs.engine_index
                     scheduler_stats = outputs.scheduler_stats
-                    if scheduler_stats:
+                    if scheduler_stats and (
+                        metadata_publisher is None
+                        or metadata_publisher.observe(
+                            eng_index,
+                            scheduler_stats.current_wave,
+                            scheduler_stats.step_counter,
+                            scheduler_stats.num_waiting_reqs,
+                            scheduler_stats.num_running_reqs,
+                        )
+                    ):
                         # 1. Updated request load stats - update our local
                         # state with these.
                         stats = self.engines[eng_index].request_counts
@@ -443,7 +475,11 @@ class DPCoordinatorProc:
                             self._send_start_wave(publish_back, wave, eng_index)
 
                 if wave_state_changed:
-                    message = (None, current_wave, engines_running)
+                    message = (
+                        metadata_publisher.publish(current_wave, engines_running)
+                        if metadata_publisher is not None
+                        else (None, current_wave, engines_running)
+                    )
                     publish_front.send(msgspec.msgpack.encode(message))
 
     @staticmethod

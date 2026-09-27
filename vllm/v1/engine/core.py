@@ -1651,6 +1651,12 @@ class DPEngineCoreProc(EngineCoreProc):
             engine_index=dp_rank,
             tensor_queue=tensor_queue,
         )
+        from vllm.v1.engine.dp_metadata_hooks import enabled as metadata_hooks_enabled
+
+        if metadata_hooks_enabled():
+            # Send a real initial observation from an idle rank on its first
+            # loop, even when its counts remain at (0, 0).
+            self.last_counts = None
 
     def _init_data_parallel(self, vllm_config: VllmConfig):
         # Configure GPUs and stateless process group for data parallel.
