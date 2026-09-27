@@ -1395,6 +1395,9 @@ class EngineCoreProc(EngineCore):
     @staticmethod
     def run_engine_core(*args, dp_rank: int = 0, local_dp_rank: int = 0, **kwargs):
         """Launch EngineCore busy loop in background process."""
+        from vllm.plugins.evidence import bind_process_identity
+
+        bind_process_identity("engine-core-scheduler", dp_rank)
         vllm_config: VllmConfig = kwargs["vllm_config"]
         if logging_config := getattr(vllm_config, "logging_config", None):
             configure_logging(logging_config)

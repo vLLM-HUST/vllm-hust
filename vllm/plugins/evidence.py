@@ -35,6 +35,7 @@ _owner_pid = os.getpid()
 _state_lock = threading.RLock()
 _controller_sequence = 0
 _invocation_sequence = 0
+_process_identity_binding: tuple[str, int] | None = None
 
 
 class EvidenceConfigurationError(RuntimeError):
@@ -76,17 +77,24 @@ def _start_identity() -> str:
 
 
 def _identity() -> dict[str, Any]:
+    _ensure_process_state()
     try:
         start_identity = _start_identity()
         host = socket.gethostname()
         if not host:
             raise ValueError("empty hostname")
-        role = os.getenv("VLLM_ECPA_PROCESS_ROLE", "unknown")
-        ordinal = int(os.getenv("VLLM_ECPA_PROCESS_ORDINAL", "0"))
         default_epoch = int(
             hashlib.sha256(start_identity.encode()).hexdigest()[:12], 16
         )
-        epoch = int(os.getenv("VLLM_ECPA_PROCESS_EPOCH", str(default_epoch)))
+        if _process_identity_binding is None:
+            role = os.getenv("VLLM_ECPA_PROCESS_ROLE", "unknown")
+            ordinal = int(os.getenv("VLLM_ECPA_PROCESS_ORDINAL", "0"))
+            epoch = int(os.getenv("VLLM_ECPA_PROCESS_EPOCH", str(default_epoch)))
+            assignment_source = "environment"
+        else:
+            role, ordinal = _process_identity_binding
+            epoch = default_epoch
+            assignment_source = "host"
         if ordinal < 0 or epoch < 0 or not role:
             raise ValueError("negative epoch/ordinal or empty role")
     except (OSError, ValueError) as exc:
@@ -98,7 +106,28 @@ def _identity() -> dict[str, Any]:
         "pid": os.getpid(),
         "start_identity": start_identity,
         "process_epoch": epoch,
+        "assignment_source": assignment_source,
     }
+
+
+def bind_process_identity(role: str, ordinal: int) -> None:
+    """Freeze the host-assigned role and ordinal for this process instance."""
+    global _process_identity_binding
+    _ensure_process_state()
+    if (
+        not isinstance(role, str)
+        or not role
+        or role.strip() != role
+        or not isinstance(ordinal, int)
+        or isinstance(ordinal, bool)
+        or ordinal < 0
+    ):
+        raise EvidenceConfigurationError("invalid host process identity")
+    binding = (role, ordinal)
+    with _state_lock:
+        if _process_identity_binding not in (None, binding):
+            raise EvidenceConfigurationError("host process identity is already bound")
+        _process_identity_binding = binding
 
 
 def capture_scope(*, expected_role: str | None = None) -> EvidenceScope:
@@ -130,7 +159,7 @@ def observer_configured() -> bool:
 def _ensure_process_state() -> None:
     """Discard inherited mutable state before a child process can use it."""
     global _owner_pid, _sink, _sink_state, _sink_error, _state_lock
-    global _controller_sequence, _invocation_sequence
+    global _controller_sequence, _invocation_sequence, _process_identity_binding
     current_pid = os.getpid()
     if current_pid == _owner_pid:
         return
@@ -142,6 +171,7 @@ def _ensure_process_state() -> None:
     _sink_error = None
     _controller_sequence = 0
     _invocation_sequence = 0
+    _process_identity_binding = None
     _delivered.clear()
 
 
@@ -341,12 +371,19 @@ def _emit_host_event_unlocked(
         observation_kind,
         controller_instance_id,
     )
-    if key in _delivered:
+    delivery_key = (*key, identity["assignment_source"])
+    if delivery_key in _delivered:
         return True
     _delivery_attempts += 1
     observed_at_ns = time.time_ns()
     event_material = json.dumps(
-        [*key, _delivery_attempts, observed_at_ns], separators=(",", ":")
+        [
+            *key,
+            _delivery_attempts,
+            observed_at_ns,
+            identity["assignment_source"],
+        ],
+        separators=(",", ":"),
     ).encode()
     payload = {
         "schema": SCHEMA,
@@ -394,7 +431,7 @@ def _emit_host_event_unlocked(
             raise EvidenceConfigurationError("evidence sink write failed") from exc
         # A broken hot-path sink remains failed; later events short-circuit.
         return False
-    _delivered.add(key)
+    _delivered.add(delivery_key)
     _delivery_count += 1
     return True
 
@@ -430,10 +467,11 @@ def _emit_host_event(
 def reset_for_tests() -> None:
     global _sink, _sink_state, _sink_error, _sink_failures
     global _delivery_attempts, _delivery_count, _owner_pid, _state_lock
-    global _controller_sequence, _invocation_sequence
+    global _controller_sequence, _invocation_sequence, _process_identity_binding
     _sink, _sink_state, _sink_error = None, "unconfigured", None
     _sink_failures, _delivery_attempts, _delivery_count = 0, 0, 0
     _owner_pid = os.getpid()
     _state_lock = threading.RLock()
     _controller_sequence, _invocation_sequence = 0, 0
+    _process_identity_binding = None
     _delivered.clear()

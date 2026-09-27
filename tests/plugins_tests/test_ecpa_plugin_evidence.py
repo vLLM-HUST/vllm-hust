@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import hashlib
 import importlib.metadata
+import json
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import mock_open
 
@@ -40,6 +43,56 @@ def enable(events: list[Payload]) -> None:
     evidence._sink_state = "ready"
 
 
+def expected_event_id(payload: Payload) -> str:
+    process = payload["process"]
+    entry = payload["entry_point"]
+    material = json.dumps(
+        [
+            process["host"],
+            process["pid"],
+            process["start_identity"],
+            process["process_epoch"],
+            process["role"],
+            process["ordinal"],
+            entry["group"],
+            entry["name"],
+            entry["value"],
+            payload["event"],
+            payload["detail"],
+            payload["occurrence_id"],
+            payload["plan_id"],
+            payload["launch_id"],
+            payload["observation_kind"],
+            payload["controller_instance_id"],
+            payload["delivery_attempt"],
+            payload["observed_at_ns"],
+            process["assignment_source"],
+        ],
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(material).hexdigest()
+
+
+def test_event_id_and_deduplication_bind_assignment_source(monkeypatch):
+    events: list[Payload] = []
+    enable(events)
+    monkeypatch.setattr(evidence.time, "time_ns", lambda: 42)
+
+    evidence._emit_host_event("resolved", "g", "n", "v")
+    evidence.bind_process_identity("worker", 2)
+    evidence._emit_host_event("resolved", "g", "n", "v")
+    evidence._emit_host_event("resolved", "g", "n", "v")
+
+    assert [event["process"]["assignment_source"] for event in events] == [
+        "environment",
+        "host",
+    ]
+    assert all(event["event_id"] == expected_event_id(event) for event in events)
+    assert evidence._delivery_attempts == 2
+    assert evidence._delivery_count == 2
+    assert len(evidence._delivered) == 2
+
+
 def test_process_wide_allocators_are_thread_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -54,6 +107,85 @@ def test_process_wide_allocators_are_thread_safe(
 
     assert sorted(sequences) == list(range(1, 101))
     assert len(set(sequences)) == 100
+
+
+def test_host_identity_binding_overrides_environment_and_is_immutable(monkeypatch):
+    monkeypatch.setenv("VLLM_ECPA_PROCESS_ROLE", "forged")
+    monkeypatch.setenv("VLLM_ECPA_PROCESS_ORDINAL", "99")
+    monkeypatch.setenv("VLLM_ECPA_PROCESS_EPOCH", "7")
+
+    evidence.bind_process_identity("engine-core-scheduler", 3)
+    scope = evidence.capture_scope(expected_role="engine-core-scheduler")
+
+    start_identity = scope["process"]["start_identity"]
+    expected_epoch = int(hashlib.sha256(start_identity.encode()).hexdigest()[:12], 16)
+    assert scope["process"]["process_epoch"] == expected_epoch
+    assert scope["process"]["role"] == "engine-core-scheduler"
+    assert scope["process"]["ordinal"] == 3
+    assert scope["process"]["assignment_source"] == "host"
+    evidence.bind_process_identity("engine-core-scheduler", 3)
+    with pytest.raises(evidence.EvidenceConfigurationError, match="already bound"):
+        evidence.bind_process_identity("worker", 3)
+
+
+@pytest.mark.parametrize(
+    "role,ordinal",
+    [("", 0), (" worker", 0), (1, 0), ("worker", -1), ("worker", True)],
+)
+def test_host_identity_binding_rejects_invalid_values(role, ordinal):
+    with pytest.raises(evidence.EvidenceConfigurationError, match="invalid"):
+        evidence.bind_process_identity(role, ordinal)
+
+
+def test_engine_core_entry_binds_dp_rank_before_initialization(monkeypatch):
+    from vllm.v1.engine import core
+
+    class StopInitialization(Exception):
+        pass
+
+    bindings = []
+    monkeypatch.setattr(
+        evidence,
+        "bind_process_identity",
+        lambda role, ordinal: bindings.append((role, ordinal)),
+    )
+    monkeypatch.setattr(
+        core,
+        "maybe_register_config_serialize_by_value",
+        lambda: (_ for _ in ()).throw(StopInitialization),
+    )
+
+    with pytest.raises(StopInitialization):
+        core.EngineCoreProc.run_engine_core(dp_rank=4)
+
+    assert bindings == [("engine-core-scheduler", 4)]
+
+
+def test_worker_entry_binds_global_rank_before_signal_setup(monkeypatch):
+    from vllm.v1.executor import multiproc_executor
+
+    class StopInitialization(Exception):
+        pass
+
+    bindings = []
+
+    def bind(role, ordinal):
+        bindings.append((role, ordinal))
+
+    monkeypatch.setattr(evidence, "bind_process_identity", bind)
+    monkeypatch.setattr(
+        multiproc_executor.signal,
+        "signal",
+        lambda *_args: (_ for _ in ()).throw(StopInitialization),
+    )
+
+    vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(data_parallel_index=2, world_size=8)
+    )
+    with pytest.raises(StopInitialization):
+        multiproc_executor.WorkerProc.worker_main(rank=5, vllm_config=vllm_config)
+
+    assert bindings == [("worker", 21)]
 
 
 def test_disabled_observer_preserves_plugin_behavior(monkeypatch):
@@ -260,6 +392,7 @@ def test_strict_evidence_failure_preserves_plugin_exception_as_primary(monkeypat
 def test_fork_pid_change_clears_inherited_delivery_state(monkeypatch):
     events: list[Payload] = []
     enable(events)
+    evidence.bind_process_identity("engine-core-scheduler", 0)
     evidence._emit_host_event("resolved", "g", "n", "v")
     old_pid = evidence._owner_pid
     monkeypatch.setattr(evidence.os, "getpid", lambda: old_pid + 1)
@@ -272,6 +405,8 @@ def test_fork_pid_change_clears_inherited_delivery_state(monkeypatch):
     )
     evidence._emit_host_event("resolved", "g", "n", "v")
     assert len(events) == 2
+    assert events[0]["process"]["assignment_source"] == "host"
+    assert events[1]["process"]["assignment_source"] == "environment"
 
 
 def test_proc_start_identity_parses_after_final_comm_parenthesis(monkeypatch):
