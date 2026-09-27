@@ -1288,7 +1288,11 @@ class DPAsyncMPClient(AsyncMPClient):
                     else:
                         if not metadata_replica.apply(decoded):
                             continue
-                        counts = metadata_replica.snapshot_counts()
+                        counts = (
+                            metadata_replica.snapshot_counts()
+                            if metadata_replica.counts_update
+                            else None
+                        )
                         wave = metadata_replica.current_wave
                         running = metadata_replica.engines_running
                     self.current_wave = wave

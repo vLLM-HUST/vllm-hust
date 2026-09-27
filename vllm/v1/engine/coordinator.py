@@ -476,7 +476,9 @@ class DPCoordinatorProc:
 
                 if wave_state_changed:
                     message = (
-                        metadata_publisher.publish(current_wave, engines_running)
+                        metadata_publisher.publish(
+                            current_wave, engines_running, counts_update=False
+                        )
                         if metadata_publisher is not None
                         else (None, current_wave, engines_running)
                     )
