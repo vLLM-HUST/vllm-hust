@@ -1312,6 +1312,15 @@ class DPAsyncMPClient(AsyncMPClient):
     async def add_request_async(self, request: EngineCoreRequest) -> None:
         self._ensure_stats_update_task()
 
+        metadata_replica = getattr(self, "_adm_metadata_replica", None)
+        if metadata_replica is not None and metadata_replica.generation is not None:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 12
+            while not metadata_replica.ready:
+                if loop.time() >= deadline:
+                    raise TimeoutError("DP metadata replica did not recover within 12s")
+                await asyncio.sleep(0.05)
+
         request.current_wave = self.current_wave
         request.client_index = self.client_index
 
