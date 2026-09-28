@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+"""Stable discovery surface for versioned extension capabilities.
+
+Extension managers should consume this snapshot instead of importing each
+implementation module to discover whether a contract exists.  The returned
+object intentionally contains data only, so discovery does not activate a
+plugin or grant it lifecycle ownership.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Final, TypedDict
+
+EXTENSION_CAPABILITIES_SCHEMA: Final = "vllm.extension-capabilities/v1"
+HOST_EXTENSION_API_VERSION: Final = "1.0"
+
+
+class ExtensionCapabilitySnapshot(TypedDict):
+    schema_version: str
+    host_api_version: str
+    protocols: Mapping[str, str]
+
+
+_PROTOCOLS: Final = MappingProxyType(
+    {
+        "vllm.preemption-policy": "1.0",
+        "vllm.batch-admission-policy": "1.1",
+        "vllm.request-processing-hook": "1.0",
+        "vllm.kv-materialization-runtime-control": "1.0",
+    }
+)
+
+
+def get_extension_capabilities() -> ExtensionCapabilitySnapshot:
+    """Return the host-owned, side-effect-free extension contract snapshot."""
+    return {
+        "schema_version": EXTENSION_CAPABILITIES_SCHEMA,
+        "host_api_version": HOST_EXTENSION_API_VERSION,
+        "protocols": _PROTOCOLS,
+    }
+
+
+__all__ = [
+    "EXTENSION_CAPABILITIES_SCHEMA",
+    "HOST_EXTENSION_API_VERSION",
+    "ExtensionCapabilitySnapshot",
+    "get_extension_capabilities",
+]
