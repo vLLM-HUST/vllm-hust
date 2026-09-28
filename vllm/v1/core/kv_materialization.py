@@ -169,10 +169,24 @@ def register_kv_materialization_runtime_observer(
 
 
 def emit_kv_materialization_runtime_event(payload: Mapping[str, object]) -> None:
-    """Notify observers without making observability failures fatal."""
+    """Notify observers and emit host-owned evidence after successful receipt."""
     for name, observer in _runtime_observers.items():
         try:
             observer(payload)
+            from vllm.plugins import DEFAULT_PLUGINS_GROUP
+            from vllm.plugins.evidence import _emit_host_event
+
+            occurrence_id = payload.get("request_id")
+            if not isinstance(occurrence_id, (int, str)):
+                occurrence_id = None
+            _emit_host_event(
+                "effective",
+                DEFAULT_PLUGINS_GROUP,
+                name,
+                "vllm.v1.core.kv_materialization",
+                occurrence_id=occurrence_id,
+                observation_kind="runtime_effective",
+            )
         except Exception:
             logger.exception("KV materialization observer %r failed", name)
 
