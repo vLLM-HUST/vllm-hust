@@ -428,7 +428,6 @@ class KVCacheManager:
             }
         )
 
-
         # The junction to pin is where the lagging sparse-retention group stops
         # (``num_new_computed_tokens``) plus the uncached shared prefix -- i.e.
         # the longest single-group hit. Sub-block gaps are left to the mask,
