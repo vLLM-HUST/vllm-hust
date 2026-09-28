@@ -7,6 +7,7 @@ from collections.abc import Mapping
 import pytest
 import torch
 
+from vllm.plugins import evidence as plugin_evidence
 from vllm.sampling_params import SamplingParams
 from vllm.v1.core import kv_materialization
 from vllm.v1.core.kv_cache_manager import KVCacheManager
@@ -208,3 +209,35 @@ def test_runtime_observer_registration_is_idempotent(
     kv_materialization.emit_kv_materialization_runtime_event({"event": "lookup"})
 
     assert events == [{"event": "lookup"}]
+
+
+def test_runtime_observer_receipt_emits_host_owned_effective_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kv_materialization, "_runtime_observers", {})
+    emitted: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        plugin_evidence,
+        "_emit_host_event",
+        lambda *args, **kwargs: emitted.append((args, kwargs)),
+    )
+    register_kv_materialization_runtime_observer("example", lambda _event: None)
+
+    kv_materialization.emit_kv_materialization_runtime_event(
+        {"event": "lookup", "request_id": "request-1"}
+    )
+
+    assert emitted == [
+        (
+            (
+                "effective",
+                "vllm.general_plugins",
+                "example",
+                "vllm.v1.core.kv_materialization",
+            ),
+            {
+                "occurrence_id": "request-1",
+                "observation_kind": "runtime_effective",
+            },
+        )
+    ]
