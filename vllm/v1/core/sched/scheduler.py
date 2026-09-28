@@ -1877,6 +1877,7 @@ class Scheduler(SchedulerInterface):
                 num_computed_tokens=candidate.num_computed_tokens,
                 num_preemptions=candidate.num_preemptions,
                 max_tokens=candidate.max_tokens,
+                predicted_length=candidate.predicted_length,
             )
             for candidate in self.running
         )
