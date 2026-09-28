@@ -6,9 +6,8 @@
 import time
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_validator
-
 import vllm.envs as envs
+from pydantic import Field, model_validator
 from vllm.config import ModelConfig
 from vllm.entrypoints.generate.base.protocol import (
     AnyResponseFormat,

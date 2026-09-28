@@ -19,7 +19,6 @@ from vllm.v1.core.kv_materialization import (
     emit_kv_materialization_runtime_event,
 )
 from vllm.v1.core.single_type_kv_cache_manager import MambaManager
-from vllm.v1.core.length_prediction import predicted_full_sequence_tokens
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     CrossAttentionSpec,
@@ -30,6 +29,8 @@ from vllm.v1.kv_cache_interface import (
     get_kv_cache_spec_sliding_window,
 )
 from vllm.v1.metrics.stats import PrefixCacheStats
+
+from vllm.v1.core.length_prediction import predicted_full_sequence_tokens
 from vllm.v1.request import Request, RequestStatus
 
 logger = init_logger(__name__)

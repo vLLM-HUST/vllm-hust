@@ -24,7 +24,7 @@ and this module is where the scheduler stops trusting the caller:
 
 The gate decides *whether* a request may enter the running set; it does not
 pin blocks beyond the step being scheduled. Clamping rather than rejecting
-therefore keeps a mis-predicted request schedulable instead of failing it.
+therefore keeps a request with a poor prediction schedulable instead of failing it.
 """
 
 from __future__ import annotations

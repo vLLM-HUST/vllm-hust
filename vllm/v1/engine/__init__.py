@@ -10,7 +10,6 @@ from typing import Any, Literal
 import msgspec
 import numpy as np
 import torch
-
 from vllm.config.kv_events import KVEventsConfig
 from vllm.lora.request import LoRARequest
 from vllm.multimodal.inputs import MultiModalFeatureSpec
