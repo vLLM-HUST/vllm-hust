@@ -11,7 +11,9 @@ steps:
   source_file_dependencies:
   - vllm/plugins/
   - tests/plugins/
+  - tests/plugins_tests/test_ecpa_plugin_evidence.py
   commands:
+  - pytest -v -s plugins_tests/test_ecpa_plugin_evidence.py
   # begin platform plugin and general plugin tests, all the code in-between runs on dummy platform
   - pip install -e ./plugins/vllm_add_dummy_platform
   - pytest -v -s plugins_tests/test_platform_plugins.py
@@ -61,6 +63,7 @@ steps:
       source_file_dependencies:
       - vllm/plugins/
       - tests/plugins/
+      - tests/plugins_tests/test_ecpa_plugin_evidence.py
       - vllm/platforms/rocm.py
 
 
