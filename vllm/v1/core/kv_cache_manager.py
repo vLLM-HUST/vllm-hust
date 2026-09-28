@@ -2,9 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
-import json
-import os
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, overload
@@ -18,6 +15,9 @@ from vllm.v1.core.kv_cache_coordinator import (
 )
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock, KVCacheBlockCopy
+from vllm.v1.core.kv_materialization import (
+    emit_kv_materialization_runtime_event,
+)
 from vllm.v1.core.single_type_kv_cache_manager import MambaManager
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
@@ -32,31 +32,6 @@ from vllm.v1.metrics.stats import PrefixCacheStats
 from vllm.v1.request import Request, RequestStatus
 
 logger = init_logger(__name__)
-
-
-def _write_materialization_runtime_event(payload: dict[str, object]) -> None:
-    """Append one scheduler-owned event without making telemetry fatal.
-
-    The lookup values are emitted where the cache manager has the actual cache
-    hit result.  They must not be synthesized by the policy/plugin layer.
-    """
-    path = os.getenv("VLLM_KV_MATERIALIZATION_RUNTIME_EVENT_LOG_PATH")
-    if not path:
-        return
-    record = {"schema_version": 1, "timestamp_s": time.time(), **payload}
-    encoded = (json.dumps(record, sort_keys=True) + "\n").encode()
-    try:
-        fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
-        try:
-            os.write(fd, encoded)
-        finally:
-            os.close(fd)
-    except OSError:
-        logger.exception("Unable to write KV materialization runtime event")
-
-
-def _count_block_groups(block_groups: Sequence[Sequence[KVCacheBlock]]) -> int:
-    return sum(len(group) for group in block_groups)
 
 
 @dataclass
@@ -281,7 +256,15 @@ class KVCacheManager:
 
     def prefix_cache_lookup_enabled(self, request: Request) -> bool:
         """Whether a local prefix cache lookup may be run for this request."""
-        return self.enable_caching and not request.skip_reading_prefix_cache
+        runtime_control = request.kv_materialization_runtime_control
+        return (
+            self.enable_caching
+            and not request.skip_reading_prefix_cache
+            and (
+                runtime_control is None
+                or runtime_control.effective_decision != "recompute"
+            )
+        )
 
     def record_prefix_cache_stats(self, request: Request, num_hits: int) -> None:
         # Don't count a request that skipped the cache lookup.
@@ -294,46 +277,96 @@ class KVCacheManager:
             preempted=request.num_preemptions > 0,
         )
 
-    @staticmethod
-    def _get_materialization_control(request: Request) -> dict | None:
+    def _materialization_boundary(self, request: Request) -> int | None:
         runtime_control = request.kv_materialization_runtime_control
-        if isinstance(runtime_control, dict):
-            return runtime_control
-        kv_transfer_params = request.kv_transfer_params or {}
-        runtime_control = kv_transfer_params.get("kv_materialization_runtime_control")
-        return runtime_control if isinstance(runtime_control, dict) else None
+        if runtime_control is None:
+            return None
+        return runtime_control.reuse_boundary(self.hash_block_size)
 
     def _get_lookup_block_hashes(self, request: Request) -> list:
-        runtime_control = self._get_materialization_control(request)
-        if runtime_control is None:
+        boundary = self._materialization_boundary(request)
+        if boundary is None:
             return request.block_hashes
-        decision = runtime_control.get(
-            "effective_decision", runtime_control.get("observed_decision")
-        )
-        target_reuse_tokens = runtime_control.get("target_reuse_tokens")
-        if decision != "partial_reuse" or not isinstance(target_reuse_tokens, int):
-            return request.block_hashes
-        max_full_blocks = max(target_reuse_tokens, 0) // self.hash_block_size
-        return request.block_hashes[:max_full_blocks]
+        return request.block_hashes[: boundary // self.hash_block_size]
 
     def _get_cacheable_num_tokens(self, request: Request, num_tokens: int) -> int:
-        runtime_control = self._get_materialization_control(request)
-        if runtime_control is None:
+        boundary = self._materialization_boundary(request)
+        if boundary is None:
             return max(num_tokens, 0)
-        decision = runtime_control.get(
-            "effective_decision", runtime_control.get("observed_decision")
-        )
-        target_reuse_tokens = runtime_control.get("target_reuse_tokens")
-        if decision != "partial_reuse" or not isinstance(target_reuse_tokens, int):
-            return max(num_tokens, 0)
-        return min(max(num_tokens, 0), max(target_reuse_tokens, 0))
+        return min(max(num_tokens, 0), boundary)
 
-    def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int, int]:
+    def _emit_materialization_event(
+        self,
+        request: Request,
+        event: str,
+        **values: object,
+    ) -> None:
+        runtime_control = request.kv_materialization_runtime_control
+        if runtime_control is None:
+            return
+        emit_kv_materialization_runtime_event(
+            {
+                "schema_version": 1,
+                "event": event,
+                "request_id": request.request_id,
+                "observed_decision": runtime_control.observed_decision,
+                "applied_decision": runtime_control.effective_decision,
+                "fallback_reason": runtime_control.fallback_reason,
+                "target_reuse_tokens": runtime_control.target_reuse_tokens,
+                "realized_reuse_boundary_tokens": self._materialization_boundary(
+                    request
+                ),
+                **values,
+            }
+        )
+
+    def record_materialization_lookup(
+        self,
+        request: Request,
+        *,
+        local_reused_tokens: int,
+        external_reused_tokens: int = 0,
+        matched_blocks: int,
+        skip_read: bool,
+    ) -> None:
+        """Emit one engine-owned receipt after all KV sources are resolved."""
+        if request.kv_materialization_runtime_control is None:
+            return
+        reused_tokens = local_reused_tokens + external_reused_tokens
+        recomputed_tokens = request.num_tokens - reused_tokens
+        realized_decision = (
+            "recompute"
+            if reused_tokens == 0
+            else "full_reuse"
+            if recomputed_tokens == 0
+            else "partial_reuse"
+        )
+        self._emit_materialization_event(
+            request,
+            "lookup",
+            engine_prompt_tokens=request.num_tokens,
+            engine_reused_tokens=reused_tokens,
+            engine_local_reused_tokens=local_reused_tokens,
+            engine_external_reused_tokens=external_reused_tokens,
+            engine_recomputed_tokens=recomputed_tokens,
+            matched_blocks=matched_blocks,
+            hash_block_size=self.hash_block_size,
+            max_cache_hit_length=max(request.num_tokens - 1, 0),
+            realized_decision=realized_decision,
+            cache_usage=self.usage,
+            skip_read=skip_read,
+        )
+
+    def get_computed_blocks(
+        self, request: Request, *, emit_event: bool = True
+    ) -> tuple[KVCacheBlocks, int, int]:
         """Get the computed (cached) blocks for the request.
         Note that the computed blocks must be full.
 
         Args:
             request: The request to get the computed blocks.
+            emit_event: Whether to emit the engine-owned lookup receipt here.
+                Connector callers disable it until external hits are resolved.
 
         Returns:
             A tuple containing:
@@ -351,28 +384,13 @@ class KVCacheManager:
         # (which happens when the request requires prompt logprobs
         # or calls a pooling model with all pooling).
         if not self.prefix_cache_lookup_enabled(request):
-            runtime_control = self._get_materialization_control(request) or {}
-            _write_materialization_runtime_event(
-                {
-                    "event": "lookup",
-                    "request_id": request.request_id,
-                    "engine_prompt_tokens": request.num_tokens,
-                    "engine_reused_tokens": 0,
-                    "engine_recomputed_tokens": request.num_tokens,
-                    "matched_blocks": 0,
-                    "hash_block_size": getattr(self, "hash_block_size", None),
-                    "max_cache_hit_length": max(request.num_tokens - 1, 0),
-                    "applied_decision": runtime_control.get(
-                        "effective_decision",
-                        runtime_control.get("observed_decision"),
-                    ),
-                    "observed_decision": runtime_control.get("observed_decision"),
-                    "fallback_reason": runtime_control.get("fallback_reason"),
-                    "target_reuse_tokens": runtime_control.get("target_reuse_tokens"),
-                    "realized_decision": "recompute",
-                    "skip_read": request.skip_reading_prefix_cache,
-                }
-            )
+            if emit_event:
+                self.record_materialization_lookup(
+                    request,
+                    local_reused_tokens=0,
+                    matched_blocks=0,
+                    skip_read=True,
+                )
             return self.empty_kv_cache_blocks, 0, 0
 
         # NOTE: When all tokens hit the cache, we must recompute the last token
@@ -399,34 +417,13 @@ class KVCacheManager:
         ):
             self.coordinator.emit_cached_block_events(request, computed_blocks)
 
-        runtime_control = self._get_materialization_control(request) or {}
-        recomputed_tokens = request.num_tokens - num_new_computed_tokens
-        if num_new_computed_tokens <= 0:
-            realized_decision = "recompute"
-        elif recomputed_tokens <= 0:
-            realized_decision = "full_reuse"
-        else:
-            realized_decision = "partial_reuse"
-        _write_materialization_runtime_event(
-            {
-                "event": "lookup",
-                "request_id": request.request_id,
-                "engine_prompt_tokens": request.num_tokens,
-                "engine_reused_tokens": num_new_computed_tokens,
-                "engine_recomputed_tokens": recomputed_tokens,
-                "matched_blocks": _count_block_groups(computed_blocks),
-                "hash_block_size": self.hash_block_size,
-                "max_cache_hit_length": max_cache_hit_length,
-                "applied_decision": runtime_control.get(
-                    "effective_decision", runtime_control.get("observed_decision")
-                ),
-                "observed_decision": runtime_control.get("observed_decision"),
-                "fallback_reason": runtime_control.get("fallback_reason"),
-                "target_reuse_tokens": runtime_control.get("target_reuse_tokens"),
-                "realized_decision": realized_decision,
-                "skip_read": request.skip_reading_prefix_cache,
-            }
-        )
+        if emit_event:
+            self.record_materialization_lookup(
+                request,
+                local_reused_tokens=num_new_computed_tokens,
+                matched_blocks=sum(len(group) for group in computed_blocks),
+                skip_read=False,
+            )
 
         # The junction to pin is where the lagging sparse-retention group stops
         # (``num_new_computed_tokens``) plus the uncached shared prefix -- i.e.
@@ -467,7 +464,7 @@ class KVCacheManager:
             and isinstance(coordinator, HybridKVCacheCoordinator)
             and coordinator.full_attention_group_id is not None
         ):
-            return *self.get_computed_blocks(request), False
+            return *self.get_computed_blocks(request, emit_event=False), False
 
         if not self.prefix_cache_lookup_enabled(request):
             return self.empty_kv_cache_blocks, 0, 0, False
@@ -480,7 +477,7 @@ class KVCacheManager:
             # A lagging group hit deeper than full attention means its
             # full-attention blocks were evicted; use the reconciled boundary
             # that every group agrees on.
-            return *self.get_computed_blocks(request), False
+            return *self.get_computed_blocks(request, emit_event=False), False
 
         num_local = per_group_hits[fa_group_id]
         blocks = self.create_kv_cache_blocks(computed)
@@ -927,29 +924,35 @@ class KVCacheManager:
                 that are already cached and tokens to be cached.
 
         """
-        if self.enable_caching:
-            cacheable_num_tokens = self._get_cacheable_num_tokens(
-                request, num_computed_tokens
-            )
-            self.coordinator.cache_blocks(
-                request,
-                cacheable_num_tokens,
-            )
-            runtime_control = self._get_materialization_control(request) or {}
-            _write_materialization_runtime_event(
-                {
-                    "event": "commit",
-                    "request_id": request.request_id,
-                    "engine_num_computed_tokens": num_computed_tokens,
-                    "cacheable_boundary_tokens": cacheable_num_tokens,
-                    "hash_block_size": getattr(self, "hash_block_size", None),
-                    "applied_decision": runtime_control.get(
-                        "effective_decision",
-                        runtime_control.get("observed_decision"),
-                    ),
-                    "target_reuse_tokens": runtime_control.get("target_reuse_tokens"),
-                }
-            )
+        if not self.enable_caching:
+            return
+        runtime_control = request.kv_materialization_runtime_control
+        if runtime_control is None:
+            self.coordinator.cache_blocks(request, num_computed_tokens)
+            return
+
+        cacheable_num_tokens = self._get_cacheable_num_tokens(
+            request, num_computed_tokens
+        )
+        cached_before = self._count_request_cached_blocks(request.request_id)
+        self.coordinator.cache_blocks(request, cacheable_num_tokens)
+        cached_after = self._count_request_cached_blocks(request.request_id)
+        self._emit_materialization_event(
+            request,
+            "commit",
+            engine_num_computed_tokens=num_computed_tokens,
+            cacheable_boundary_tokens=cacheable_num_tokens,
+            cached_blocks=max(cached_after - cached_before, 0),
+            hash_block_size=self.hash_block_size,
+            cache_usage=self.usage,
+        )
+
+    def _count_request_cached_blocks(self, request_id: str) -> int:
+        return sum(
+            int(manager.num_cached_block.get(request_id, 0))
+            for manager in self.coordinator.single_type_managers
+            if hasattr(manager, "num_cached_block")
+        )
 
     def create_kv_cache_blocks(
         self, blocks: tuple[list[KVCacheBlock], ...]

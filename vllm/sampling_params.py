@@ -1341,6 +1341,8 @@ class BeamSearchParams(
     include_stop_str_in_output: bool = False
     structured_outputs: StructuredOutputsParams | None = None
     skip_special_tokens: bool = True
+    extra_args: dict[str, Any] | None = None
+    """Plugin-owned metadata forwarded to each internal beam request."""
 
     def __post_init__(self) -> None:
         _verify_num_sequences(self.beam_width, "beam_width")

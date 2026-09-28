@@ -55,6 +55,35 @@ Every plugin has three parts:
 
 - **Endpoint plugins** (with group name `vllm.endpoint_plugins`): The primary use case for these plugins is to register custom, out-of-the-tree HTTP routes on the OpenAI compatible API server. Unlike the other plugin groups above, endpoint plugins are loaded only in the API server front end process and are **not loaded by default**. See [Endpoint Plugins](endpoint_plugins.md) for the interface and [Security](../usage/security.md#endpoint-plugins) for the opt-in and trust model.
 
+## vLLM-HUST request-processing hooks
+
+Trusted `vllm.general_plugins` can register request metadata processors through
+`vllm.plugins.request_processing`. API version `1.0` runs after prompt rendering
+and before engine submission for Chat, Completions, and Responses requests,
+including beam search. Each processor receives the request ID, rendered prompt
+length, output-token limit, endpoint kind, and only the HTTP headers it declared
+at registration time. Authorization, cookie, proxy authorization, and API-key
+headers cannot be requested.
+
+Processors return plugin-owned `SamplingParams.extra_args` entries. Registration
+is idempotent, while conflicting processor names or metadata keys fail closed.
+Engine behavior must use a separately versioned, typed host contract; plugins
+must not monkey patch serving or scheduler internals. The vLLM-HUST KV
+materialization contract is exposed by `vllm.v1.core.kv_materialization` at API
+version `1.0` and validates request-scoped control metadata before cache lookup,
+connector reuse, hashing, or cache commit.
+
+```python
+def register():
+    from vllm.plugins.request_processing import register_request_processor
+
+    register_request_processor(
+        "my_processor",
+        process_request,
+        header_names=("x-my-routing-hint",),
+    )
+```
+
 ## Guidelines for Writing Plugins
 
 - **Being re-entrant**: The function specified in the entry point should be re-entrant, meaning it can be called multiple times without causing issues. This is necessary because the function might be called multiple times in some processes.

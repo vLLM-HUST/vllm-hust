@@ -14,6 +14,11 @@ from vllm.multimodal.inputs import MultiModalFeatureSpec
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 from vllm.utils import length_from_prompt_token_ids_or_embeds
+from vllm.v1.core.kv_materialization import (
+    KV_MATERIALIZATION_RUNTIME_CONTROL_KEY,
+    KVMaterializationRuntimeControl,
+    parse_kv_materialization_runtime_control,
+)
 from vllm.v1.engine import (
     EngineCoreEvent,
     EngineCoreEventType,
@@ -105,8 +110,7 @@ class Request:
         self.kv_transfer_params: dict[str, Any] | None = None
         # E/P/D: Connector-specific encoder-cache transfer parameters.
         self.ec_transfer_params: dict[str, Any] | None = None
-        # Arrival-time KV materialization controls consumed by prefix caching.
-        self.kv_materialization_runtime_control: dict[str, Any] | None = None
+        runtime_control_payload: Any = None
 
         if pooling_params is not None:
             # Pooling models.
@@ -128,8 +132,8 @@ class Request:
                 self.kv_cache_report_mode = sampling_params.extra_args.get(
                     "kv_cache_report_mode", "incremental"
                 )
-                self.kv_materialization_runtime_control = (
-                    sampling_params.extra_args.get("kv_materialization_runtime_control")
+                runtime_control_payload = sampling_params.extra_args.get(
+                    KV_MATERIALIZATION_RUNTIME_CONTROL_KEY
                 )
             else:
                 self.kv_cache_report_mode = "incremental"
@@ -148,6 +152,27 @@ class Request:
         self.num_prompt_tokens = length_from_prompt_token_ids_or_embeds(
             prompt_token_ids, prompt_embeds
         )
+        self.kv_materialization_runtime_control: (
+            KVMaterializationRuntimeControl | None
+        ) = parse_kv_materialization_runtime_control(
+            runtime_control_payload,
+            prompt_tokens=self.num_prompt_tokens,
+        )
+        runtime_cache_salt = (
+            None
+            if self.kv_materialization_runtime_control is None
+            else self.kv_materialization_runtime_control.cache_salt
+        )
+        if (
+            cache_salt is not None
+            and runtime_cache_salt is not None
+            and cache_salt != runtime_cache_salt
+        ):
+            raise ValueError(
+                "KV materialization cache_salt conflicts with the request prompt"
+            )
+        if cache_salt is None:
+            cache_salt = runtime_cache_salt
         self._output_token_ids: list[int] = []
         if self.prompt_token_ids is None:
             self._all_token_ids: list[int] = [0] * self.num_prompt_tokens

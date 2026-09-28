@@ -814,34 +814,24 @@ def get_request_block_hasher(
 
     def request_block_hasher(request: Request) -> list[BlockHash]:
         runtime_control = request.kv_materialization_runtime_control
-        if not isinstance(runtime_control, dict):
-            kv_transfer_params = request.kv_transfer_params or {}
-            runtime_control = kv_transfer_params.get(
-                "kv_materialization_runtime_control"
-            )
         segment_start_idx = None
         segment_parent_hash = None
-        if isinstance(runtime_control, dict):
-            decision = runtime_control.get(
-                "effective_decision", runtime_control.get("observed_decision")
-            )
-            target_reuse_tokens = runtime_control.get("target_reuse_tokens")
-            tail_salt = runtime_control.get("segmented_tail_cache_salt")
-            if (
-                decision == "partial_reuse"
-                and isinstance(target_reuse_tokens, int)
-                and target_reuse_tokens > 0
-                and target_reuse_tokens % hash_block_size == 0
-                and isinstance(tail_salt, str)
-                and tail_salt
-            ):
-                segment_start_idx = target_reuse_tokens
+        if (
+            runtime_control is not None
+            and runtime_control.effective_decision == "partial_reuse"
+            and runtime_control.segmented_tail_cache_salt
+        ):
+            aligned_reuse_tokens = (
+                runtime_control.target_reuse_tokens // hash_block_size
+            ) * hash_block_size
+            if aligned_reuse_tokens > 0:
+                segment_start_idx = aligned_reuse_tokens
                 segment_parent_hash = BlockHash(
                     caching_hash_fn(
                         (
                             "kv_materialization_segment",
-                            tail_salt,
-                            target_reuse_tokens,
+                            runtime_control.segmented_tail_cache_salt,
+                            aligned_reuse_tokens,
                         )
                     )
                 )
