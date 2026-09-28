@@ -56,7 +56,6 @@ def register_request_processor(
     Processors receive only explicitly requested, non-sensitive HTTP headers.
     Header names are normalized to lowercase before registration and delivery.
     """
-
     if not isinstance(name, str) or not name.strip() or not callable(processor):
         raise ValueError("request processor requires a name and callable")
     requested_headers = tuple(header_names)
@@ -85,7 +84,6 @@ def apply_request_processors(
     extra_args: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Merge processor-owned engine metadata without silent overwrites."""
-
     merged = dict(extra_args or {})
     normalized_headers = {key.lower(): value for key, value in context.headers.items()}
     for name, registration in _request_processors.items():

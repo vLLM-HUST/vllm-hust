@@ -5,6 +5,7 @@ import hashlib
 from collections.abc import Mapping
 
 import pytest
+import torch
 
 from vllm.sampling_params import SamplingParams
 from vllm.v1.core import kv_materialization
@@ -13,6 +14,11 @@ from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
 from vllm.v1.core.kv_materialization import (
     KV_MATERIALIZATION_RUNTIME_CONTROL_KEY,
     register_kv_materialization_runtime_observer,
+)
+from vllm.v1.kv_cache_interface import (
+    FullAttentionSpec,
+    KVCacheConfig,
+    KVCacheGroupSpec,
 )
 from vllm.v1.request import Request
 
@@ -105,6 +111,34 @@ def test_malformed_control_types_fail_closed(field: str, value: object) -> None:
 
     with pytest.raises(ValueError):
         _request(control)
+
+
+def test_manager_retains_runtime_block_sizes() -> None:
+    config = KVCacheConfig(
+        num_blocks=8,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(
+                ["layer"],
+                FullAttentionSpec(
+                    block_size=16,
+                    num_kv_heads=1,
+                    head_size=1,
+                    dtype=torch.float32,
+                ),
+            )
+        ],
+    )
+
+    manager = KVCacheManager(
+        config,
+        max_model_len=128,
+        scheduler_block_size=64,
+        hash_block_size=16,
+    )
+
+    assert manager.scheduler_block_size == 64
+    assert manager.hash_block_size == 16
 
 
 def test_recompute_disables_lookup_and_commit() -> None:

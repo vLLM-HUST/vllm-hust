@@ -54,7 +54,6 @@ class KVMaterializationRuntimeControl:
 
     def reuse_boundary(self, hash_block_size: int) -> int | None:
         """Return the maximum reusable prefix, aligned for the host cache."""
-
         if hash_block_size <= 0:
             raise ValueError("hash_block_size must be positive")
         if self.effective_decision == "recompute":
@@ -79,7 +78,6 @@ def parse_kv_materialization_runtime_control(
     prompt_tokens: int,
 ) -> KVMaterializationRuntimeControl | None:
     """Validate and parse plugin metadata before prefix-cache use."""
-
     if value is None:
         return None
     if not isinstance(value, Mapping):
@@ -162,7 +160,6 @@ def register_kv_materialization_runtime_observer(
     observer: MaterializationRuntimeObserver,
 ) -> None:
     """Register an idempotent engine-owned runtime receipt observer."""
-
     if not isinstance(name, str) or not name.strip() or not callable(observer):
         raise ValueError("KV materialization observer requires a name and callable")
     existing = _runtime_observers.get(name)
@@ -173,7 +170,6 @@ def register_kv_materialization_runtime_observer(
 
 def emit_kv_materialization_runtime_event(payload: Mapping[str, object]) -> None:
     """Notify observers without making observability failures fatal."""
-
     for name, observer in _runtime_observers.items():
         try:
             observer(payload)

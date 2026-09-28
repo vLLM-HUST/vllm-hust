@@ -25,6 +25,7 @@ from vllm.v1.engine import (
     EngineCoreRequest,
     FinishReason,
 )
+from vllm.v1.kv_hints import KvHintsEnvelope
 from vllm.v1.metrics.stats import PrefillStats, RequestSpecDecodeMetrics
 from vllm.v1.structured_output.request import StructuredOutputRequest
 from vllm.v1.utils import ConstantList
@@ -83,6 +84,7 @@ class Request:
         reasoning_ended: bool | None = None,
         reasoning_parser_kwargs: dict[str, Any] | None = None,
         abort_immediately: bool = False,
+        kv_hints: KvHintsEnvelope | None = None,
     ) -> None:
         self.request_id = request_id
         self.client_index = client_index
@@ -169,6 +171,8 @@ class Request:
             raise ValueError(
                 "KV materialization cache_salt conflicts with the request prompt"
             )
+        if cache_salt is None:
+            cache_salt = runtime_cache_salt
         self._output_token_ids: list[int] = []
         if self.prompt_token_ids is None:
             self._all_token_ids: list[int] = [0] * self.num_prompt_tokens
@@ -208,7 +212,7 @@ class Request:
 
         self.spec_token_ids: list[int] = []
         self.num_computed_tokens = 0
-        self.cache_salt: str | None = runtime_cache_salt or cache_salt
+        self.cache_salt: str | None = cache_salt
 
         # Multi-modal related
         self.mm_features = mm_features or []
@@ -221,6 +225,7 @@ class Request:
         # trace_headers
         self.trace_headers = trace_headers
         self.session_id = session_id
+        self.kv_hints = kv_hints
 
         # True if this request is scheduled as a non-final prefill chunk.
         self.is_prefill_chunk = False
@@ -229,6 +234,9 @@ class Request:
         # in the (sparse) prefix cache; 0 means none. Set at admission for
         # hybrid/Mamba models when a shared prefix is detected (Marconi-style).
         self.shared_prefix_boundary = 0
+        # DeepSeek-V4.1 only: SWA bounded replay. The request holds no
+        # sliding-window KV below this position; 0 when nothing replays.
+        self.replay_start = 0
 
         # The number of NaNs in logits. A value greater than 0
         # indicates that the output is corrupted
@@ -285,6 +293,7 @@ class Request:
             block_hasher=block_hasher,
             resumable=request.resumable,
             session_id=request.session_id,
+            kv_hints=request.kv_hints,
             reasoning_ended=request.reasoning_ended,
             reasoning_parser_kwargs=request.reasoning_parser_kwargs,
             abort_immediately=request.abort_immediately,
@@ -376,8 +385,7 @@ class Request:
         return prefill_stats
 
     def __lt__(self, other: "Request") -> bool:
-        """
-        Compare two requests based on priority, arrival time, and request ID.
+        """Compare two requests based on priority, arrival time, and request ID.
         Used in priority scheduling.
         """
         if self.priority != other.priority:

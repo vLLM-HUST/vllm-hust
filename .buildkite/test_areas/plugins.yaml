@@ -11,7 +11,9 @@ steps:
   source_file_dependencies:
   - vllm/plugins/
   - tests/plugins/
+  - tests/plugins_tests/test_ecpa_plugin_evidence.py
   commands:
+  - pytest -v -s plugins_tests/test_ecpa_plugin_evidence.py
   # begin platform plugin and general plugin tests, all the code in-between runs on dummy platform
   - pip install -e ./plugins/vllm_add_dummy_platform
   - pytest -v -s plugins_tests/test_platform_plugins.py
@@ -53,6 +55,7 @@ steps:
   mirror:
     amd:
       label: ":amd: (MI250) Plugin Integration"
+      dind: false
       device: mi250_2
       timeout_in_minutes: 50
       depends_on:
@@ -60,6 +63,7 @@ steps:
       source_file_dependencies:
       - vllm/plugins/
       - tests/plugins/
+      - tests/plugins_tests/test_ecpa_plugin_evidence.py
       - vllm/platforms/rocm.py
 
 
@@ -75,6 +79,20 @@ steps:
   commands:
     - pip install "vllm-gguf-plugin >= 0.0.2"
     - pytest -v -s plugins_tests/gguf
+  mirror:
+    amd:
+      label: ":amd: (MI355 DPX) GGUF Plugin"
+      dind: false
+      device: mi355_dpx
+      timeout_in_minutes: 45
+      working_dir: "/vllm-workspace/tests"
+      depends_on:
+      - image-build-amd
+      source_file_dependencies:
+      - vllm/model_executor/layers/quantization
+      - tests/plugins_tests/test_gguf_plugin.py
+      - tests/plugins_tests/gguf
+      - vllm/platforms/rocm.py
 
 - label: ":nvidia: (H200 MIG 18GB) BitsAndBytes Plugin"
   key: bitsandbytes-plugin
