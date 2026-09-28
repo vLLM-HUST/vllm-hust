@@ -35,6 +35,7 @@ from vllm.v1.core.encoder_cache_manager import (
     EncoderCacheManager,
     EncoderDecoderCacheManager,
 )
+from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock
 from vllm.v1.core.sched.batch_admission import (
@@ -52,17 +53,13 @@ from vllm.v1.core.sched.output import (
     ScheduledEncoderInputStats,
     SchedulerOutput,
 )
-from vllm.v1.core.sched.preemption import (
-    PreemptionCandidate,
-    PreemptionContext,
-    PreemptionPolicyController,
-)
 from vllm.v1.core.sched.request_queue import (
     RequestQueue,
     SchedulingPolicy,
     create_request_queue,
 )
 from vllm.v1.core.sched.utils import check_stop, remove_all
+from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import (
     KVCacheConfig,
     MambaSpec,
@@ -76,14 +73,17 @@ from vllm.v1.metrics.stats import (
     SchedulerStats,
 )
 from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
+from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm.v1.spec_decode.dynamic.utils import build_dynamic_sd_schedule_lookup
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
 
-from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
-from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
-from vllm.v1.request import Request, RequestStatus, StreamingUpdate
+from vllm.v1.core.sched.preemption import (
+    PreemptionCandidate,
+    PreemptionContext,
+    PreemptionPolicyController,
+)
 
 logger = init_logger(__name__)
 
@@ -1736,6 +1736,7 @@ class Scheduler(SchedulerInterface):
                 num_computed_tokens=candidate.num_computed_tokens,
                 num_preemptions=candidate.num_preemptions,
                 max_tokens=candidate.max_tokens,
+                predicted_length=candidate.predicted_length,
             )
             for candidate in self.running
         )
