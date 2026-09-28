@@ -105,6 +105,8 @@ class Request:
         self.kv_transfer_params: dict[str, Any] | None = None
         # E/P/D: Connector-specific encoder-cache transfer parameters.
         self.ec_transfer_params: dict[str, Any] | None = None
+        # Arrival-time KV materialization controls consumed by prefix caching.
+        self.kv_materialization_runtime_control: dict[str, Any] | None = None
 
         if pooling_params is not None:
             # Pooling models.
@@ -125,6 +127,9 @@ class Request:
                 )
                 self.kv_cache_report_mode = sampling_params.extra_args.get(
                     "kv_cache_report_mode", "incremental"
+                )
+                self.kv_materialization_runtime_control = (
+                    sampling_params.extra_args.get("kv_materialization_runtime_control")
                 )
             else:
                 self.kv_cache_report_mode = "incremental"
