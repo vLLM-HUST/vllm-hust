@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import pytest
 from vllm.v1.outputs import ModelRunnerOutput
-
 from vllm.v1.request import RequestStatus
 
 from .utils import create_requests, create_scheduler
@@ -229,3 +228,135 @@ def test_negative_prediction_is_harmless():
     output = scheduler.schedule()
 
     assert requests[0].request_id in output.num_scheduled_tokens
+
+
+def test_candidate_carries_the_prediction_into_the_policy() -> None:
+    """The prediction must reach the policy through the preemption candidate.
+
+    A policy that never sees ``predicted_length`` cannot act on it, so this
+    asserts that the value (and its absence) survives the context hand-off.
+    """
+    seen: list[dict[str, int | None]] = []
+
+    class _RecordingPolicy:
+        @classmethod
+        def from_vllm_config(cls, vllm_config):
+            return cls()
+
+        def select_victim(self, context):
+            seen.append(
+                {
+                    candidate.request_id: candidate.predicted_length
+                    for candidate in context.candidates
+                }
+            )
+            return None  # abstain: this test only inspects the context
+
+    scheduler = create_scheduler(
+        block_size=BLOCK_SIZE,
+        num_blocks=11,
+        max_num_batched_tokens=100,
+        enable_prefix_caching=False,
+        preemption_policy=_RecordingPolicy,
+    )
+    requests = create_requests(
+        num_requests=2,
+        num_tokens=80,
+        block_size=BLOCK_SIZE,
+        max_tokens=512,
+        predicted_length=[64, None],
+    )
+
+    scheduler.add_request(requests[0])
+    first_output = scheduler.schedule()
+    scheduler.add_request(requests[1])
+    scheduler.schedule()
+    scheduler.update_from_output(
+        first_output,
+        ModelRunnerOutput(
+            req_ids=[requests[0].request_id],
+            req_id_to_index={requests[0].request_id: 0},
+            sampled_token_ids=[[0]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
+    )
+    scheduler.schedule()  # the pool is exhausted, so this step preempts
+
+    assert seen, "the policy was never asked to select a victim"
+    recorded = seen[0]
+    # The prediction reaches the policy, and an absent prediction stays None
+    # rather than being silently reported as some default length.
+    assert recorded[requests[0].request_id] == 64
+    assert recorded[requests[1].request_id] is None
+
+
+def test_prediction_changes_which_request_is_preempted() -> None:
+    """The prediction must change the outcome, not merely be visible.
+
+    A policy that kills the request with the largest predicted remaining output
+    must choose a different request than the built-in choice made from the same
+    state, otherwise the assertion would prove nothing about the hand-off.
+    """
+
+    class _LongestRemainingPolicy:
+        @classmethod
+        def from_vllm_config(cls, vllm_config):
+            return cls()
+
+        def select_victim(self, context):
+            if not context.candidates or context.scheduling_policy == "priority":
+                return None
+            victim = max(
+                context.candidates,
+                key=lambda candidate: (
+                    (candidate.predicted_length or 0) - candidate.num_output_tokens,
+                    -candidate.arrival_time,
+                ),
+            )
+            if victim.request_id == context.builtin_victim_id:
+                return None
+            return victim.request_id
+
+    def run(policy):
+        scheduler = create_scheduler(
+            block_size=BLOCK_SIZE,
+            num_blocks=11,
+            max_num_batched_tokens=100,
+            enable_prefix_caching=False,
+            preemption_policy=policy,
+        )
+        requests = create_requests(
+            num_requests=2,
+            num_tokens=80,
+            block_size=BLOCK_SIZE,
+            max_tokens=512,
+            predicted_length=[64, None],
+        )
+        scheduler.add_request(requests[0])
+        first_output = scheduler.schedule()
+        scheduler.add_request(requests[1])
+        scheduler.schedule()
+        scheduler.update_from_output(
+            first_output,
+            ModelRunnerOutput(
+                req_ids=[requests[0].request_id],
+                req_id_to_index={requests[0].request_id: 0},
+                sampled_token_ids=[[0]],
+                logprobs=None,
+                prompt_logprobs_dict={},
+                pooler_output=[],
+            ),
+        )
+        preempting = scheduler.schedule()
+        return set(preempting.preempted_req_ids or ()), requests
+
+    predicted_ids, requests = run(_LongestRemainingPolicy)
+    builtin_ids, _ = run(None)
+
+    assert predicted_ids, "no preemption happened; the scenario proves nothing"
+    # The prediction-aware policy kills the long request...
+    assert predicted_ids == {requests[0].request_id}
+    # ...while the built-in choice from the same state takes the other one.
+    assert builtin_ids and builtin_ids != predicted_ids
