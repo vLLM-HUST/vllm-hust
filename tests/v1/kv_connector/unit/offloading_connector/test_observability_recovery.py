@@ -95,6 +95,12 @@ def _resume(scheduler: OffloadingConnectorScheduler, req_id: str = REQ_ID) -> No
     scheduler.build_connector_meta(output)
 
 
+def _resume_with_meta(scheduler: OffloadingConnectorScheduler, req_id: str = REQ_ID):
+    output = SchedulerOutput.make_empty()
+    output.scheduled_cached_reqs.resumed_req_ids = {req_id}
+    return scheduler.build_connector_meta(output)
+
+
 def _complete_load(
     scheduler: OffloadingConnectorScheduler,
     req_state: RequestOffloadState,
@@ -281,3 +287,53 @@ def test_overflowed_roster_emits_no_admission():
 
     assert [record.event for record in seen] == [KVTransferEvent.RECOVERY_REQUEUED]
     assert req_state.pending_recovery is False
+
+
+def test_admission_is_shipped_to_workers_with_its_compute_kind():
+    scheduler = _make_scheduler()
+    req_state = _track_request(scheduler)
+    _observe()
+
+    _preempt(scheduler)
+    _complete_load(scheduler, req_state, job_id=11, ranks=(0, 1))
+    _complete_load(scheduler, req_state, job_id=12, ranks=(0, 1))
+    meta = _resume_with_meta(scheduler)
+
+    assert meta.recovery_admissions == {REQ_ID: (1, (11, 12), "prefill")}
+
+
+def test_admission_ships_as_decode_once_the_prompt_is_computed():
+    scheduler = _make_scheduler()
+    req_state = _track_request(scheduler)
+    _observe()
+
+    _preempt(scheduler)
+    _complete_load(scheduler, req_state, job_id=11, ranks=(0, 1))
+    req_state.req.num_computed_tokens = req_state.req.num_prompt_tokens
+    meta = _resume_with_meta(scheduler)
+
+    assert meta.recovery_admissions == {REQ_ID: (1, (11,), "decode")}
+
+
+def test_admission_metadata_is_shipped_once():
+    scheduler = _make_scheduler()
+    req_state = _track_request(scheduler)
+    _observe()
+
+    _preempt(scheduler)
+    _complete_load(scheduler, req_state, job_id=11, ranks=(0, 1))
+    assert _resume_with_meta(scheduler).recovery_admissions
+    assert _resume_with_meta(scheduler).recovery_admissions == {}
+
+
+def test_overflowed_roster_ships_no_admission_metadata():
+    scheduler = _make_scheduler()
+    req_state = _track_request(scheduler)
+    _observe()
+
+    _preempt(scheduler)
+    req_state.restored_job_ids = [51]
+    req_state.restored_overflow = True
+    meta = _resume_with_meta(scheduler)
+
+    assert meta is None or meta.recovery_admissions == {}

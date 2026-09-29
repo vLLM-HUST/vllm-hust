@@ -46,6 +46,7 @@ class KVTransferEvent(str, Enum):
     TRANSFER_DESCRIPTORS = "transfer_descriptors"
     RECOVERY_REQUEUED = "recovery_requeued"
     RECOVERY_ADMITTED = "recovery_admitted"
+    FIRST_COMPUTE = "first_compute"
 
 
 class TransferOperation(str, Enum):
@@ -81,6 +82,17 @@ class RecoveryRequeueReason(str, Enum):
     """
 
     UNCLASSIFIED = "unclassified"
+
+
+class ComputeKind(str, Enum):
+    """Shape of the first real forward of a recovery episode.
+
+    Classified by the step's scheduled tokens: a one-token step is a decode
+    step, anything wider is prefill work.
+    """
+
+    PREFILL = "prefill"
+    DECODE = "decode"
 
 
 # Bounds one transfer's region-descriptor inventory, matching the bounded
@@ -130,6 +142,7 @@ class KVTransferObservation:
         descriptors: Region-relative copy descriptors (layouts only).
         dropped_descriptors: Descriptors dropped by the bounded inventory
             (layouts only).
+        compute_kind: Shape of the reported forward (first compute only).
 
     """
 
@@ -150,6 +163,7 @@ class KVTransferObservation:
     requeue_reason: RecoveryRequeueReason | None = None
     descriptors: tuple[KVRegionDescriptor, ...] = ()
     dropped_descriptors: int = 0
+    compute_kind: ComputeKind | None = None
 
 
 KVTransferObserver = Callable[[KVTransferObservation], None]
@@ -417,10 +431,39 @@ def emit_kv_transfer_descriptors(
     )
 
 
+def emit_kv_first_compute(
+    *,
+    request_id: str,
+    recovery_epoch: int,
+    job_ids: tuple[int, ...],
+    compute_kind: ComputeKind | None,
+    rank: int | None,
+) -> None:
+    """Publish the first real forward of an admitted recovery episode.
+
+    The caller owns consume-once: the pending marker is dropped before this
+    is called, so a repeated batch can never report the same episode twice.
+    """
+    if not _observers:
+        return
+    _publish(
+        KVTransferObservation(
+            event=KVTransferEvent.FIRST_COMPUTE,
+            observed_at_ns=time.monotonic_ns(),
+            request_id=request_id,
+            recovery_epoch=recovery_epoch,
+            job_ids=job_ids,
+            compute_kind=compute_kind,
+            rank=rank,
+        )
+    )
+
+
 __all__ = [
     "KV_TRANSFER_OBSERVABILITY_API_VERSION",
     "KV_TRANSFER_OBSERVER_CONTRACT",
     "MAX_DESCRIPTOR_REGIONS",
+    "ComputeKind",
     "KVRegionDescriptor",
     "KVTransferEvent",
     "KVTransferObservation",
@@ -429,6 +472,7 @@ __all__ = [
     "RecoveryRequeueReason",
     "TransferCancellationReason",
     "TransferOperation",
+    "emit_kv_first_compute",
     "emit_kv_recovery_admitted",
     "emit_kv_recovery_requeued",
     "emit_kv_transfer_cancelled",

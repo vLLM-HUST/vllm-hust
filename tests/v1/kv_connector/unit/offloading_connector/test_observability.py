@@ -10,12 +10,14 @@ import pytest
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading import observability
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
     MAX_LOAD_RECEIPT_JOBS,
+    MAX_PENDING_FIRST_COMPUTE,
     OffloadingConnectorMetadata,
     OffloadingWorkerMetadata,
     TransferJob,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
     KV_TRANSFER_OBSERVER_CONTRACT,
+    ComputeKind,
     KVRegionDescriptor,
     KVTransferEvent,
     RecoveryRequeueReason,
@@ -24,6 +26,9 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability impor
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.worker import (
     OffloadingConnectorWorker,
+)
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import (
+    OffloadingConnector,
 )
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.kv_offload.base import (
@@ -53,6 +58,7 @@ _CLOSED_FIELDS = {
     "requeue_reason",
     "descriptors",
     "dropped_descriptors",
+    "compute_kind",
 }
 
 
@@ -116,6 +122,25 @@ def _load_metadata(job_id: int, req_id: str) -> OffloadingConnectorMetadata:
 
 def _empty_metadata() -> OffloadingConnectorMetadata:
     return OffloadingConnectorMetadata(load_jobs={}, store_jobs={})
+
+
+def _admission_metadata(
+    req_id: str,
+    epoch: int,
+    roster: tuple[int, ...],
+    compute_kind: str,
+) -> OffloadingConnectorMetadata:
+    return OffloadingConnectorMetadata(
+        load_jobs={},
+        store_jobs={},
+        recovery_admissions={req_id: (epoch, roster, compute_kind)},
+    )
+
+
+def _observe() -> list:
+    seen: list = []
+    observability.register_kv_transfer_observer("test", seen.append)
+    return seen
 
 
 # ---------------------------------------------------------------------------
@@ -550,4 +575,110 @@ def test_worker_is_inert_without_observers(monkeypatch):
     worker.start_kv_transfers(_load_metadata(62, "req-62"))
     worker.worker.get_finished.return_value = [TransferResult(job_id=62, success=True)]
     worker.get_finished(set())
+    worker.note_recovery_admissions(_admission_metadata("req-63", 1, (63,), "decode"))
+    worker.observe_forward_batch(["req-63"])
     worker.shutdown()
+
+
+def test_first_compute_is_reported_once_with_epoch_and_roster():
+    seen = _observe()
+    worker = _make_worker(rank=3)
+    worker.note_recovery_admissions(
+        _admission_metadata("req-1", 2, (11, 12), "prefill")
+    )
+
+    worker.observe_forward_batch(["req-other", "req-1"])
+
+    assert len(seen) == 1
+    record = seen[0]
+    assert record.event is KVTransferEvent.FIRST_COMPUTE
+    assert record.request_id == "req-1"
+    assert record.recovery_epoch == 2
+    assert record.job_ids == (11, 12)
+    assert record.compute_kind is ComputeKind.PREFILL
+    assert record.rank == 3
+
+    # Consumed exactly once: the same request never reports a second time.
+    worker.observe_forward_batch(["req-1"])
+    assert len(seen) == 1
+
+
+def test_first_compute_waits_for_a_batch_that_contains_the_request():
+    seen = _observe()
+    worker = _make_worker()
+    worker.note_recovery_admissions(_admission_metadata("req-1", 1, (7,), "decode"))
+
+    worker.observe_forward_batch(["req-other"])
+    assert seen == []
+
+    worker.observe_forward_batch(["req-1"])
+    assert len(seen) == 1
+    assert seen[0].compute_kind is ComputeKind.DECODE
+    assert seen[0].job_ids == (7,)
+
+
+def test_a_newer_admission_replaces_the_pending_one():
+    seen = _observe()
+    worker = _make_worker()
+    worker.note_recovery_admissions(_admission_metadata("req-1", 1, (7,), "decode"))
+    worker.note_recovery_admissions(_admission_metadata("req-1", 2, (9,), "prefill"))
+
+    worker.observe_forward_batch(["req-1"])
+
+    assert len(seen) == 1
+    assert seen[0].recovery_epoch == 2
+    assert seen[0].job_ids == (9,)
+    assert seen[0].compute_kind is ComputeKind.PREFILL
+
+
+def test_finished_request_drops_its_pending_admission():
+    seen = _observe()
+    worker = _make_worker()
+    worker.note_recovery_admissions(_admission_metadata("req-1", 1, (7,), "decode"))
+    worker.worker.get_finished.return_value = []
+
+    worker.get_finished({"req-1"})
+    worker.observe_forward_batch(["req-1"])
+
+    assert seen == []
+
+
+def test_unknown_compute_kind_still_reports_the_forward():
+    seen = _observe()
+    worker = _make_worker()
+    worker.note_recovery_admissions(_admission_metadata("req-1", 1, (7,), "sideways"))
+
+    worker.observe_forward_batch(["req-1"])
+
+    assert len(seen) == 1
+    assert seen[0].event is KVTransferEvent.FIRST_COMPUTE
+    assert seen[0].compute_kind is None
+
+
+def test_pending_first_compute_map_is_bounded():
+    worker = _make_worker()
+    for index in range(MAX_PENDING_FIRST_COMPUTE + 3):
+        worker.note_recovery_admissions(
+            _admission_metadata(f"req-{index}", 1, (index,), "decode")
+        )
+
+    assert len(worker._recovery_admissions) == MAX_PENDING_FIRST_COMPUTE
+    # The oldest entries are dropped first, the newest survive.
+    assert "req-0" not in worker._recovery_admissions
+    assert f"req-{MAX_PENDING_FIRST_COMPUTE + 2}" in worker._recovery_admissions
+
+
+def test_connector_stashes_admissions_and_forwards_the_batch_to_its_worker():
+    connector = object.__new__(OffloadingConnector)
+    connector.connector_worker = MagicMock()
+    metadata = _admission_metadata("req-1", 1, (7,), "decode")
+
+    connector.bind_connector_metadata(metadata)
+    connector.connector_worker.note_recovery_admissions.assert_called_once_with(
+        metadata
+    )
+
+    connector.observe_forward_batch(["req-1", "req-2"])
+    connector.connector_worker.observe_forward_batch.assert_called_once_with(
+        ["req-1", "req-2"]
+    )

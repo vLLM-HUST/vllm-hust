@@ -16,6 +16,12 @@ ReqId = str
 # states and overflow is counted, never silently absorbed.
 MAX_LOAD_RECEIPT_JOBS: Final = 4096
 
+# Bounds the recovery admissions one metadata can carry to the workers.
+MAX_RECOVERY_ADMISSIONS: Final = 4096
+
+# Bounds the worker-side map of admissions that await a first real forward.
+MAX_PENDING_FIRST_COMPUTE: Final = 4096
+
 
 @dataclass(slots=True)
 class DirectionalTransferStats:
@@ -76,6 +82,12 @@ class OffloadingConnectorMetadata(KVConnectorMetadata):
     load_jobs: dict[int, TransferJob]
     store_jobs: dict[int, TransferJob]
     jobs_to_flush: set[int] | None = None
+    # req_id -> (recovery epoch, sorted restored job ids, compute kind value)
+    # for episodes the scheduler admitted since the last metadata. Workers
+    # consume an entry once, on that request's first real forward.
+    recovery_admissions: dict[str, tuple[int, tuple[int, ...], str]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass

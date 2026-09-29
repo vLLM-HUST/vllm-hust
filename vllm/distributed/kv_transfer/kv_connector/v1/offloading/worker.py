@@ -10,6 +10,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.canonical_mapping i
     derive_canonical_mappings,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
+    MAX_PENDING_FIRST_COMPUTE,
     OffloadingConnectorMetadata,
     OffloadingWorkerMetadata,
     ReqId,
@@ -18,8 +19,10 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.config import (
     get_offloading_group_ids,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
+    ComputeKind,
     TransferCancellationReason,
     TransferOperation,
+    emit_kv_first_compute,
     emit_kv_transfer_cancelled,
     emit_kv_transfer_completed,
     emit_kv_transfer_submitted,
@@ -43,6 +46,8 @@ from vllm.v1.kv_offload.base import (
 )
 
 logger = init_logger(__name__)
+
+_COMPUTE_KINDS = {kind.value: kind for kind in ComputeKind}
 
 
 class OffloadingConnectorWorker:
@@ -75,6 +80,9 @@ class OffloadingConnectorWorker:
             tuple[int, ReqId, GPULoadStoreSpec, LoadStoreSpec]
         ] = []
         self._connector_worker_meta = OffloadingWorkerMetadata()
+        # req_id -> (recovery epoch, restored roster, compute kind) admitted
+        # by the scheduler and awaiting that request's first real forward.
+        self._recovery_admissions: dict[str, tuple[int, tuple[int, ...], str]] = {}
 
     def _init_worker(self, kv_caches: CanonicalKVCaches) -> None:
         self.worker = self.spec.get_worker(kv_caches)
@@ -267,6 +275,55 @@ class OffloadingConnectorWorker:
         if kv_connector_metadata.jobs_to_flush:
             self.worker.wait(kv_connector_metadata.jobs_to_flush)
 
+    def note_recovery_admissions(
+        self, kv_connector_metadata: OffloadingConnectorMetadata
+    ) -> None:
+        """Stash the scheduler's admitted recoveries until they compute.
+
+        Each entry is dropped by :meth:`observe_forward_batch` on the
+        request's first real forward, or with the request itself, so a
+        stale epoch can never be reported.
+        """
+        admissions = getattr(kv_connector_metadata, "recovery_admissions", None)
+        if not admissions:
+            return
+        for req_id, admission in admissions.items():
+            epoch, roster, compute_kind = admission
+            self._recovery_admissions[str(req_id)] = (
+                int(epoch),
+                tuple(int(job_id) for job_id in roster),
+                str(compute_kind),
+            )
+        while len(self._recovery_admissions) > MAX_PENDING_FIRST_COMPUTE:
+            # Oldest first: admissions are consumed in submission order.
+            self._recovery_admissions.pop(next(iter(self._recovery_admissions)))
+
+    def observe_forward_batch(self, request_ids: list[str]) -> None:
+        """Publish each admitted recovery's first real forward, exactly once.
+
+        Called by the model runner immediately before a real model forward
+        for the batch; dummy, profile, and capture batches never call it.
+        """
+        if not self._recovery_admissions or not request_ids:
+            return
+        for req_id in request_ids:
+            admission = self._recovery_admissions.pop(req_id, None)
+            if admission is None:
+                continue
+            epoch, roster, compute_kind = admission
+            kind = _COMPUTE_KINDS.get(compute_kind)
+            if kind is None:
+                logger.warning_once(
+                    "Unknown compute kind %r for request %s", compute_kind, req_id
+                )
+            emit_kv_first_compute(
+                request_id=req_id,
+                recovery_epoch=epoch,
+                job_ids=roster,
+                compute_kind=kind,
+                rank=self._rank,
+            )
+
     def start_kv_transfers(self, metadata: OffloadingConnectorMetadata):
         assert self.worker is not None
         self._submit_deferred_stores()
@@ -309,6 +366,8 @@ class OffloadingConnectorWorker:
 
         """
         assert self.worker is not None
+        for finished_req_id in finished_req_ids:
+            self._recovery_admissions.pop(finished_req_id, None)
         finished_recving: set[str] = set()
         for transfer_result in self.worker.get_finished():
             # we currently do not support job failures
@@ -384,6 +443,7 @@ class OffloadingConnectorWorker:
         self._unsubmitted_store_jobs.clear()
         self._load_jobs.clear()
         self._store_jobs.clear()
+        self._recovery_admissions.clear()
         self._connector_worker_meta = OffloadingWorkerMetadata()
         if self.worker is not None:
             self.worker.shutdown()

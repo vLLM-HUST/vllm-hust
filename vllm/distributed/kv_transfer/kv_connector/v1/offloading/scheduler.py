@@ -11,6 +11,7 @@ from vllm.distributed.kv_events import KVCacheEvent
 from vllm.distributed.kv_transfer.kv_connector.utils import yield_req_data
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
+    MAX_RECOVERY_ADMISSIONS,
     OffloadingConnectorMetadata,
     OffloadingWorkerMetadata,
     ReqId,
@@ -27,6 +28,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.metrics import (
     _TransferMetricName,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
+    ComputeKind,
     RecoveryRequeueReason,
     emit_kv_recovery_admitted,
     emit_kv_recovery_requeued,
@@ -632,6 +634,10 @@ class OffloadingConnectorScheduler:
         self._current_batch_jobs_to_flush: set[int] = set()
         # GPU block IDs allocated in the current engine step
         self._current_batch_allocated_block_ids: set[int] = set()
+        # Admissions awaiting the next metadata shipped to the workers.
+        self._pending_recovery_admissions: dict[
+            str, tuple[int, tuple[int, ...], str]
+        ] = {}
         # if GPU prefix caching is enabled,
         # Track loaded chunks to avoid redundant loads.
         self._chunks_being_loaded: set[OffloadKey] | None = (
@@ -1818,12 +1824,34 @@ class OffloadingConnectorScheduler:
         req_status.pending_recovery = False
         if not req_status.restored_job_ids or req_status.restored_overflow:
             return
+        req = req_status.req
+        epoch = req.num_preemptions
+        roster = tuple(sorted(req_status.restored_job_ids))
+        # The step admitting the request is the one whose forward first
+        # computes it: a request that is still short of its prompt tokens
+        # resumes as prefill work, anything else as decode.
+        compute_kind = (
+            ComputeKind.PREFILL
+            if req.num_computed_tokens < req.num_prompt_tokens
+            else ComputeKind.DECODE
+        )
         emit_kv_recovery_admitted(
-            request_id=req_status.req.request_id,
-            recovery_epoch=req_status.req.num_preemptions,
-            job_ids=tuple(sorted(req_status.restored_job_ids)),
+            request_id=req.request_id,
+            recovery_epoch=epoch,
+            job_ids=roster,
         )
         req_status.restored_job_ids = []
+        if len(self._pending_recovery_admissions) < MAX_RECOVERY_ADMISSIONS:
+            self._pending_recovery_admissions[req.request_id] = (
+                epoch,
+                roster,
+                compute_kind.value,
+            )
+        else:
+            logger.warning_once(
+                "Dropping recovery admission for %s; the pending map is full",
+                req.request_id,
+            )
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
@@ -1875,6 +1903,7 @@ class OffloadingConnectorScheduler:
             load_jobs=self._current_batch_load_jobs,
             store_jobs=partial_store_jobs | normal_store_jobs,
             jobs_to_flush=self._current_batch_jobs_to_flush,
+            recovery_admissions=self._pending_recovery_admissions,
         )
 
         # All prepare_store calls for finished requests have been issued.
@@ -1890,6 +1919,7 @@ class OffloadingConnectorScheduler:
         self._current_batch_load_jobs = {}
         self._current_batch_jobs_to_flush = set()
         self._current_batch_allocated_block_ids = set()
+        self._pending_recovery_admissions = {}
         return meta
 
     def has_pending_push_work(self) -> bool:

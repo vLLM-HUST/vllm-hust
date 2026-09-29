@@ -32,6 +32,9 @@ class KVConnector:
     def pre_forward(self, scheduler_output: "SchedulerOutput", **kwargs: Any) -> None:
         pass
 
+    def observe_forward_batch(self, request_ids: list[str]) -> None:
+        pass
+
     def finish_forward(self) -> None:
         pass
 
@@ -87,6 +90,11 @@ class ActiveKVConnector(KVConnector):
         else:
             with set_forward_context(None, self.vllm_config):
                 self.kv_connector.start_load_kv(get_forward_context(), **load_kwargs)
+
+    def observe_forward_batch(self, request_ids: list[str]) -> None:
+        if self._disabled:
+            return
+        self.kv_connector.observe_forward_batch(request_ids)
 
     def finish_forward(self) -> None:
         if not self._disabled:
