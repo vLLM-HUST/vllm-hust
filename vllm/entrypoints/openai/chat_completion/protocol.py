@@ -17,6 +17,7 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+
 from vllm.config import ModelConfig
 from vllm.entrypoints.chat_utils import (
     ChatCompletionMessageParam,

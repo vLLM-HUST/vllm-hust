@@ -17,6 +17,7 @@ within a test rather than inferred from a large cache.
 from __future__ import annotations
 
 import pytest
+
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import RequestStatus
 

@@ -53,6 +53,11 @@ from vllm.v1.core.sched.output import (
     ScheduledEncoderInputStats,
     SchedulerOutput,
 )
+from vllm.v1.core.sched.preemption import (
+    PreemptionCandidate,
+    PreemptionContext,
+    PreemptionPolicyController,
+)
 from vllm.v1.core.sched.request_queue import (
     RequestQueue,
     SchedulingPolicy,
@@ -78,12 +83,6 @@ from vllm.v1.spec_decode.dynamic.utils import build_dynamic_sd_schedule_lookup
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
-
-from vllm.v1.core.sched.preemption import (
-    PreemptionCandidate,
-    PreemptionContext,
-    PreemptionPolicyController,
-)
 
 logger = init_logger(__name__)
 
