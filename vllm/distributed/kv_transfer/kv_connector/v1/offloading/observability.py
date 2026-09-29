@@ -1,0 +1,277 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Default-off observation seam for offloading KV transfers.
+
+The seam publishes bounded, address-free lifecycle records for the
+``OffloadingConnector``'s CPU<->device transfers. Out-of-tree observers own
+serialization, queueing, destinations, and failure handling; the host only
+hands them immutable primitive records. A record never carries tensors,
+process or device addresses, block hashes, token IDs, or KV payloads: a
+transfer is identified by the connector job id plus bounded request/rank
+facts.
+
+With no observer registered every publish is a single dictionary guard: the
+disabled path reads no clock, builds no record, and schedules no work.
+Registration is explicit and process-local and returns a removable handle;
+unregistration is idempotent. Observer exceptions are logged and the failing
+observer is removed without affecting serving.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
+from typing import Final
+
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
+# Contract identity published by this seam. Out-of-tree observers use it to
+# confirm that they attached to the expected host API.
+KV_TRANSFER_OBSERVER_CONTRACT: Final = "vllm.kv-transfer.observer.v1"
+KV_TRANSFER_OBSERVABILITY_API_VERSION: Final = "1.0"
+
+
+class KVTransferEvent(str, Enum):
+    """Closed lifecycle vocabulary published by the transfer seam."""
+
+    TRANSFER_SUBMITTED = "transfer_submitted"
+    TRANSFER_COMPLETED = "transfer_completed"
+    TRANSFER_CANCELLED = "transfer_cancelled"
+
+
+class TransferOperation(str, Enum):
+    """Offloaded transfer operation, named after the KV lifecycle it serves.
+
+    ``D2H_PRESERVE`` keeps KV blocks by moving them off the device;
+    ``H2D_RESTORE`` brings previously offloaded blocks back to the device.
+    """
+
+    D2H_PRESERVE = "d2h_preserve"
+    H2D_RESTORE = "h2d_restore"
+
+    @property
+    def direction(self) -> str:
+        """Direction token: ``d2h`` for preserves, ``h2d`` for restores."""
+        if self is TransferOperation.D2H_PRESERVE:
+            return "d2h"
+        return "h2d"
+
+
+class TransferCancellationReason(str, Enum):
+    """Closed cancellation reasons this seam can attest."""
+
+    HOST_SHUTDOWN = "host_shutdown"
+
+
+@dataclass(frozen=True, slots=True)
+class KVTransferObservation:
+    """One bounded, address-free KV transfer lifecycle observation.
+
+    Attributes:
+        event: Which lifecycle transition was observed.
+        operation: Transfer operation that produced the observation.
+        job_id: Connector-assigned transfer job id.
+        rank: Rank of the reporting worker process.
+        observed_at_ns: Monotonic timestamp taken at observation.
+        request_id: Request owning the transfer, when the connector knows it.
+        block_count: Number of KV blocks in the transfer.
+        success: Terminal success flag (completions only).
+        bytes_moved: Backend-reported transferred bytes (completions only).
+        duration_ns: Backend-reported transfer duration (completions only).
+        reason: Cancellation reason (cancellations only).
+
+    """
+
+    event: KVTransferEvent
+    operation: TransferOperation
+    job_id: int
+    rank: int
+    observed_at_ns: int
+    request_id: str | None = None
+    block_count: int | None = None
+    success: bool | None = None
+    bytes_moved: int | None = None
+    duration_ns: int | None = None
+    reason: TransferCancellationReason | None = None
+
+
+KVTransferObserver = Callable[[KVTransferObservation], None]
+
+
+@dataclass(frozen=True, slots=True)
+class KVTransferObserverHandle:
+    """Removable registration handle for one observer."""
+
+    contract: str
+    token: int
+
+
+_observers: dict[int, KVTransferObserver] = {}
+_next_token = 0
+_registry_lock = threading.Lock()
+
+
+def register_kv_transfer_observer(
+    name: str, observer: KVTransferObserver
+) -> KVTransferObserverHandle:
+    """Register one process-local observer.
+
+    Args:
+        name: Non-empty label used when reporting observer failures.
+        observer: Callable receiving immutable ``KVTransferObservation``
+            records; it must not block or retain unbounded state.
+
+    Returns:
+        A handle accepted by :func:`unregister_kv_transfer_observer`.
+
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("observer name must be a non-empty string")
+    if not callable(observer):
+        raise ValueError("observer must be callable")
+    global _next_token
+    with _registry_lock:
+        _next_token += 1
+        token = _next_token
+        _observers[token] = observer
+    logger.debug("KV transfer observer %r registered (%d active)", name, token)
+    return KVTransferObserverHandle(contract=KV_TRANSFER_OBSERVER_CONTRACT, token=token)
+
+
+def unregister_kv_transfer_observer(handle: KVTransferObserverHandle) -> None:
+    """Remove a registered observer; safe to call more than once."""
+    if handle.contract != KV_TRANSFER_OBSERVER_CONTRACT:
+        raise ValueError("handle was not issued by this observation contract")
+    with _registry_lock:
+        _observers.pop(handle.token, None)
+
+
+def kv_transfer_observers_configured() -> bool:
+    """Whether any observer is registered in this process."""
+    return bool(_observers)
+
+
+def reset_kv_transfer_observers() -> None:
+    """Drop every observer; used by tests and process shutdown paths."""
+    with _registry_lock:
+        _observers.clear()
+
+
+def _publish(observation: KVTransferObservation) -> None:
+    with _registry_lock:
+        snapshot = tuple(_observers.items())
+    for token, observer in snapshot:
+        try:
+            observer(observation)
+        except Exception:
+            logger.exception("KV transfer observer %d failed; removing it", token)
+            with _registry_lock:
+                _observers.pop(token, None)
+
+
+def emit_kv_transfer_submitted(
+    *,
+    operation: TransferOperation,
+    job_id: int,
+    rank: int,
+    request_id: str | None,
+    block_count: int | None,
+) -> None:
+    """Publish a transfer whose backend submission succeeded.
+
+    Called only after the offloading backend accepted the job, so the record
+    is a submission receipt, not a queued request.
+    """
+    if not _observers:
+        return
+    _publish(
+        KVTransferObservation(
+            event=KVTransferEvent.TRANSFER_SUBMITTED,
+            operation=operation,
+            job_id=job_id,
+            rank=rank,
+            observed_at_ns=time.monotonic_ns(),
+            request_id=request_id,
+            block_count=block_count,
+        )
+    )
+
+
+def emit_kv_transfer_completed(
+    *,
+    operation: TransferOperation,
+    job_id: int,
+    rank: int,
+    request_id: str | None,
+    success: bool,
+    bytes_moved: int | None,
+    duration_ns: int | None,
+) -> None:
+    """Publish a terminal transfer result reported by the backend."""
+    if not _observers:
+        return
+    _publish(
+        KVTransferObservation(
+            event=KVTransferEvent.TRANSFER_COMPLETED,
+            operation=operation,
+            job_id=job_id,
+            rank=rank,
+            observed_at_ns=time.monotonic_ns(),
+            request_id=request_id,
+            success=success,
+            bytes_moved=bytes_moved,
+            duration_ns=duration_ns,
+        )
+    )
+
+
+def emit_kv_transfer_cancelled(
+    *,
+    operation: TransferOperation,
+    job_id: int,
+    rank: int,
+    request_id: str | None,
+    reason: TransferCancellationReason,
+) -> None:
+    """Publish a still-open transfer that will not complete.
+
+    Only reasons the host can attest at the observation point are accepted;
+    a missing completion is never reported as a successful completion.
+    """
+    if not _observers:
+        return
+    _publish(
+        KVTransferObservation(
+            event=KVTransferEvent.TRANSFER_CANCELLED,
+            operation=operation,
+            job_id=job_id,
+            rank=rank,
+            observed_at_ns=time.monotonic_ns(),
+            request_id=request_id,
+            reason=reason,
+        )
+    )
+
+
+__all__ = [
+    "KV_TRANSFER_OBSERVABILITY_API_VERSION",
+    "KV_TRANSFER_OBSERVER_CONTRACT",
+    "KVTransferEvent",
+    "KVTransferObservation",
+    "KVTransferObserver",
+    "KVTransferObserverHandle",
+    "TransferCancellationReason",
+    "TransferOperation",
+    "emit_kv_transfer_cancelled",
+    "emit_kv_transfer_completed",
+    "emit_kv_transfer_submitted",
+    "kv_transfer_observers_configured",
+    "register_kv_transfer_observer",
+    "reset_kv_transfer_observers",
+    "unregister_kv_transfer_observer",
+]
