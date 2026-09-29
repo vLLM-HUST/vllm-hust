@@ -43,6 +43,7 @@ class KVTransferEvent(str, Enum):
     TRANSFER_COMPLETED = "transfer_completed"
     TRANSFER_CANCELLED = "transfer_cancelled"
     TRANSFER_RECEIPT = "transfer_receipt"
+    TRANSFER_DESCRIPTORS = "transfer_descriptors"
     RECOVERY_REQUEUED = "recovery_requeued"
     RECOVERY_ADMITTED = "recovery_admitted"
 
@@ -82,6 +83,28 @@ class RecoveryRequeueReason(str, Enum):
     UNCLASSIFIED = "unclassified"
 
 
+# Bounds one transfer's region-descriptor inventory, matching the bounded
+# inventory limit the consumer enforces.
+MAX_DESCRIPTOR_REGIONS: Final = 4096
+
+
+@dataclass(frozen=True, slots=True)
+class KVRegionDescriptor:
+    """One region-relative copy descriptor.
+
+    Region ids name the data-holding regions of each side (one id space per
+    side, stable within a process); offsets are relative to the region base
+    and sizes are in bytes. No process or device address, tensor object,
+    block hash, token id, or payload can be recovered from a descriptor.
+    """
+
+    src_region_id: int
+    dst_region_id: int
+    src_offset: int
+    dst_offset: int
+    size: int
+
+
 @dataclass(frozen=True, slots=True)
 class KVTransferObservation:
     """One bounded, address-free KV transfer lifecycle observation.
@@ -104,6 +127,9 @@ class KVTransferObservation:
         job_ids: Sorted connector job ids of the restored transfers
             (admissions only).
         requeue_reason: Requeue reason (requeues only).
+        descriptors: Region-relative copy descriptors (layouts only).
+        dropped_descriptors: Descriptors dropped by the bounded inventory
+            (layouts only).
 
     """
 
@@ -122,6 +148,8 @@ class KVTransferObservation:
     recovery_epoch: int | None = None
     job_ids: tuple[int, ...] = ()
     requeue_reason: RecoveryRequeueReason | None = None
+    descriptors: tuple[KVRegionDescriptor, ...] = ()
+    dropped_descriptors: int = 0
 
 
 KVTransferObserver = Callable[[KVTransferObservation], None]
@@ -360,9 +388,40 @@ def emit_kv_recovery_admitted(
     )
 
 
+def emit_kv_transfer_descriptors(
+    *,
+    job_id: int,
+    rank: int | None,
+    operation: TransferOperation,
+    descriptors: tuple[KVRegionDescriptor, ...],
+    dropped_descriptors: int = 0,
+) -> None:
+    """Publish the bounded region-relative layout of one transfer.
+
+    Built at the copy site from the filled copy ops: offsets are taken
+    relative to each region's base, so implementation addresses never cross
+    the callback boundary and no post-hoc filtering is required.
+    """
+    if not _observers:
+        return
+    _publish(
+        KVTransferObservation(
+            event=KVTransferEvent.TRANSFER_DESCRIPTORS,
+            observed_at_ns=time.monotonic_ns(),
+            operation=operation,
+            job_id=job_id,
+            rank=rank,
+            descriptors=descriptors,
+            dropped_descriptors=dropped_descriptors,
+        )
+    )
+
+
 __all__ = [
     "KV_TRANSFER_OBSERVABILITY_API_VERSION",
     "KV_TRANSFER_OBSERVER_CONTRACT",
+    "MAX_DESCRIPTOR_REGIONS",
+    "KVRegionDescriptor",
     "KVTransferEvent",
     "KVTransferObservation",
     "KVTransferObserver",
@@ -374,6 +433,7 @@ __all__ = [
     "emit_kv_recovery_requeued",
     "emit_kv_transfer_cancelled",
     "emit_kv_transfer_completed",
+    "emit_kv_transfer_descriptors",
     "emit_kv_transfer_receipt",
     "emit_kv_transfer_submitted",
     "kv_transfer_observers_configured",

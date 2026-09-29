@@ -16,6 +16,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
     KV_TRANSFER_OBSERVER_CONTRACT,
+    KVRegionDescriptor,
     KVTransferEvent,
     RecoveryRequeueReason,
     TransferCancellationReason,
@@ -50,6 +51,8 @@ _CLOSED_FIELDS = {
     "recovery_epoch",
     "job_ids",
     "requeue_reason",
+    "descriptors",
+    "dropped_descriptors",
 }
 
 
@@ -162,6 +165,20 @@ def test_disabled_seam_reads_no_clock(monkeypatch):
         request_id="req",
         recovery_epoch=1,
         job_ids=(1,),
+    )
+    observability.emit_kv_transfer_descriptors(
+        job_id=1,
+        rank=None,
+        operation=TransferOperation.D2H_PRESERVE,
+        descriptors=(
+            KVRegionDescriptor(
+                src_region_id=0,
+                dst_region_id=0,
+                src_offset=4096,
+                dst_offset=0,
+                size=512,
+            ),
+        ),
     )
 
 
@@ -330,6 +347,42 @@ def test_receipt_record_reports_worker_ranks():
     assert record.rank is None
     assert record.ranks == (0, 3)
     assert record.success is True
+
+
+def test_descriptor_record_carries_only_relative_layout():
+    seen: list = []
+    observability.register_kv_transfer_observer("test", seen.append)
+
+    observability.emit_kv_transfer_descriptors(
+        job_id=13,
+        rank=2,
+        operation=TransferOperation.H2D_RESTORE,
+        descriptors=(
+            KVRegionDescriptor(
+                src_region_id=1,
+                dst_region_id=1,
+                src_offset=8192,
+                dst_offset=0,
+                size=512,
+            ),
+        ),
+    )
+
+    (record,) = seen
+    assert record.event is KVTransferEvent.TRANSFER_DESCRIPTORS
+    assert record.operation is TransferOperation.H2D_RESTORE
+    assert record.job_id == 13
+    assert record.rank == 2
+    assert record.dropped_descriptors == 0
+    assert record.descriptors == (
+        KVRegionDescriptor(
+            src_region_id=1,
+            dst_region_id=1,
+            src_offset=8192,
+            dst_offset=0,
+            size=512,
+        ),
+    )
 
 
 def test_recovery_records_carry_epoch_and_roster():
