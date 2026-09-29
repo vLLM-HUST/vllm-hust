@@ -42,6 +42,9 @@ class KVTransferEvent(str, Enum):
     TRANSFER_SUBMITTED = "transfer_submitted"
     TRANSFER_COMPLETED = "transfer_completed"
     TRANSFER_CANCELLED = "transfer_cancelled"
+    TRANSFER_RECEIPT = "transfer_receipt"
+    RECOVERY_REQUEUED = "recovery_requeued"
+    RECOVERY_ADMITTED = "recovery_admitted"
 
 
 class TransferOperation(str, Enum):
@@ -68,36 +71,57 @@ class TransferCancellationReason(str, Enum):
     HOST_SHUTDOWN = "host_shutdown"
 
 
+class RecoveryRequeueReason(str, Enum):
+    """Closed requeue reasons this seam can attest.
+
+    The connector only learns that a request was preempted, not the
+    scheduler-internal reason; ``unclassified`` is the honest value until a
+    finer host fact exists.
+    """
+
+    UNCLASSIFIED = "unclassified"
+
+
 @dataclass(frozen=True, slots=True)
 class KVTransferObservation:
     """One bounded, address-free KV transfer lifecycle observation.
 
     Attributes:
         event: Which lifecycle transition was observed.
+        observed_at_ns: Monotonic timestamp taken at observation.
         operation: Transfer operation that produced the observation.
         job_id: Connector-assigned transfer job id.
         rank: Rank of the reporting worker process.
-        observed_at_ns: Monotonic timestamp taken at observation.
         request_id: Request owning the transfer, when the connector knows it.
         block_count: Number of KV blocks in the transfer.
         success: Terminal success flag (completions only).
         bytes_moved: Backend-reported transferred bytes (completions only).
         duration_ns: Backend-reported transfer duration (completions only).
         reason: Cancellation reason (cancellations only).
+        ranks: Sorted ranks that reported one transfer (receipts only).
+        recovery_epoch: Positive preemption generation, taken from the
+            request's preemption counter (recovery records only).
+        job_ids: Sorted connector job ids of the restored transfers
+            (admissions only).
+        requeue_reason: Requeue reason (requeues only).
 
     """
 
     event: KVTransferEvent
-    operation: TransferOperation
-    job_id: int
-    rank: int
     observed_at_ns: int
+    operation: TransferOperation | None = None
+    job_id: int | None = None
+    rank: int | None = None
     request_id: str | None = None
     block_count: int | None = None
     success: bool | None = None
     bytes_moved: int | None = None
     duration_ns: int | None = None
     reason: TransferCancellationReason | None = None
+    ranks: tuple[int, ...] = ()
+    recovery_epoch: int | None = None
+    job_ids: tuple[int, ...] = ()
+    requeue_reason: RecoveryRequeueReason | None = None
 
 
 KVTransferObserver = Callable[[KVTransferObservation], None]
@@ -258,6 +282,84 @@ def emit_kv_transfer_cancelled(
     )
 
 
+def emit_kv_transfer_receipt(
+    *,
+    job_id: int,
+    rank: int | None,
+    request_id: str | None,
+    ranks: tuple[int, ...],
+) -> None:
+    """Publish the aggregate completion receipt of one load transfer.
+
+    The scheduler emits this once every worker that owes a completion for the
+    job reported it, so ``ranks`` is the exact set of ranks that finished the
+    restore on their own device.
+    """
+    if not _observers:
+        return
+    _publish(
+        KVTransferObservation(
+            event=KVTransferEvent.TRANSFER_RECEIPT,
+            operation=TransferOperation.H2D_RESTORE,
+            job_id=job_id,
+            rank=rank,
+            observed_at_ns=time.monotonic_ns(),
+            request_id=request_id,
+            success=True,
+            ranks=ranks,
+        )
+    )
+
+
+def emit_kv_recovery_requeued(
+    *,
+    request_id: str,
+    recovery_epoch: int,
+    reason: RecoveryRequeueReason,
+) -> None:
+    """Publish a request whose KV was just preempted and requeued.
+
+    The request needs recovery before it can run again; this is not an
+    admission and must not be reported as one.
+    """
+    if not _observers:
+        return
+    _publish(
+        KVTransferObservation(
+            event=KVTransferEvent.RECOVERY_REQUEUED,
+            observed_at_ns=time.monotonic_ns(),
+            request_id=request_id,
+            recovery_epoch=recovery_epoch,
+            requeue_reason=reason,
+        )
+    )
+
+
+def emit_kv_recovery_admitted(
+    *,
+    request_id: str,
+    recovery_epoch: int,
+    job_ids: tuple[int, ...],
+) -> None:
+    """Publish a recovered request that is actually scheduled again.
+
+    Emitted only when the exact roster of successfully restored transfers is
+    known, and only at the point where the scheduler resumes the request; a
+    completed transfer by itself is never reported as an admission.
+    """
+    if not _observers:
+        return
+    _publish(
+        KVTransferObservation(
+            event=KVTransferEvent.RECOVERY_ADMITTED,
+            observed_at_ns=time.monotonic_ns(),
+            request_id=request_id,
+            recovery_epoch=recovery_epoch,
+            job_ids=job_ids,
+        )
+    )
+
+
 __all__ = [
     "KV_TRANSFER_OBSERVABILITY_API_VERSION",
     "KV_TRANSFER_OBSERVER_CONTRACT",
@@ -265,10 +367,14 @@ __all__ = [
     "KVTransferObservation",
     "KVTransferObserver",
     "KVTransferObserverHandle",
+    "RecoveryRequeueReason",
     "TransferCancellationReason",
     "TransferOperation",
+    "emit_kv_recovery_admitted",
+    "emit_kv_recovery_requeued",
     "emit_kv_transfer_cancelled",
     "emit_kv_transfer_completed",
+    "emit_kv_transfer_receipt",
     "emit_kv_transfer_submitted",
     "kv_transfer_observers_configured",
     "register_kv_transfer_observer",

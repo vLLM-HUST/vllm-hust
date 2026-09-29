@@ -9,12 +9,15 @@ import pytest
 
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading import observability
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
+    MAX_LOAD_RECEIPT_JOBS,
     OffloadingConnectorMetadata,
+    OffloadingWorkerMetadata,
     TransferJob,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
     KV_TRANSFER_OBSERVER_CONTRACT,
     KVTransferEvent,
+    RecoveryRequeueReason,
     TransferCancellationReason,
     TransferOperation,
 )
@@ -43,6 +46,10 @@ _CLOSED_FIELDS = {
     "bytes_moved",
     "duration_ns",
     "reason",
+    "ranks",
+    "recovery_epoch",
+    "job_ids",
+    "requeue_reason",
 }
 
 
@@ -139,6 +146,22 @@ def test_disabled_seam_reads_no_clock(monkeypatch):
         rank=0,
         request_id="req",
         reason=TransferCancellationReason.HOST_SHUTDOWN,
+    )
+    observability.emit_kv_transfer_receipt(
+        job_id=1,
+        rank=None,
+        request_id="req",
+        ranks=(0, 1),
+    )
+    observability.emit_kv_recovery_requeued(
+        request_id="req",
+        recovery_epoch=1,
+        reason=RecoveryRequeueReason.UNCLASSIFIED,
+    )
+    observability.emit_kv_recovery_admitted(
+        request_id="req",
+        recovery_epoch=1,
+        job_ids=(1,),
     )
 
 
@@ -289,6 +312,78 @@ def test_dispatch_uses_a_snapshot_of_registered_observers():
     assert len(late) == 1
 
 
+def test_receipt_record_reports_worker_ranks():
+    seen: list = []
+    observability.register_kv_transfer_observer("test", seen.append)
+
+    observability.emit_kv_transfer_receipt(
+        job_id=9,
+        rank=None,
+        request_id="req-9",
+        ranks=(0, 3),
+    )
+
+    (record,) = seen
+    assert record.event is KVTransferEvent.TRANSFER_RECEIPT
+    assert record.operation is TransferOperation.H2D_RESTORE
+    assert record.job_id == 9
+    assert record.rank is None
+    assert record.ranks == (0, 3)
+    assert record.success is True
+
+
+def test_recovery_records_carry_epoch_and_roster():
+    seen: list = []
+    observability.register_kv_transfer_observer("test", seen.append)
+
+    observability.emit_kv_recovery_requeued(
+        request_id="req-1",
+        recovery_epoch=2,
+        reason=RecoveryRequeueReason.UNCLASSIFIED,
+    )
+    observability.emit_kv_recovery_admitted(
+        request_id="req-1",
+        recovery_epoch=2,
+        job_ids=(4, 5),
+    )
+
+    requeue, admitted = seen
+    assert requeue.event is KVTransferEvent.RECOVERY_REQUEUED
+    assert requeue.requeue_reason is RecoveryRequeueReason.UNCLASSIFIED
+    assert requeue.recovery_epoch == 2
+    assert requeue.job_id is None
+    assert requeue.request_id == "req-1"
+    assert admitted.event is KVTransferEvent.RECOVERY_ADMITTED
+    assert admitted.recovery_epoch == 2
+    assert admitted.job_ids == (4, 5)
+
+
+def test_load_receipt_map_is_bounded():
+    meta = OffloadingWorkerMetadata()
+
+    for job_id in range(MAX_LOAD_RECEIPT_JOBS + 1):
+        meta.mark_load_completed(job_id, 0)
+
+    assert len(meta.load_receipts) == MAX_LOAD_RECEIPT_JOBS
+    assert meta.dropped_load_receipts == 1
+
+
+def test_worker_metadata_aggregates_load_receipts_by_rank():
+    left = OffloadingWorkerMetadata()
+    left.mark_completed(7)
+    left.mark_load_completed(7, 1)
+    right = OffloadingWorkerMetadata()
+    right.mark_completed(7)
+    right.mark_load_completed(7, 0)
+
+    merged = left.aggregate(right)
+
+    assert isinstance(merged, OffloadingWorkerMetadata)
+    assert merged.completed_jobs == {7: 2}
+    assert merged.load_receipts == {7: (0, 1)}
+    assert merged.dropped_load_receipts == 0
+
+
 # ---------------------------------------------------------------------------
 # Worker-side observations
 # ---------------------------------------------------------------------------
@@ -318,6 +413,10 @@ def test_load_submission_and_completion_are_observed():
     assert completed.request_id == "req-11"
     assert completed.bytes_moved == 4096
     assert completed.duration_ns == 2_000_000
+
+    meta = worker.build_connector_worker_meta()
+    assert meta is not None
+    assert meta.load_receipts == {11: (2,)}
 
 
 def test_deferred_store_submission_and_completion_are_observed():

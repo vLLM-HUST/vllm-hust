@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from dataclasses import dataclass, field
+from typing import Final
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorMetadata,
@@ -9,6 +10,11 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.v1.kv_offload.base import LoadStoreSpec
 
 ReqId = str
+
+# Bounds the per-aggregation load-receipt map. The number of in-flight load
+# jobs per engine step stays far below this; the cap only guards pathological
+# states and overflow is counted, never silently absorbed.
+MAX_LOAD_RECEIPT_JOBS: Final = 4096
 
 
 @dataclass(slots=True)
@@ -80,14 +86,33 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
     (load or store). aggregate() sums counts across workers within a step.
     The scheduler accumulates across steps and processes
     a transfer completion only when count reaches num_workers.
+
+    ``load_receipts`` additionally reports, for each completed load job, the
+    ranks that finished it on their own device. It is observation-only: the
+    scheduling counters above keep their existing semantics.
     """
 
     completed_jobs: dict[int, int] = field(default_factory=dict)
     transfer_stats: TransferStats = field(default_factory=TransferStats)
+    # job_id -> sorted ranks that reported completing this load.
+    load_receipts: dict[int, tuple[int, ...]] = field(default_factory=dict)
+    # Load receipts dropped because the bounded map was already full.
+    dropped_load_receipts: int = 0
 
     def mark_completed(self, job_id: int) -> None:
         """Record a transfer job completion from this worker."""
         self.completed_jobs[job_id] = 1
+
+    def mark_load_completed(self, job_id: int, rank: int) -> None:
+        """Record one rank's completion of a load (H2D) transfer."""
+        ranks = self.load_receipts.get(job_id)
+        if ranks is None:
+            if len(self.load_receipts) >= MAX_LOAD_RECEIPT_JOBS:
+                self.dropped_load_receipts += 1
+                return
+            self.load_receipts[job_id] = (rank,)
+        elif rank not in ranks:
+            self.load_receipts[job_id] = tuple(sorted((*ranks, rank)))
 
     def aggregate(
         self, other: "KVConnectorWorkerMetadata"
@@ -98,7 +123,20 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
         for job_id, v in other.completed_jobs.items():
             merged[job_id] = merged.get(job_id, 0) + v
 
+        merged_receipts = {
+            job_id: set(ranks) for job_id, ranks in self.load_receipts.items()
+        }
+        for job_id, ranks in other.load_receipts.items():
+            merged_receipts.setdefault(job_id, set()).update(ranks)
+
         return OffloadingWorkerMetadata(
             completed_jobs=merged,
             transfer_stats=self.transfer_stats.aggregate(other.transfer_stats),
+            load_receipts={
+                job_id: tuple(sorted(ranks))
+                for job_id, ranks in sorted(merged_receipts.items())
+            },
+            dropped_load_receipts=(
+                self.dropped_load_receipts + other.dropped_load_receipts
+            ),
         )

@@ -329,6 +329,8 @@ class OffloadingConnectorWorker:
                 )
 
             self._connector_worker_meta.mark_completed(job_id)
+            if is_load:
+                self._connector_worker_meta.mark_load_completed(job_id, self._rank)
             req_id = self._load_jobs.pop(job_id, None)
             if req_id is not None:
                 finished_recving.add(req_id)

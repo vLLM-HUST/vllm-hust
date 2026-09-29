@@ -26,6 +26,12 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.metrics import (
     _ConnectorMetricName,
     _TransferMetricName,
 )
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
+    RecoveryRequeueReason,
+    emit_kv_recovery_admitted,
+    emit_kv_recovery_requeued,
+    emit_kv_transfer_receipt,
+)
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv, round_down
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
@@ -65,6 +71,10 @@ KV_LOAD_TIERS_KEY = "kv_load_tiers"
 MATCHER_MEDIUM_KEY = "medium"
 MATCHER_LOCALITY_KEY = "locality"
 
+# Bounds one recovery episode's restored-transfer roster. An episode above
+# the cap emits no admission record instead of a partial roster.
+MAX_RESTORED_JOBS_PER_RECOVERY = 4096
+
 
 @dataclass(slots=True)
 class TransferJobStatus:
@@ -81,6 +91,8 @@ class TransferJobStatus:
     deferred_fence_block_ids: list[int] | None = None
     # Store source blocks fenced when the transfer is created.
     fenced_block_ids: list[int] | None = None
+    # Ranks that reported finishing this load on their own device.
+    receipt_ranks: set[int] = field(default_factory=set)
 
 
 class GroupOffloadConfig(NamedTuple):
@@ -380,6 +392,15 @@ class RequestOffloadState:
     partial_tail_boundary: int | None = None
     # True once on_request_finished has been signaled to the manager.
     finished_signaled: bool = False
+    # True once this request was preempted and until its recovery is
+    # admitted or the request finishes.
+    pending_recovery: bool = False
+    # Load jobs that completed while the recovery was pending, bounded by
+    # MAX_RESTORED_JOBS_PER_RECOVERY.
+    restored_job_ids: list[int] = field(default_factory=list)
+    # True when restored_job_ids overflowed; the episode then emits no
+    # admission record instead of a partial roster.
+    restored_overflow: bool = False
 
     def __post_init__(self) -> None:
         self.group_states = tuple(
@@ -1774,6 +1795,36 @@ class OffloadingConnectorScheduler:
 
         return store_jobs
 
+    def _observe_recovery_requeued(self, req_status: RequestOffloadState) -> None:
+        """Open one recovery episode for a preempted request."""
+        req_status.pending_recovery = True
+        req_status.restored_job_ids = []
+        req_status.restored_overflow = False
+        emit_kv_recovery_requeued(
+            request_id=req_status.req.request_id,
+            recovery_epoch=req_status.req.num_preemptions,
+            reason=RecoveryRequeueReason.UNCLASSIFIED,
+        )
+
+    def _observe_recovery_admitted(self, req_status: RequestOffloadState) -> None:
+        """Close a recovery episode once its restored roster is exact.
+
+        The scheduler reaching this point means the request is actually
+        scheduled again. An episode without a completed restore roster has no
+        recovery transfers to report and emits nothing.
+        """
+        if not req_status.pending_recovery:
+            return
+        req_status.pending_recovery = False
+        if not req_status.restored_job_ids or req_status.restored_overflow:
+            return
+        emit_kv_recovery_admitted(
+            request_id=req_status.req.request_id,
+            recovery_epoch=req_status.req.num_preemptions,
+            job_ids=tuple(sorted(req_status.restored_job_ids)),
+        )
+        req_status.restored_job_ids = []
+
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> KVConnectorMetadata:
@@ -1787,11 +1838,22 @@ class OffloadingConnectorScheduler:
         # Flush jobs for preempted requests.
         for req_id in scheduler_output.preempted_req_ids or ():
             req_status = self._req_status.get(req_id)
-            if req_status is None or not req_status.transfer_jobs:
+            if req_status is None:
+                continue
+            self._observe_recovery_requeued(req_status)
+            if not req_status.transfer_jobs:
                 continue
             any_jid = next(iter(req_status.transfer_jobs))
             assert self._jobs[any_jid].is_store
             self._current_batch_jobs_to_flush.update(req_status.transfer_jobs)
+
+        # A preempted request the scheduler resumes has been admitted again
+        # after its KV was restored.
+        for req_id in scheduler_output.scheduled_cached_reqs.resumed_req_ids:
+            req_status = self._req_status.get(req_id)
+            if req_status is None:
+                continue
+            self._observe_recovery_admitted(req_status)
 
         # Flush jobs that contain re-allocated blocks.
         if (
@@ -1850,6 +1912,12 @@ class OffloadingConnectorScheduler:
         if not isinstance(meta, OffloadingWorkerMetadata):
             assert meta is None
             meta = OffloadingWorkerMetadata()
+        if meta.dropped_load_receipts:
+            logger.warning_once(
+                "Dropped %d offloading load receipts; restored rosters are "
+                "incomplete for the affected steps",
+                meta.dropped_load_receipts,
+            )
         if not meta.transfer_stats.is_empty():
             transfer_stats = OffloadingConnectorStats()
             if not meta.transfer_stats.load.is_empty():
@@ -1891,6 +1959,7 @@ class OffloadingConnectorScheduler:
                 continue
             job_status = self._jobs[job_id]
             job_status.pending_count -= count
+            job_status.receipt_ranks.update(meta.load_receipts.get(job_id, ()))
             if job_status.pending_count > 0:
                 continue
             assert job_status.pending_count == 0
@@ -1902,6 +1971,20 @@ class OffloadingConnectorScheduler:
                 self.manager.complete_load(job_status.keys, req_status.req_context)
                 if self._chunks_being_loaded:
                     self._chunks_being_loaded.difference_update(job_status.keys)
+                emit_kv_transfer_receipt(
+                    job_id=job_id,
+                    rank=None,
+                    request_id=job_status.req_id,
+                    ranks=tuple(sorted(job_status.receipt_ranks)),
+                )
+                if req_status.pending_recovery:
+                    if (
+                        len(req_status.restored_job_ids)
+                        < MAX_RESTORED_JOBS_PER_RECOVERY
+                    ):
+                        req_status.restored_job_ids.append(job_id)
+                    else:
+                        req_status.restored_overflow = True
             if self._block_id_to_pending_jobs:
                 # Sliding window blocks are tracked from store creation
                 # and must be cleaned up unconditionally.
