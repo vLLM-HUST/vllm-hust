@@ -314,6 +314,7 @@ class TestResponsesCustomToolStructuralTags:
         *,
         grammar_syntax: str = "lark",
         with_output_format: bool = False,
+        parallel_tool_calls: bool | None = None,
     ) -> ResponsesRequest:
         data: dict[str, Any] = {
             "model": "m",
@@ -331,6 +332,7 @@ class TestResponsesCustomToolStructuralTags:
                 }
             ],
             "tool_choice": tool_choice,
+            "parallel_tool_calls": parallel_tool_calls,
         }
         if with_output_format:
             data["text"] = {
@@ -387,6 +389,21 @@ class TestResponsesCustomToolStructuralTags:
         assert _is_grammar_accept_string(grammar, self._custom_tool_call())
         assert _is_grammar_accept_string(grammar, '{"answer":"done"}')
         assert not _is_grammar_accept_string(grammar, '{"other":"done"}')
+
+    def test_custom_grammar_and_single_call_constraint_compose(self) -> None:
+        request = self._request(
+            with_output_format=True,
+            parallel_tool_calls=False,
+        )
+
+        out = self._parser(request).adjust_request(request)
+
+        assert out.structured_outputs is not None
+        grammar = Grammar.from_structural_tag(out.structured_outputs.structural_tag)
+        custom_call = self._custom_tool_call()
+        assert _is_grammar_accept_string(grammar, custom_call)
+        assert not _is_grammar_accept_string(grammar, custom_call + custom_call)
+        assert _is_grammar_accept_string(grammar, '{"answer":"done"}')
 
     @pytest.mark.parametrize(
         "tool_choice",
