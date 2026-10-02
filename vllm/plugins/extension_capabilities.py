@@ -15,6 +15,8 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Final, TypedDict
 
+from vllm.v1.events import REQUEST_LIFECYCLE_EVENTS_API_VERSION
+
 EXTENSION_CAPABILITIES_SCHEMA: Final = "vllm.extension-capabilities/v1"
 HOST_EXTENSION_API_VERSION: Final = "1.0"
 
@@ -30,6 +32,7 @@ _PROTOCOLS: Final = MappingProxyType(
         "vllm.preemption-policy": "1.0",
         "vllm.batch-admission-policy": "1.1",
         "vllm.request-processing-hook": "1.0",
+        "vllm.request-lifecycle-events": REQUEST_LIFECYCLE_EVENTS_API_VERSION,
         "vllm.kv-materialization-runtime-control": "1.0",
     }
 )
