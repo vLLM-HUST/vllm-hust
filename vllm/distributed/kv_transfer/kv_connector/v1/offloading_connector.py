@@ -108,6 +108,19 @@ class OffloadingConnector(KVConnectorBase_V1, SupportsHMA):
         assert self.connector_worker is not None
         self.connector_worker.register_kv_caches(kv_caches)
 
+    def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
+        super().bind_connector_metadata(connector_metadata)
+        if self.connector_worker is not None and isinstance(
+            connector_metadata, OffloadingConnectorMetadata
+        ):
+            # Stash this step's admitted recoveries; the model runner
+            # consumes them on the request's first real forward.
+            self.connector_worker.note_recovery_admissions(connector_metadata)
+
+    def observe_forward_batch(self, request_ids: list[str]) -> None:
+        if self.connector_worker is not None:
+            self.connector_worker.observe_forward_batch(request_ids)
+
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):
         assert self.connector_worker is not None
         assert isinstance(kv_connector_metadata, OffloadingConnectorMetadata)

@@ -4395,6 +4395,12 @@ class GPUModelRunner(
                 defer_finalize=defer_kv_connector_finalize,
             ) as kv_connector_output,
         ):
+            if has_kv_transfer_group():
+                # The batch is about to compute for real: let the connector
+                # report the first forward of any admitted recovery in it.
+                get_kv_transfer_group().observe_forward_batch(
+                    list(scheduler_output.num_scheduled_tokens)
+                )
             model_output = self._model_forward(
                 input_ids=input_ids,
                 positions=positions,
