@@ -23,7 +23,14 @@ PREEMPTION_POLICY_API_VERSION = "1.0"
 
 @dataclass(frozen=True, slots=True)
 class PreemptionCandidate:
-    """Immutable request data available to a preemption policy."""
+    """Immutable request data available to a preemption policy.
+
+    ``predicted_length`` is the request's predicted total output length when an
+    external predictor supplied one before admission (see
+    ``vllm.v1.core.length_prediction``).  It stays ``None`` for requests without
+    a prediction, so a policy can tell "no information" apart from "predicted
+    short" instead of having to guess.
+    """
 
     request_id: str
     priority: int
@@ -33,6 +40,7 @@ class PreemptionCandidate:
     num_computed_tokens: int
     num_preemptions: int
     max_tokens: int
+    predicted_length: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

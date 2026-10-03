@@ -1302,6 +1302,7 @@ class Scheduler(SchedulerInterface):
                     full_sequence_must_fit=self.scheduler_reserve_full_isl,
                     reserved_blocks=reserved_blocks,
                     has_scheduled_reqs=bool(self.running),
+                    predicted_length=request.predicted_length,
                 )
 
                 if new_blocks is None:
@@ -1781,6 +1782,7 @@ class Scheduler(SchedulerInterface):
                 num_computed_tokens=candidate.num_computed_tokens,
                 num_preemptions=candidate.num_preemptions,
                 max_tokens=candidate.max_tokens,
+                predicted_length=candidate.predicted_length,
             )
             for candidate in self.running
         )
