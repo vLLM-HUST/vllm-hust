@@ -61,6 +61,7 @@ from vllm.entrypoints.chat_utils import (
 from vllm.entrypoints.generate.base.protocol import (
     PerRequestMetrics,
     StopParam,
+    TopLogprobsParam,
     validate_cache_salt,
 )
 from vllm.entrypoints.openai.responses.custom_tools import lower_custom_tools
@@ -214,7 +215,7 @@ class ResponsesRequest(OpenAIBaseModel):
     vllm_original_tools: list[dict[str, Any]] | None = Field(default=None, exclude=True)
     vllm_original_tool_choice: Any = Field(default="auto", exclude=True)
     vllm_custom_tool_names: set[str] = Field(default_factory=set, exclude=True)
-    top_logprobs: int | None = 0
+    top_logprobs: TopLogprobsParam = 0
     top_p: float | None = None
     top_k: int | None = None
     truncation: Literal["auto", "disabled"] | None = "disabled"
@@ -249,7 +250,7 @@ class ResponsesRequest(OpenAIBaseModel):
     )
 
     # --8<-- [start:responses-extra-params]
-    watermarking: bool = True
+    watermarking: bool | None = None
     request_id: str = Field(
         default_factory=lambda: f"resp_{random_uuid()}",
         description=(

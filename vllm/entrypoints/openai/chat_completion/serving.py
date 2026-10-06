@@ -373,17 +373,9 @@ class OpenAIServingChat(GenerateBaseServing):
                     session_id=session_id,
                 )
             else:
-                if not request.include_reasoning:
-                    reasoning_ended = True
-                elif request._grammar_from_parser:
-                    # The Mistral grammar already includes an optional
-                    # `think?` rule that handles both reasoning and
-                    # non-reasoning outputs.
-                    reasoning_ended = True
-                elif parser is not None and parser.reasoning_parser is not None:
-                    reasoning_ended = parser.is_reasoning_end(prompt_token_ids or [])
-                else:
-                    reasoning_ended = None
+                reasoning_ended = request.resolve_reasoning_ended(
+                    parser, prompt_token_ids or []
+                )
 
                 generator = self.engine_client.generate(
                     engine_input,
@@ -642,9 +634,7 @@ class OpenAIServingChat(GenerateBaseServing):
 
                     self._raise_if_error(output.finish_reason, request_id)
 
-                    if request.logprobs and (
-                        request.top_logprobs is not None or request.logprob_token_ids
-                    ):
+                    if request.logprobs:
                         assert output.logprobs is not None, "Did not output logprobs"
                         logprobs = self._create_chat_logprobs(
                             token_ids=output.token_ids,
@@ -987,9 +977,7 @@ class OpenAIServingChat(GenerateBaseServing):
             token_ids = output.token_ids
             out_logprobs = output.logprobs
 
-            if request.logprobs and (
-                request.top_logprobs is not None or request.logprob_token_ids
-            ):
+            if request.logprobs:
                 assert out_logprobs is not None, "Did not output logprobs"
                 logprobs = self._create_chat_logprobs(
                     token_ids=token_ids,
