@@ -15,7 +15,7 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
 )
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.exceptions import VLLMValidationError
-from vllm.parser.abstract_parser import DelegatingParser
+from vllm.parser.abstract_parser import DelegatingParser, structured_outputs_to_format
 from vllm.sampling_params import StructuredOutputsParams
 from vllm.tool_parsers.abstract_tool_parser import ToolParser
 from vllm.tool_parsers.qwen3_engine_tool_parser import Qwen3EngineToolParser
@@ -314,6 +314,7 @@ class TestResponsesCustomToolStructuralTags:
         *,
         grammar_syntax: str = "lark",
         with_output_format: bool = False,
+        parallel_tool_calls: bool | None = None,
     ) -> ResponsesRequest:
         data: dict[str, Any] = {
             "model": "m",
@@ -331,6 +332,7 @@ class TestResponsesCustomToolStructuralTags:
                 }
             ],
             "tool_choice": tool_choice,
+            "parallel_tool_calls": parallel_tool_calls,
         }
         if with_output_format:
             data["text"] = {
@@ -388,6 +390,21 @@ class TestResponsesCustomToolStructuralTags:
         assert _is_grammar_accept_string(grammar, '{"answer":"done"}')
         assert not _is_grammar_accept_string(grammar, '{"other":"done"}')
 
+    def test_custom_grammar_and_single_call_constraint_compose(self) -> None:
+        request = self._request(
+            with_output_format=True,
+            parallel_tool_calls=False,
+        )
+
+        out = self._parser(request).adjust_request(request)
+
+        assert out.structured_outputs is not None
+        grammar = Grammar.from_structural_tag(out.structured_outputs.structural_tag)
+        custom_call = self._custom_tool_call()
+        assert _is_grammar_accept_string(grammar, custom_call)
+        assert not _is_grammar_accept_string(grammar, custom_call + custom_call)
+        assert _is_grammar_accept_string(grammar, '{"answer":"done"}')
+
     @pytest.mark.parametrize(
         "tool_choice",
         ["required", {"type": "custom", "name": "apply_patch"}],
@@ -416,3 +433,18 @@ class TestResponsesCustomToolStructuralTags:
             match="Unsupported custom-tool grammar syntax",
         ):
             self._parser(request).adjust_request(request)
+
+
+@pytest.mark.parametrize("field", ["json", "structural_tag"])
+def test_structured_outputs_to_format_rejects_deeply_nested_string(field):
+    """Parsers convert the constraint before request validation, and json.loads
+    raises RecursionError on a string nested this deeply."""
+    schema = '{"type": "array", "items": ' * 20_000 + "{}" + "}" * 20_000
+    value = schema
+    if field == "structural_tag":
+        value = (
+            '{"type": "structural_tag", "format": {"type": "json_schema", '
+            f'"json_schema": {schema}}}}}'
+        )
+    with pytest.raises(VLLMValidationError, match="nested too deeply"):
+        structured_outputs_to_format(StructuredOutputsParams(**{field: value}))
