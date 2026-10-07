@@ -15,6 +15,9 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Final, TypedDict
 
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
+    KV_TRANSFER_OBSERVABILITY_API_VERSION,
+)
 from vllm.v1.events import REQUEST_LIFECYCLE_EVENTS_API_VERSION
 
 EXTENSION_CAPABILITIES_SCHEMA: Final = "vllm.extension-capabilities/v1"
@@ -34,6 +37,7 @@ _PROTOCOLS: Final = MappingProxyType(
         "vllm.request-processing-hook": "1.0",
         "vllm.request-lifecycle-events": REQUEST_LIFECYCLE_EVENTS_API_VERSION,
         "vllm.kv-materialization-runtime-control": "1.0",
+        "vllm.kv-transfer.observer": KV_TRANSFER_OBSERVABILITY_API_VERSION,
     }
 )
 

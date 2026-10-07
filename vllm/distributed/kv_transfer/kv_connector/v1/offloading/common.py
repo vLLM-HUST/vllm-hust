@@ -141,14 +141,19 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
         for job_id, ranks in other.load_receipts.items():
             merged_receipts.setdefault(job_id, set()).update(ranks)
 
+        sorted_receipts = sorted(merged_receipts.items())
+        retained_receipts = sorted_receipts[:MAX_LOAD_RECEIPT_JOBS]
+        aggregation_drops = len(sorted_receipts) - len(retained_receipts)
+
         return OffloadingWorkerMetadata(
             completed_jobs=merged,
             transfer_stats=self.transfer_stats.aggregate(other.transfer_stats),
             load_receipts={
-                job_id: tuple(sorted(ranks))
-                for job_id, ranks in sorted(merged_receipts.items())
+                job_id: tuple(sorted(ranks)) for job_id, ranks in retained_receipts
             },
             dropped_load_receipts=(
-                self.dropped_load_receipts + other.dropped_load_receipts
+                self.dropped_load_receipts
+                + other.dropped_load_receipts
+                + aggregation_drops
             ),
         )

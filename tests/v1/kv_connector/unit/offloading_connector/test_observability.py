@@ -374,6 +374,25 @@ def test_receipt_record_reports_worker_ranks():
     assert record.success is True
 
 
+def test_receipt_aggregation_is_bounded_and_reports_overflow():
+    left = OffloadingWorkerMetadata(
+        load_receipts={job_id: (0,) for job_id in range(MAX_LOAD_RECEIPT_JOBS)}
+    )
+    right = OffloadingWorkerMetadata(
+        load_receipts={
+            job_id: (1,)
+            for job_id in range(MAX_LOAD_RECEIPT_JOBS, MAX_LOAD_RECEIPT_JOBS * 2)
+        }
+    )
+
+    merged = left.aggregate(right)
+
+    assert isinstance(merged, OffloadingWorkerMetadata)
+    assert len(merged.load_receipts) == MAX_LOAD_RECEIPT_JOBS
+    assert tuple(merged.load_receipts) == tuple(range(MAX_LOAD_RECEIPT_JOBS))
+    assert merged.dropped_load_receipts == MAX_LOAD_RECEIPT_JOBS
+
+
 def test_descriptor_record_carries_only_relative_layout():
     seen: list = []
     observability.register_kv_transfer_observer("test", seen.append)

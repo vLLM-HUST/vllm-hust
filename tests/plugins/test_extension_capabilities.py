@@ -3,6 +3,9 @@
 
 import pytest
 
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
+    KV_TRANSFER_OBSERVABILITY_API_VERSION,
+)
 from vllm.plugins.extension_capabilities import (
     EXTENSION_CAPABILITIES_SCHEMA,
     HOST_EXTENSION_API_VERSION,
@@ -35,6 +38,7 @@ def test_extension_capability_snapshot_matches_owned_contracts() -> None:
             "vllm.kv-materialization-runtime-control": (
                 KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION
             ),
+            "vllm.kv-transfer.observer": KV_TRANSFER_OBSERVABILITY_API_VERSION,
         },
     }
 

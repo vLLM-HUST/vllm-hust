@@ -97,6 +97,11 @@ class TransferJobStatus:
     fenced_block_ids: list[int] | None = None
     # Ranks that reported finishing this load on their own device.
     receipt_ranks: set[int] = field(default_factory=set)
+    # Number of worker completion reports received for this load.
+    receipt_reports: int = 0
+    # False when bounded metadata dropped at least one potentially relevant
+    # receipt. In that case no exact receipt or recovery roster may be emitted.
+    receipt_complete: bool = True
 
 
 class GroupOffloadConfig(NamedTuple):
@@ -2058,7 +2063,11 @@ class OffloadingConnectorScheduler:
                 continue
             job_status = self._jobs[job_id]
             job_status.pending_count -= count
-            job_status.receipt_ranks.update(meta.load_receipts.get(job_id, ()))
+            if not job_status.is_store:
+                job_status.receipt_reports += count
+                job_status.receipt_ranks.update(meta.load_receipts.get(job_id, ()))
+                if meta.dropped_load_receipts:
+                    job_status.receipt_complete = False
             if job_status.pending_count > 0:
                 continue
             assert job_status.pending_count == 0
@@ -2070,14 +2079,21 @@ class OffloadingConnectorScheduler:
                 self.manager.complete_load(job_status.keys, req_status.req_context)
                 if self._chunks_being_loaded:
                     self._chunks_being_loaded.difference_update(job_status.keys)
-                emit_kv_transfer_receipt(
-                    job_id=job_id,
-                    rank=None,
-                    request_id=job_status.req_id,
-                    ranks=tuple(sorted(job_status.receipt_ranks)),
+                exact_receipt = (
+                    job_status.receipt_complete
+                    and len(job_status.receipt_ranks) == job_status.receipt_reports
                 )
+                if exact_receipt:
+                    emit_kv_transfer_receipt(
+                        job_id=job_id,
+                        rank=None,
+                        request_id=job_status.req_id,
+                        ranks=tuple(sorted(job_status.receipt_ranks)),
+                    )
                 if req_status.pending_recovery:
-                    if (
+                    if not exact_receipt:
+                        req_status.restored_overflow = True
+                    elif (
                         len(req_status.restored_job_ids)
                         < MAX_RESTORED_JOBS_PER_RECOVERY
                     ):

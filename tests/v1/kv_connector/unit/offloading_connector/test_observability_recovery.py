@@ -174,6 +174,31 @@ def test_receipt_waits_for_every_worker_before_publishing():
     assert receipt.ranks == (0, 1)
 
 
+def test_incomplete_receipt_is_not_published_or_admitted():
+    scheduler = _make_scheduler()
+    req_state = _track_request(scheduler)
+    seen = _observe()
+    _preempt(scheduler)
+
+    job_id = 10
+    scheduler._jobs[job_id] = TransferJobStatus(
+        req_id=REQ_ID, pending_count=2, keys=set(), is_store=False
+    )
+    req_state.transfer_jobs.add(job_id)
+    scheduler.update_connector_output(
+        KVConnectorOutput(
+            kv_connector_worker_meta=OffloadingWorkerMetadata(
+                completed_jobs={job_id: 2},
+                load_receipts={job_id: (0,)},
+                dropped_load_receipts=1,
+            )
+        )
+    )
+    _resume(scheduler)
+
+    assert [record.event for record in seen] == [KVTransferEvent.RECOVERY_REQUEUED]
+
+
 # ---------------------------------------------------------------------------
 # Recovery requeue / admission
 # ---------------------------------------------------------------------------
