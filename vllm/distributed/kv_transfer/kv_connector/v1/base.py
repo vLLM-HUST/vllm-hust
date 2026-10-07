@@ -261,6 +261,15 @@ class KVConnectorBase_V1(ABC):
         """
         self._connector_metadata = None
 
+    def observe_forward_batch(self, request_ids: list[str]) -> None:
+        """Called with the batch immediately before a real model forward.
+
+        Dummy, profile, and capture batches never call this, and neither
+        does a batch that does not forward at all. Connectors that publish
+        first-compute observations implement it; the default is a no-op.
+        """
+        return
+
     def _get_connector_metadata(self) -> KVConnectorMetadata:
         """Get the connector metadata.
 

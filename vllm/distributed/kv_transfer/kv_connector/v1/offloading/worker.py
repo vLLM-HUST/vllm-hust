@@ -10,12 +10,22 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.canonical_mapping i
     derive_canonical_mappings,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
+    MAX_PENDING_FIRST_COMPUTE,
     OffloadingConnectorMetadata,
     OffloadingWorkerMetadata,
     ReqId,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.config import (
     get_offloading_group_ids,
+)
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
+    ComputeKind,
+    TransferCancellationReason,
+    TransferOperation,
+    emit_kv_first_compute,
+    emit_kv_transfer_cancelled,
+    emit_kv_transfer_completed,
+    emit_kv_transfer_submitted,
 )
 from vllm.logger import init_logger
 from vllm.v1.kv_cache_interface import (
@@ -37,6 +47,8 @@ from vllm.v1.kv_offload.base import (
 
 logger = init_logger(__name__)
 
+_COMPUTE_KINDS = {kind.value: kind for kind in ComputeKind}
+
 
 class OffloadingConnectorWorker:
     """Implementation of Worker side methods."""
@@ -51,6 +63,7 @@ class OffloadingConnectorWorker:
         self.vllm_config = vllm_config
         self.kv_cache_config = kv_cache_config
         self.worker: OffloadingWorker | None = None
+        self._rank = spec.config.parallel.rank
         # Non-writers still ack: pending_count waits for world_size per job.
         self._is_store_writer = (
             not self.spec.replicated_layout
@@ -60,10 +73,16 @@ class OffloadingConnectorWorker:
 
         # job_id -> req_id for in-flight loads.
         self._load_jobs: dict[int, ReqId] = {}
+        # job_id -> req_id for submitted stores, kept until the backend
+        # reports the transfer result.
+        self._store_jobs: dict[int, ReqId] = {}
         self._unsubmitted_store_jobs: list[
-            tuple[int, GPULoadStoreSpec, LoadStoreSpec]
+            tuple[int, ReqId, GPULoadStoreSpec, LoadStoreSpec]
         ] = []
         self._connector_worker_meta = OffloadingWorkerMetadata()
+        # req_id -> (recovery epoch, restored roster, compute kind) admitted
+        # by the scheduler and awaiting that request's first real forward.
+        self._recovery_admissions: dict[str, tuple[int, tuple[int, ...], str]] = {}
 
     def _init_worker(self, kv_caches: CanonicalKVCaches) -> None:
         self.worker = self.spec.get_worker(kv_caches)
@@ -216,6 +235,23 @@ class OffloadingConnectorWorker:
 
         self._init_worker(canonical_kv_caches)
 
+    def _submit_deferred_stores(self) -> None:
+        """Submit deferred stores and observe successful submissions."""
+        assert self.worker is not None
+        for job_id, req_id, src_spec, dst_spec in self._unsubmitted_store_jobs:
+            assert isinstance(src_spec, GPULoadStoreSpec)
+            success = self.worker.submit_store(job_id, src_spec, dst_spec)
+            assert success
+            self._store_jobs[job_id] = req_id
+            emit_kv_transfer_submitted(
+                operation=TransferOperation.D2H_PRESERVE,
+                job_id=job_id,
+                rank=self._rank,
+                request_id=req_id,
+                block_count=len(src_spec.block_ids),
+            )
+        self._unsubmitted_store_jobs.clear()
+
     def handle_preemptions(self, kv_connector_metadata: OffloadingConnectorMetadata):
         assert self.worker is not None
 
@@ -230,31 +266,80 @@ class OffloadingConnectorWorker:
                         continue
                     assert isinstance(entry.src_spec, GPULoadStoreSpec)
                     self._unsubmitted_store_jobs.append(
-                        (job_id, entry.src_spec, entry.dst_spec)
+                        (job_id, entry.req_id, entry.src_spec, entry.dst_spec)
                     )
 
         # Submit deferred stores from previous step (and jobs_to_flush above).
-        for job_id, src_spec, dst_spec in self._unsubmitted_store_jobs:
-            assert isinstance(src_spec, GPULoadStoreSpec)
-            success = self.worker.submit_store(job_id, src_spec, dst_spec)
-            assert success
-        self._unsubmitted_store_jobs.clear()
+        self._submit_deferred_stores()
 
         if kv_connector_metadata.jobs_to_flush:
             self.worker.wait(kv_connector_metadata.jobs_to_flush)
 
+    def note_recovery_admissions(
+        self, kv_connector_metadata: OffloadingConnectorMetadata
+    ) -> None:
+        """Stash the scheduler's admitted recoveries until they compute.
+
+        Each entry is dropped by :meth:`observe_forward_batch` on the
+        request's first real forward, or with the request itself, so a
+        stale epoch can never be reported.
+        """
+        admissions = getattr(kv_connector_metadata, "recovery_admissions", None)
+        if not admissions:
+            return
+        for req_id, admission in admissions.items():
+            epoch, roster, compute_kind = admission
+            self._recovery_admissions[str(req_id)] = (
+                int(epoch),
+                tuple(int(job_id) for job_id in roster),
+                str(compute_kind),
+            )
+        while len(self._recovery_admissions) > MAX_PENDING_FIRST_COMPUTE:
+            # Oldest first: admissions are consumed in submission order.
+            self._recovery_admissions.pop(next(iter(self._recovery_admissions)))
+
+    def observe_forward_batch(self, request_ids: list[str]) -> None:
+        """Publish each admitted recovery's first real forward, exactly once.
+
+        Called by the model runner immediately before a real model forward
+        for the batch; dummy, profile, and capture batches never call it.
+        """
+        if not self._recovery_admissions or not request_ids:
+            return
+        for req_id in request_ids:
+            admission = self._recovery_admissions.pop(req_id, None)
+            if admission is None:
+                continue
+            epoch, roster, compute_kind = admission
+            kind = _COMPUTE_KINDS.get(compute_kind)
+            if kind is None:
+                logger.warning_once(
+                    "Unknown compute kind %r for request %s", compute_kind, req_id
+                )
+            emit_kv_first_compute(
+                request_id=req_id,
+                recovery_epoch=epoch,
+                job_ids=roster,
+                compute_kind=kind,
+                rank=self._rank,
+            )
+
     def start_kv_transfers(self, metadata: OffloadingConnectorMetadata):
         assert self.worker is not None
-        for job_id, src_spec, dst_spec in self._unsubmitted_store_jobs:
-            success = self.worker.submit_store(job_id, src_spec, dst_spec)
-            assert success
-        self._unsubmitted_store_jobs.clear()
+        self._submit_deferred_stores()
 
         for job_id, entry in metadata.load_jobs.items():
             self._load_jobs[job_id] = entry.req_id
             assert isinstance(entry.dst_spec, GPULoadStoreSpec)
             success = self.worker.submit_load(job_id, entry.src_spec, entry.dst_spec)
             assert success
+            emit_kv_transfer_submitted(
+                operation=TransferOperation.H2D_RESTORE,
+                job_id=job_id,
+                rank=self._rank,
+                request_id=entry.req_id,
+                block_count=len(entry.dst_spec.block_ids),
+            )
 
     def prepare_store_kv(self, metadata: OffloadingConnectorMetadata):
         for job_id, entry in metadata.store_jobs.items():
@@ -267,7 +352,7 @@ class OffloadingConnectorWorker:
             # to token sampling, thereby avoiding delays to token generation.
             assert isinstance(entry.src_spec, GPULoadStoreSpec)
             self._unsubmitted_store_jobs.append(
-                (job_id, entry.src_spec, entry.dst_spec)
+                (job_id, entry.req_id, entry.src_spec, entry.dst_spec)
             )
 
     def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
@@ -281,6 +366,8 @@ class OffloadingConnectorWorker:
 
         """
         assert self.worker is not None
+        for finished_req_id in finished_req_ids:
+            self._recovery_admissions.pop(finished_req_id, None)
         finished_recving: set[str] = set()
         for transfer_result in self.worker.get_finished():
             # we currently do not support job failures
@@ -301,9 +388,30 @@ class OffloadingConnectorWorker:
                 )
 
             self._connector_worker_meta.mark_completed(job_id)
+            if is_load:
+                self._connector_worker_meta.mark_load_completed(job_id, self._rank)
             req_id = self._load_jobs.pop(job_id, None)
             if req_id is not None:
                 finished_recving.add(req_id)
+            else:
+                req_id = self._store_jobs.pop(job_id, None)
+            emit_kv_transfer_completed(
+                operation=(
+                    TransferOperation.H2D_RESTORE
+                    if is_load
+                    else TransferOperation.D2H_PRESERVE
+                ),
+                job_id=job_id,
+                rank=self._rank,
+                request_id=req_id,
+                success=True,
+                bytes_moved=transfer_result.transfer_size,
+                duration_ns=(
+                    None
+                    if transfer_result.transfer_time is None
+                    else int(transfer_result.transfer_time * 1e9)
+                ),
+            )
 
         return set(), finished_recving
 
@@ -316,8 +424,26 @@ class OffloadingConnectorWorker:
         return meta
 
     def shutdown(self) -> None:
+        for job_id, req_id in self._load_jobs.items():
+            emit_kv_transfer_cancelled(
+                operation=TransferOperation.H2D_RESTORE,
+                job_id=job_id,
+                rank=self._rank,
+                request_id=req_id,
+                reason=TransferCancellationReason.HOST_SHUTDOWN,
+            )
+        for job_id, req_id in self._store_jobs.items():
+            emit_kv_transfer_cancelled(
+                operation=TransferOperation.D2H_PRESERVE,
+                job_id=job_id,
+                rank=self._rank,
+                request_id=req_id,
+                reason=TransferCancellationReason.HOST_SHUTDOWN,
+            )
         self._unsubmitted_store_jobs.clear()
         self._load_jobs.clear()
+        self._store_jobs.clear()
+        self._recovery_admissions.clear()
         self._connector_worker_meta = OffloadingWorkerMetadata()
         if self.worker is not None:
             self.worker.shutdown()

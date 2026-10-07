@@ -1993,6 +1993,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.kv_connector.pre_forward(
                 **connector_kwargs, attn_metadata=attn_metadata
             )
+            if not dummy_run:
+                # The batch is about to compute for real: let the connector
+                # report the first forward of any admitted recovery in it.
+                self.kv_connector.observe_forward_batch(input_batch.req_ids)
             model_output = self.cudagraph_manager.run_fullgraph(batch_desc)
         else:
             # For piecewise and eager mode, just call model().
@@ -2017,6 +2021,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 is_padding=input_batch.is_padding,
             ):
                 self.kv_connector.pre_forward(**connector_kwargs)
+                if not dummy_run:
+                    # The batch is about to compute for real: let the
+                    # connector report the first forward of any admitted
+                    # recovery in it.
+                    self.kv_connector.observe_forward_batch(input_batch.req_ids)
                 if ubatch_state is not None:
                     assert self.ubatch_runner is not None
                     model_output = self.ubatch_runner.run(

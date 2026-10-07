@@ -12,6 +12,13 @@ import torch
 
 from vllm import _custom_ops as ops
 from vllm.distributed.device_communicators.cuda_wrapper import CudaRTLibrary
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
+    MAX_DESCRIPTOR_REGIONS,
+    KVRegionDescriptor,
+    TransferOperation,
+    emit_kv_transfer_descriptors,
+    kv_transfer_observers_configured,
+)
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.triton_utils import HAS_TRITON, triton
@@ -192,6 +199,49 @@ def _canonical_block_sizes(
             )
     assert all(size > 0 for size in canonical_bytes_per_block)
     return canonical_bytes_per_block
+
+
+def build_region_descriptors(
+    layout: Sequence[tuple[int, int, int]],
+    src_tensors: Sequence[torch.Tensor],
+    dst_tensors: Sequence[torch.Tensor],
+    all_src: np.ndarray,
+    all_dst: np.ndarray,
+    all_sizes: np.ndarray,
+) -> tuple[tuple[KVRegionDescriptor, ...], int]:
+    """Convert filled copy ops into bounded, address-free region descriptors.
+
+    ``layout`` holds one ``(tensor_idx, first_op, past_last_op)`` per filled
+    copy plan, in fill order. Offsets are taken relative to each region's base
+    tensor, so only region ids, relative offsets, and sizes leave this
+    function; the copy buffers' absolute pointers are never exposed.
+
+    Returns:
+        The bounded descriptor tuple and the number of descriptors dropped by
+        the inventory cap.
+
+    """
+    descriptors: list[KVRegionDescriptor] = []
+    dropped = 0
+    src_u64 = all_src.view(np.uint64)
+    dst_u64 = all_dst.view(np.uint64)
+    for tensor_idx, first_op, past_last_op in layout:
+        src_base = src_tensors[tensor_idx].data_ptr()
+        dst_base = dst_tensors[tensor_idx].data_ptr()
+        for op in range(first_op, past_last_op):
+            if len(descriptors) >= MAX_DESCRIPTOR_REGIONS:
+                dropped += 1
+                continue
+            descriptors.append(
+                KVRegionDescriptor(
+                    src_region_id=tensor_idx,
+                    dst_region_id=tensor_idx,
+                    src_offset=int(src_u64[op]) - src_base,
+                    dst_offset=int(dst_u64[op]) - dst_base,
+                    size=int(all_sizes[op]),
+                )
+            )
+    return tuple(descriptors), dropped
 
 
 # Bound registration size to avoid driver limits on large host allocations.
@@ -418,6 +468,7 @@ class SingleDirectionOffloadingHandler:
         all_dst: np.ndarray,
         all_sizes: np.ndarray,
         op_idx: int,
+        layout: list[tuple[int, int, int]] | None = None,
     ) -> tuple[int, int]:
         """Fill one group's copy descriptors for the direct (worker-private)
         layout: one whole-page copy per (block, ref).
@@ -444,6 +495,8 @@ class SingleDirectionOffloadingHandler:
             )
 
             all_sizes[op_idx:end_idx] = data_ref.page_size_bytes
+            if layout is not None:
+                layout.append((t_idx, op_idx, end_idx))
             num_bytes += group_size * data_ref.page_size_bytes
             op_idx = end_idx
         return op_idx, num_bytes
@@ -460,6 +513,7 @@ class SingleDirectionOffloadingHandler:
         all_dst: np.ndarray,
         all_sizes: np.ndarray,
         op_idx: int,
+        layout: list[tuple[int, int, int]] | None = None,
     ) -> tuple[int, int]:
         """Fill one group's copy descriptors for the canonical layout:
         scatter each block through the ref's precomputed CopyPlan, keeping
@@ -537,6 +591,8 @@ class SingleDirectionOffloadingHandler:
             all_sizes[op_idx:end_idx].reshape(num_active_blocks, plan.num_frags)[:] = (
                 plan.frag_sizes
             )
+            if layout is not None:
+                layout.append((t_idx, op_idx, end_idx))
             num_bytes += num_active_blocks * plan.total_bytes
             op_idx = end_idx
         return op_idx, num_bytes
@@ -628,6 +684,11 @@ class SingleDirectionOffloadingHandler:
         op_idx = 0
         # count total number of bytes copied
         num_transfer_bytes = 0
+        # Region-relative layout capture is opt-in and costs nothing while no
+        # observer is registered process-wide.
+        layout: list[tuple[int, int, int]] | None = (
+            [] if kv_transfer_observers_configured() else None
+        )
         for g_idx, (group_size, block_idx) in enumerate(
             zip(group_sizes, block_indices)
         ):
@@ -658,6 +719,7 @@ class SingleDirectionOffloadingHandler:
                 all_dst=all_dst,
                 all_sizes=all_sizes,
                 op_idx=op_idx,
+                layout=layout,
             )
             num_transfer_bytes += group_bytes
 
@@ -669,6 +731,26 @@ class SingleDirectionOffloadingHandler:
         # Writer rotation may skip non-writer blocks, leaving op_idx below
         # the sized upper bound
         assert op_idx <= num_copy_ops
+        if layout is not None and op_idx > 0:
+            descriptors, dropped = build_region_descriptors(
+                layout,
+                self.src_tensors,
+                self.dst_tensors,
+                all_src,
+                all_dst,
+                all_sizes,
+            )
+            emit_kv_transfer_descriptors(
+                job_id=job_id,
+                rank=None,
+                operation=(
+                    TransferOperation.D2H_PRESERVE
+                    if self.gpu_to_cpu
+                    else TransferOperation.H2D_RESTORE
+                ),
+                descriptors=descriptors,
+                dropped_descriptors=dropped,
+            )
         src = src[:op_idx]
         dst = dst[:op_idx]
         sizes = sizes[:op_idx]
