@@ -166,7 +166,7 @@ class KVTransferObservation:
     compute_kind: ComputeKind | None = None
 
 
-KVTransferObserver = Callable[[KVTransferObservation], None]
+KVTransferObserver = Callable[[KVTransferObservation], bool | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +177,7 @@ class KVTransferObserverHandle:
     token: int
 
 
-_observers: dict[int, KVTransferObserver] = {}
+_observers: dict[int, tuple[str, KVTransferObserver]] = {}
 _next_token = 0
 _registry_lock = threading.Lock()
 
@@ -190,7 +190,9 @@ def register_kv_transfer_observer(
     Args:
         name: Non-empty label used when reporting observer failures.
         observer: Callable receiving immutable ``KVTransferObservation``
-            records; it must not block or retain unbounded state.
+            records; it must not block or retain unbounded state. Returning
+            exactly ``True`` attests that the record was accepted and lets the
+            host emit process-owned runtime-effective evidence.
 
     Returns:
         A handle accepted by :func:`unregister_kv_transfer_observer`.
@@ -204,7 +206,7 @@ def register_kv_transfer_observer(
     with _registry_lock:
         _next_token += 1
         token = _next_token
-        _observers[token] = observer
+        _observers[token] = (name, observer)
     logger.debug("KV transfer observer %r registered (%d active)", name, token)
     return KVTransferObserverHandle(contract=KV_TRANSFER_OBSERVER_CONTRACT, token=token)
 
@@ -231,13 +233,31 @@ def reset_kv_transfer_observers() -> None:
 def _publish(observation: KVTransferObservation) -> None:
     with _registry_lock:
         snapshot = tuple(_observers.items())
-    for token, observer in snapshot:
+    for token, (name, observer) in snapshot:
         try:
-            observer(observation)
+            accepted = observer(observation)
         except Exception:
             logger.exception("KV transfer observer %d failed; removing it", token)
             with _registry_lock:
                 _observers.pop(token, None)
+            continue
+        if accepted is not True:
+            continue
+        try:
+            from vllm.plugins import DEFAULT_PLUGINS_GROUP
+            from vllm.plugins.evidence import _emit_host_event
+
+            _emit_host_event(
+                "effective",
+                DEFAULT_PLUGINS_GROUP,
+                name,
+                "vllm.kv-transfer.observer.v1",
+                detail=observation.event.value,
+                occurrence_id=observation.observed_at_ns,
+                observation_kind="runtime_effective",
+            )
+        except Exception:
+            logger.exception("KV transfer observer %d evidence delivery failed", token)
 
 
 def emit_kv_transfer_submitted(

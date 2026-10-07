@@ -30,6 +30,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.worker import (
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import (
     OffloadingConnector,
 )
+from vllm.plugins import evidence as plugin_evidence
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.kv_offload.base import (
     GPULoadStoreSpec,
@@ -316,6 +317,56 @@ def test_failing_observer_is_removed_without_blocking_peers():
     # The failing observer was removed; the healthy one keeps receiving.
     assert len(failures) == 1
     assert len(healthy) == 2
+
+
+def test_accepted_observation_emits_host_owned_runtime_evidence(monkeypatch):
+    emitted: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        plugin_evidence,
+        "_emit_host_event",
+        lambda *args, **kwargs: emitted.append((args, kwargs)),
+    )
+    observability.register_kv_transfer_observer("kv_observer", lambda _record: True)
+
+    observability.emit_kv_transfer_submitted(
+        operation=TransferOperation.D2H_PRESERVE,
+        job_id=2,
+        rank=0,
+        request_id="req",
+        block_count=1,
+    )
+
+    assert len(emitted) == 1
+    args, kwargs = emitted[0]
+    assert args == (
+        "effective",
+        "vllm.general_plugins",
+        "kv_observer",
+        "vllm.kv-transfer.observer.v1",
+    )
+    assert kwargs["detail"] == "transfer_submitted"
+    assert isinstance(kwargs["occurrence_id"], int)
+    assert kwargs["observation_kind"] == "runtime_effective"
+
+
+def test_rejected_observation_does_not_emit_runtime_evidence(monkeypatch):
+    emitted: list[object] = []
+    monkeypatch.setattr(
+        plugin_evidence,
+        "_emit_host_event",
+        lambda *args, **kwargs: emitted.append((args, kwargs)),
+    )
+    observability.register_kv_transfer_observer("kv_observer", lambda _record: False)
+
+    observability.emit_kv_transfer_submitted(
+        operation=TransferOperation.D2H_PRESERVE,
+        job_id=2,
+        rank=0,
+        request_id="req",
+        block_count=1,
+    )
+
+    assert emitted == []
 
 
 def test_dispatch_uses_a_snapshot_of_registered_observers():
