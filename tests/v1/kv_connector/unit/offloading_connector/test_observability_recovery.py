@@ -10,10 +10,18 @@ from tests.v1.kv_connector.unit.offloading_connector.test_config import (
     _make_mamba_hybrid_kv_cache_config,
     _make_vllm_config,
 )
+from tests.v1.kv_connector.unit.offloading_connector.test_observability import (
+    _load_metadata,
+    _make_worker,
+)
 from tests.v1.kv_connector.unit.offloading_connector.utils import MockOffloadingSpec
 from vllm.config import KVEventsConfig
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading import (
+    correlated_observability as correlated,
+)
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading import observability
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
+    OffloadingConnectorMetadata,
     OffloadingWorkerMetadata,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.config import (
@@ -31,6 +39,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.scheduler import (
 )
 from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.kv_offload.base import TransferResult
 from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import RequestStatus
 
@@ -40,8 +49,10 @@ REQ_ID = "req-rec"
 @pytest.fixture(autouse=True)
 def _clean_registry():
     observability.reset_kv_transfer_observers()
+    correlated.reset_correlated_observers()
     yield
     observability.reset_kv_transfer_observers()
+    correlated.reset_correlated_observers()
 
 
 def _make_scheduler() -> OffloadingConnectorScheduler:
@@ -121,6 +132,103 @@ def _complete_load(
             )
         )
     )
+
+
+def test_correlated_recovery_attests_exact_worker_generations():
+    scheduler = _make_scheduler()
+    req_state = _track_request(scheduler)
+    seen = []
+    correlated.register_correlated_observer(seen.append)
+    _preempt(scheduler)
+
+    workers = [_make_worker(rank=rank) for rank in (0, 1)]
+    completed = []
+    for worker in workers:
+        job_meta = _load_metadata(7, REQ_ID)
+        job_meta.load_jobs[7].scheduler_generation = scheduler._scheduler_generation
+        job_meta.load_jobs[7].recovery_epoch = 1
+        worker.start_kv_transfers(job_meta)
+        worker.worker.get_finished.return_value = [
+            TransferResult(job_id=7, success=True, transfer_size=512)
+        ]
+        worker.get_finished(set())
+        completed.append(worker.build_connector_worker_meta())
+
+    scheduler._jobs[7] = TransferJobStatus(
+        req_id=REQ_ID,
+        pending_count=2,
+        keys=set(),
+        is_store=False,
+        recovery_epoch=1,
+    )
+    req_state.transfer_jobs.add(7)
+    scheduler.update_connector_output(
+        KVConnectorOutput(kv_connector_worker_meta=completed[0].aggregate(completed[1]))
+    )
+    admission = _resume_with_meta(scheduler)
+    for worker in workers:
+        worker.note_recovery_admissions(admission)
+        worker.observe_forward_batch([REQ_ID])
+
+    assert [item.event for item in seen] == [
+        correlated.CorrelatedEvent.RECOVERY_REQUEUED,
+        correlated.CorrelatedEvent.RESTORE_SUBMITTED,
+        correlated.CorrelatedEvent.RESTORE_COMPLETED,
+        correlated.CorrelatedEvent.RESTORE_SUBMITTED,
+        correlated.CorrelatedEvent.RESTORE_COMPLETED,
+        correlated.CorrelatedEvent.TRANSFER_RECEIPT,
+        correlated.CorrelatedEvent.RECOVERY_ADMITTED,
+        correlated.CorrelatedEvent.FIRST_COMPUTE,
+        correlated.CorrelatedEvent.FIRST_COMPUTE,
+    ]
+    expected_workers = tuple(
+        sorted(
+            correlated.WorkerReceipt(worker._rank, worker._worker_generation)
+            for worker in workers
+        )
+    )
+    assert seen[5].workers == expected_workers
+    assert seen[6].roster == (correlated.JobReceipt(7, expected_workers),)
+    assert all(item.roster == seen[6].roster for item in seen[7:])
+    for worker in workers:
+        worker.observe_forward_batch([REQ_ID])
+    assert len(seen) == 9
+
+
+def test_correlated_admission_requires_worker_generation_receipts():
+    scheduler = _make_scheduler()
+    req_state = _track_request(scheduler)
+    seen = []
+    correlated.register_correlated_observer(seen.append)
+    _preempt(scheduler)
+    _complete_load(scheduler, req_state, 7, ranks=(0, 1))
+    _resume(scheduler)
+    assert [item.event for item in seen] == [
+        correlated.CorrelatedEvent.RECOVERY_REQUEUED
+    ]
+
+
+def test_correlated_first_compute_does_not_require_v1_admission_metadata():
+    worker = _make_worker(rank=0)
+    seen = []
+    correlated.register_correlated_observer(seen.append)
+    roster = (
+        correlated.JobReceipt(
+            7,
+            (correlated.WorkerReceipt(0, worker._worker_generation),),
+        ),
+    )
+    worker.note_recovery_admissions(
+        OffloadingConnectorMetadata(
+            load_jobs={},
+            store_jobs={},
+            recovery_admissions_v2={REQ_ID: ("a" * 32, 1, roster, "decode")},
+        )
+    )
+    worker.observe_forward_batch([REQ_ID])
+    assert [record.event for record in seen] == [
+        correlated.CorrelatedEvent.FIRST_COMPUTE
+    ]
 
 
 # ---------------------------------------------------------------------------

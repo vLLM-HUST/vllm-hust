@@ -4,6 +4,7 @@
 import hashlib
 import importlib.metadata
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any
@@ -30,6 +31,7 @@ class EntryPoint:
 def reset(monkeypatch: pytest.MonkeyPatch) -> None:
     plugins.plugins_loaded = False
     plugins._plugin_values.clear()
+    plugins._fork_reinitializers.clear()
     evidence.reset_for_tests()
     monkeypatch.delenv("VLLM_ECPA_EVIDENCE_SINK", raising=False)
     monkeypatch.delenv("VLLM_ECPA_EVIDENCE_STRICT", raising=False)
@@ -156,7 +158,9 @@ def test_engine_core_entry_binds_dp_rank_before_initialization(monkeypatch):
     )
 
     with pytest.raises(StopInitialization):
-        core.EngineCoreProc.run_engine_core(dp_rank=4)
+        core.EngineCoreProc.run_engine_core(
+            dp_rank=4, vllm_config=SimpleNamespace(logging_config=None)
+        )
 
     assert bindings == [("engine-core-scheduler", 4)]
 
@@ -217,6 +221,56 @@ def test_general_plugin_sequence_identity_and_no_fabricated_digest(monkeypatch):
     assert events[-1]["process"]["process_epoch"] == 7
     assert events[-1]["plugin_id"] is None
     assert events[-1]["artifact_digest"] is None
+
+
+def test_general_plugin_loads_once_again_after_fork(monkeypatch):
+    called = []
+
+    def safe():
+        called.append(("safe", os.getpid()))
+
+    safe.__vllm_reinit_after_fork__ = True
+
+    def inherited():
+        called.append(("inherited", os.getpid()))
+
+    entry_points = [
+        EntryPoint("safe", "demo:safe", lambda: safe),
+        EntryPoint("inherited", "demo:inherited", lambda: inherited),
+    ]
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda group: entry_points)
+    plugins.load_general_plugins()
+    plugins.load_general_plugins()
+    assert called == [("safe", os.getpid()), ("inherited", os.getpid())]
+
+    read_fd, write_fd = os.pipe()
+    child_pid = os.fork()
+    if child_pid == 0:
+        os.close(read_fd)
+        plugins.load_general_plugins()
+        plugins.load_general_plugins()
+        os.write(write_fd, str(called).encode())
+        os.close(write_fd)
+        os._exit(0)
+
+    os.close(write_fd)
+    try:
+        result = os.read(read_fd, 256)
+        _, status = os.waitpid(child_pid, 0)
+        assert os.WIFEXITED(status)
+        assert (
+            result
+            == str(
+                [
+                    ("safe", os.getpid()),
+                    ("inherited", os.getpid()),
+                    ("safe", child_pid),
+                ]
+            ).encode()
+        )
+        assert called == [("safe", os.getpid()), ("inherited", os.getpid())]
+    finally:
+        os.close(read_fd)
 
 
 def test_allowlist_skip_and_load_failure(monkeypatch):

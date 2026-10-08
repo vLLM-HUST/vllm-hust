@@ -19,6 +19,7 @@ observer is removed without affecting serving.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -180,6 +181,17 @@ class KVTransferObserverHandle:
 _observers: dict[int, tuple[str, KVTransferObserver]] = {}
 _next_token = 0
 _registry_lock = threading.Lock()
+
+
+def _reset_after_fork() -> None:
+    """Do not inherit parent observers or a lock held by a vanished thread."""
+    global _observers, _registry_lock
+    _observers = {}
+    # Keep the counter so a copied parent handle cannot remove a child entry.
+    _registry_lock = threading.Lock()
+
+
+os.register_at_fork(after_in_child=_reset_after_fork)
 
 
 def register_kv_transfer_observer(
