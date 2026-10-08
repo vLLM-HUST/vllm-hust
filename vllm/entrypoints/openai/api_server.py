@@ -183,6 +183,12 @@ def build_app(
 
     register_vllm_serve_api_routers(app)
 
+    from vllm.entrypoints.serve.stateaxis.api_router import (
+        attach_router as attach_stateaxis_router,
+    )
+
+    attach_stateaxis_router(app, args.additional_config)
+
     from vllm.entrypoints.openai.models.api_router import (
         attach_router as register_models_api_router,
     )

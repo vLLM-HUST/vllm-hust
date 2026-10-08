@@ -26,6 +26,7 @@ from vllm.v1.core.kv_cache_utils import (
     make_block_hash_with_group_id,
     maybe_convert_block_hash,
 )
+from vllm.v1.core.stateaxis_lifecycle import LifecycleObserver
 from vllm.v1.request import Request
 
 logger = init_logger(__name__)
@@ -170,6 +171,7 @@ class BlockPool:
     ):
         assert isinstance(num_gpu_blocks, int) and num_gpu_blocks > 0
         self.num_gpu_blocks = num_gpu_blocks
+        self.lifecycle_observer: LifecycleObserver | None = None
         self.enable_caching = enable_caching
         self.hash_block_size = hash_block_size
         # All kv-cache blocks.
@@ -569,6 +571,11 @@ class BlockPool:
                 block.ref_cnt += 1
                 if self.metrics_collector:
                     self.metrics_collector.on_block_allocated(block)
+        if self.lifecycle_observer is not None:
+            self.lifecycle_observer.record(
+                "pool_allocation_completed",
+                blocks=tuple((block.block_id, block.ref_cnt) for block in ret),
+            )
         return ret
 
     def _maybe_evict_cached_block(self, block: KVCacheBlock) -> bool:
@@ -610,6 +617,11 @@ class BlockPool:
             block.ref_cnt += 1
             if self.metrics_collector:
                 self.metrics_collector.on_block_accessed(block)
+            if self.lifecycle_observer is not None:
+                self.lifecycle_observer.record(
+                    "pool_reference_acquired", block=block.block_id,
+                    references=block.ref_cnt, is_null=block.is_null,
+                )
 
     def free_blocks(
         self,
@@ -636,6 +648,11 @@ class BlockPool:
         blocks_without_hash = []
         for block in ordered_blocks:
             block.ref_cnt -= 1
+            if self.lifecycle_observer is not None:
+                self.lifecycle_observer.record(
+                    "pool_reference_released", block=block.block_id,
+                    references=block.ref_cnt, is_null=block.is_null,
+                )
             if block.ref_cnt == 0 and not block.is_null:
                 if block.block_hash is None:
                     blocks_without_hash.append(block)
@@ -645,9 +662,16 @@ class BlockPool:
         if prepend:
             self.free_block_queue.prependleft_n(blocks_without_hash + blocks_with_hash)
         else:
-            # Blocks without hash always get evicted first - prepend them last to the tail
+            # Blocks without hash get evicted first; prepend them last to the tail.
             self.free_block_queue.prepend_n(blocks_without_hash)
             self.free_block_queue.append_n(blocks_with_hash)
+        if self.lifecycle_observer is not None:
+            self.lifecycle_observer.record(
+                "pool_reuse_queue_updated",
+                uncached=tuple(block.block_id for block in blocks_without_hash),
+                cached=tuple(block.block_id for block in blocks_with_hash),
+                prepend=prepend,
+            )
 
     def evict_blocks(self, block_ids: set[int]) -> None:
         """evict blocks from the prefix cache by their block IDs.

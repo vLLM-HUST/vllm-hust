@@ -156,6 +156,7 @@ class EngineCore:
             block_size=scheduler_block_size,
             hash_block_size=hash_block_size,
         )
+        self.stateaxis_lifecycle = getattr(self.scheduler, "stateaxis_lifecycle", None)
         self.scheduler.available_kv_cache_memory_bytes = (
             self.available_gpu_memory_for_kv_cache
             if self.available_gpu_memory_for_kv_cache >= 0
@@ -352,6 +353,12 @@ class EngineCore:
             )
         return scheduler_kv_cache_config
 
+    def get_stateaxis_lifecycle_snapshot(self) -> dict[str, Any] | None:
+        """Return bounded diagnostic evidence through the existing utility path."""
+        if self.stateaxis_lifecycle is None:
+            return None
+        return self.stateaxis_lifecycle.snapshot()
+
     def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         return self.model_executor.supported_tasks
 
@@ -494,6 +501,8 @@ class EngineCore:
             return {}, False
         scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
         future = self.model_executor.execute_model(scheduler_output, non_block=True)
+        if self.stateaxis_lifecycle is not None:
+            self.stateaxis_lifecycle.execution_submitted(scheduler_output)
         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
         with (
             self.log_error_detail(scheduler_output),
@@ -554,6 +563,8 @@ class EngineCore:
                 exec_future = self.model_executor.execute_model(
                     scheduler_output, non_block=True
                 )
+            if self.stateaxis_lifecycle is not None:
+                self.stateaxis_lifecycle.execution_submitted(scheduler_output)
             if self.is_ec_consumer:
                 model_executed = scheduler_output.total_num_scheduled_tokens > 0
 

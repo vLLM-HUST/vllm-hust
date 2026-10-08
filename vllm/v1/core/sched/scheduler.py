@@ -52,6 +52,7 @@ from vllm.v1.core.sched.request_queue import (
     create_request_queue,
 )
 from vllm.v1.core.sched.utils import check_stop, remove_all
+from vllm.v1.core.stateaxis_lifecycle import LifecycleObserver
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.perf import ModelMetrics, PerfStats
@@ -79,6 +80,9 @@ class Scheduler(SchedulerInterface):
         log_stats: bool = False,
     ) -> None:
         self.vllm_config = vllm_config
+        self.stateaxis_lifecycle = LifecycleObserver.from_additional_config(
+            vllm_config.additional_config
+        )
         self.scheduler_config = vllm_config.scheduler_config
         self.cache_config = vllm_config.cache_config
         self.lora_config = vllm_config.lora_config
@@ -271,6 +275,7 @@ class Scheduler(SchedulerInterface):
             hash_block_size=hash_block_size,
             metrics_collector=self.kv_metrics_collector,
             watermark=self.scheduler_config.watermark,
+            lifecycle_observer=self.stateaxis_lifecycle,
         )
         # Bind GPU block pool to the KV connector. This must happen after
         # kv_cache_manager is constructed so block_pool is available.
@@ -1149,6 +1154,8 @@ class Scheduler(SchedulerInterface):
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
+        if self.stateaxis_lifecycle is not None:
+            self.stateaxis_lifecycle.scheduled(scheduler_output, self.requests)
         return scheduler_output
 
     def _build_kv_connector_meta(
@@ -1179,6 +1186,8 @@ class Scheduler(SchedulerInterface):
         # Put the request back to the waiting queue.
         self.waiting.prepend_request(request)
         self.reset_preempted_req_ids.add(request.request_id)
+        if self.stateaxis_lifecycle is not None:
+            self.stateaxis_lifecycle.preempted(request)
 
     def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
         # Advance the number of computed tokens for the request AFTER
@@ -1551,6 +1560,8 @@ class Scheduler(SchedulerInterface):
 
         # Every GPU write enqueued by this and earlier steps has completed, so it is
         # safe to return deferred-free blocks to the pool.
+        if self.stateaxis_lifecycle is not None:
+            self.stateaxis_lifecycle.execution_completed(scheduler_output)
         if self.defer_block_free and scheduler_output.total_num_scheduled_tokens > 0:
             self.processed_step_seq += 1
             self._drain_deferred_frees()
@@ -1876,6 +1887,8 @@ class Scheduler(SchedulerInterface):
                 engine_core_outputs[0] = eco = EngineCoreOutputs()
             eco.scheduler_stats = stats
 
+        if self.stateaxis_lifecycle is not None:
+            self.stateaxis_lifecycle.committed(scheduler_output)
         return engine_core_outputs
 
     @staticmethod
@@ -2056,6 +2069,8 @@ class Scheduler(SchedulerInterface):
                 request.streaming_queue = deque()
             self._enqueue_waiting_request(request)
             self.requests[request.request_id] = request
+            if self.stateaxis_lifecycle is not None:
+                self.stateaxis_lifecycle.admitted(request)
             if self.connector is not None:
                 self.connector.on_new_request(request)
             if self.log_stats:
@@ -2129,6 +2144,12 @@ class Scheduler(SchedulerInterface):
     ) -> dict[str, Any] | None:
         assert request.is_finished()
 
+        if self.stateaxis_lifecycle is not None:
+            self.stateaxis_lifecycle.record(
+                "request_finished",
+                token=self.stateaxis_lifecycle.token(request),
+                status=request.status.name,
+            )
         self._inflight_prefills.discard(request)
         connector_delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         self.encoder_cache_manager.free(request)
@@ -2147,6 +2168,8 @@ class Scheduler(SchedulerInterface):
         assert request.is_finished()
         self._free_request_blocks(request)
         del self.requests[request.request_id]
+        if self.stateaxis_lifecycle is not None:
+            self.stateaxis_lifecycle.retired(request)
 
     @property
     def pause_state(self) -> PauseState:
@@ -2169,6 +2192,8 @@ class Scheduler(SchedulerInterface):
         blocks = self.kv_cache_manager.pop_blocks_for_free(request)
         if blocks:
             self.deferred_frees.append((self.sched_step_seq, blocks))
+            if self.stateaxis_lifecycle is not None:
+                self.stateaxis_lifecycle.deferred(request, blocks, self.sched_step_seq)
 
     def _drain_deferred_frees(self):
         """Return deferred blocks whose fence step has completed.
@@ -2183,6 +2208,8 @@ class Scheduler(SchedulerInterface):
             _, blocks = self.deferred_frees.popleft()
             # Free in reverse order so that the tail blocks are evicted first.
             self.kv_cache_manager.block_pool.free_blocks(reversed(blocks))
+            if self.stateaxis_lifecycle is not None:
+                self.stateaxis_lifecycle.deferred_returned(blocks)
 
     def get_num_unfinished_requests(self) -> int:
         if self._pause_state == PauseState.PAUSED_ALL:

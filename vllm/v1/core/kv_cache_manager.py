@@ -12,6 +12,7 @@ from vllm.logger import init_logger
 from vllm.v1.core.kv_cache_coordinator import get_kv_cache_coordinator
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock
+from vllm.v1.core.stateaxis_lifecycle import LifecycleObserver
 from vllm.v1.kv_cache_interface import (
     KVCacheConfig,
     get_kv_cache_spec_kind,
@@ -159,7 +160,9 @@ class KVCacheManager:
         pcp_world_size: int = 1,
         metrics_collector: KVCacheMetricsCollector | None = None,
         watermark: float = 0.0,
+        lifecycle_observer: LifecycleObserver | None = None,
     ) -> None:
+        self.lifecycle_observer = lifecycle_observer
         self.max_model_len = max_model_len
         # When unset, fall back to `max_model_len` so the recycling-aware cap
         # collapses to the prior (uncapped) admission behavior. The scheduler
@@ -195,6 +198,7 @@ class KVCacheManager:
         )
         self.num_kv_cache_groups = len(kv_cache_config.kv_cache_groups)
         self.block_pool = self.coordinator.block_pool
+        self.block_pool.lifecycle_observer = lifecycle_observer
         self.kv_cache_config = kv_cache_config
 
         # Watermark: minimum number of KV cache blocks to keep free when
@@ -548,6 +552,13 @@ class KVCacheManager:
             num_tokens_main_model,
             num_encoder_tokens,
         )
+        if self.lifecycle_observer is not None:
+            self.lifecycle_observer.record(
+                "kv_allocation_completed",
+                token=self.lifecycle_observer.token(request),
+                groups=self.get_block_ids(request.request_id),
+                free_pool_blocks=self.block_pool.get_num_free_blocks(),
+            )
 
         # P/D: delay caching blocks if we have to recv from
         # remote. Update state for locally cached blocks.
@@ -575,10 +586,25 @@ class KVCacheManager:
         Args:
             request: The request to free the blocks.
         """
+        observed_blocks = None
+        if self.lifecycle_observer is not None:
+            observed_blocks = tuple(
+                tuple(group) for group in self.get_blocks(request.request_id).blocks
+            )
         self.coordinator.free(
             request.request_id,
             prioritize_uncached_for_reuse=_kvplane_denies_prefix_cache_write(request),
         )
+        if self.lifecycle_observer is not None:
+            self.lifecycle_observer.record(
+                "kv_refs_returned",
+                token=self.lifecycle_observer.token(request),
+                groups=tuple(
+                    tuple((block.block_id, block.ref_cnt) for block in group)
+                    for group in observed_blocks
+                ),
+                free_pool_blocks=self.block_pool.get_num_free_blocks(),
+            )
 
     def remove_skipped_blocks(
         self,

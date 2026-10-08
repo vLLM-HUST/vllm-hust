@@ -1122,6 +1122,35 @@ class AsyncMPClient(MPClient):
     async def get_supported_tasks_async(self) -> tuple[SupportedTask, ...]:
         return await self.call_utility_async("get_supported_tasks")
 
+    async def get_stateaxis_lifecycle_snapshots_async(self) -> dict[str, Any]:
+        """Read every managed EngineCore without discarding DP rank results."""
+        engine_membership = self.core_engines
+        engines = tuple(engine_membership)
+        if not engines or len(set(engines)) != len(engines):
+            raise RuntimeError("invalid StateAxis snapshot engine set")
+        snapshots = await asyncio.gather(
+            *(
+                self._call_utility_async(
+                    "get_stateaxis_lifecycle_snapshot", engine=engine
+                )
+                for engine in engines
+            )
+        )
+        if (
+            self.core_engines is not engine_membership
+            or tuple(self.core_engines) != engines
+        ):
+            raise RuntimeError("engine membership changed during StateAxis snapshot")
+        return {
+            "schema": "stateaxis-vllm-lifecycle-snapshots-v1",
+            "scope": "client-managed-engine-cores",
+            "cross_rank_atomic": False,
+            "engines": [
+                {"engine_id": engine.hex(), "snapshot": snapshot}
+                for engine, snapshot in zip(engines, snapshots)
+            ],
+        }
+
     async def add_request_async(self, request: EngineCoreRequest) -> None:
         request.client_index = self.client_index
         await self._send_input(EngineCoreRequestType.ADD, request)
