@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import os
-import re
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
+
+import regex as re
 
 from vllm.logger import init_logger
 

@@ -229,7 +229,7 @@ def test_general_plugin_loads_once_again_after_fork(monkeypatch):
     def safe():
         called.append(("safe", os.getpid()))
 
-    safe.__vllm_reinit_after_fork__ = True
+    safe.__vllm_reinit_after_fork__ = True  # type: ignore[attr-defined]
 
     def inherited():
         called.append(("inherited", os.getpid()))

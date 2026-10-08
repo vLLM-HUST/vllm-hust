@@ -2164,7 +2164,7 @@ class OffloadingConnectorScheduler:
                     and {worker.rank for worker in job_status.generation_receipts}
                     == job_status.receipt_ranks
                 )
-                if exact_v2_receipt:
+                if exact_v2_receipt and job_status.recovery_epoch is not None:
                     workers = tuple(sorted(job_status.generation_receipts))
                     emit_correlated_observation(
                         CorrelatedEvent.TRANSFER_RECEIPT,

@@ -349,9 +349,9 @@ class OffloadingConnectorWorker:
             v2_admission = self._recovery_admissions_v2.pop(req_id, None)
             if v2_admission is None:
                 continue
-            scheduler_generation, epoch, roster, compute_kind = v2_admission
+            scheduler_generation, epoch, v2_roster, compute_kind = v2_admission
             worker = WorkerReceipt(self._rank, self._worker_generation)
-            if all(worker in job.workers for job in roster):
+            if all(worker in job.workers for job in v2_roster):
                 emit_correlated_observation(
                     CorrelatedEvent.FIRST_COMPUTE,
                     scheduler_generation=scheduler_generation,
@@ -359,7 +359,7 @@ class OffloadingConnectorWorker:
                     recovery_epoch=epoch,
                     rank=self._rank,
                     worker_generation=self._worker_generation,
-                    roster=roster,
+                    roster=v2_roster,
                     compute_kind=compute_kind,
                 )
 

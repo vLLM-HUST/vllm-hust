@@ -137,7 +137,7 @@ def _complete_load(
 def test_correlated_recovery_attests_exact_worker_generations():
     scheduler = _make_scheduler()
     req_state = _track_request(scheduler)
-    seen = []
+    seen: list[correlated.CorrelatedObservation] = []
     correlated.register_correlated_observer(seen.append)
     _preempt(scheduler)
 
@@ -198,7 +198,7 @@ def test_correlated_recovery_attests_exact_worker_generations():
 def test_correlated_admission_requires_worker_generation_receipts():
     scheduler = _make_scheduler()
     req_state = _track_request(scheduler)
-    seen = []
+    seen: list[correlated.CorrelatedObservation] = []
     correlated.register_correlated_observer(seen.append)
     _preempt(scheduler)
     _complete_load(scheduler, req_state, 7, ranks=(0, 1))
@@ -210,7 +210,7 @@ def test_correlated_admission_requires_worker_generation_receipts():
 
 def test_correlated_first_compute_does_not_require_v1_admission_metadata():
     worker = _make_worker(rank=0)
-    seen = []
+    seen: list[correlated.CorrelatedObservation] = []
     correlated.register_correlated_observer(seen.append)
     roster = (
         correlated.JobReceipt(
