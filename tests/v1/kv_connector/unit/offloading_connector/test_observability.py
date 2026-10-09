@@ -2,12 +2,16 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Tests for the default-off offloading transfer observation seam."""
 
+import os
 from dataclasses import fields
 from unittest.mock import MagicMock
 
 import pytest
 
-from vllm.distributed.kv_transfer.kv_connector.v1.offloading import observability
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading import (
+    correlated_observability,
+    observability,
+)
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
     MAX_LOAD_RECEIPT_JOBS,
     MAX_PENDING_FIRST_COMPUTE,
@@ -73,8 +77,50 @@ class _ExplodingClock:
 @pytest.fixture(autouse=True)
 def _clean_registry():
     observability.reset_kv_transfer_observers()
+    correlated_observability.reset_correlated_observers()
     yield
     observability.reset_kv_transfer_observers()
+    correlated_observability.reset_correlated_observers()
+
+
+def test_fork_discards_inherited_host_observers():
+    legacy = observability.register_kv_transfer_observer("parent", lambda _: True)
+    correlated = correlated_observability.register_correlated_observer(lambda _: True)
+    assert observability.kv_transfer_observers_configured()
+    assert correlated_observability.correlated_observers_configured()
+
+    read_fd, write_fd = os.pipe()
+    child_pid = os.fork()
+    if child_pid == 0:
+        os.close(read_fd)
+        clean = (
+            not observability.kv_transfer_observers_configured()
+            and not correlated_observability.correlated_observers_configured()
+        )
+        observability.register_kv_transfer_observer("child", lambda _: True)
+        correlated_observability.register_correlated_observer(lambda _: True)
+        observability.unregister_kv_transfer_observer(legacy)
+        correlated_observability.unregister_correlated_observer(correlated)
+        ready = (
+            observability.kv_transfer_observers_configured()
+            and correlated_observability.correlated_observers_configured()
+        )
+        os.write(write_fd, b"ok" if clean and ready else b"bad")
+        os.close(write_fd)
+        os._exit(0)
+
+    os.close(write_fd)
+    try:
+        result = os.read(read_fd, 32)
+        _, status = os.waitpid(child_pid, 0)
+        assert os.WIFEXITED(status)
+        assert result == b"ok"
+        assert observability.kv_transfer_observers_configured()
+        assert correlated_observability.correlated_observers_configured()
+    finally:
+        os.close(read_fd)
+        observability.unregister_kv_transfer_observer(legacy)
+        correlated_observability.unregister_correlated_observer(correlated)
 
 
 def _make_worker(rank: int = 0, replicated_layout: bool = False):

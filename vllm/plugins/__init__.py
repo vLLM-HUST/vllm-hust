@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import logging
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -31,7 +32,9 @@ ENDPOINT_PLUGINS_GROUP = "vllm.endpoint_plugins"
 
 # make sure one process only loads plugins once
 plugins_loaded = False
+_plugins_loaded_pid: int | None = None
 _plugin_values: dict[tuple[str, str], str] = {}
+_fork_reinitializers: dict[str, Callable[[], Any]] = {}
 
 
 def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
@@ -100,30 +103,48 @@ def load_general_plugins():
     processes. They should be designed in a way that they can be loaded
     multiple times without causing issues.
     """
-    global plugins_loaded
+    global plugins_loaded, _plugins_loaded_pid
+    process_id = os.getpid()
     if plugins_loaded:
+        if _plugins_loaded_pid == process_id:
+            return
+        # A fork inherits registrations already made by other general plugins.
+        # Re-running all entry points can register those twice (for example,
+        # Ascend KV connectors). Only callbacks that explicitly opt in may
+        # reconstruct child-owned resources.
+        _plugins_loaded_pid = process_id
+        for name, func in _fork_reinitializers.items():
+            _invoke_general_plugin(name, func)
         return
     plugins_loaded = True
+    _plugins_loaded_pid = process_id
+    _fork_reinitializers.clear()
 
     plugins = load_plugins_by_group(group=DEFAULT_PLUGINS_GROUP)
     # general plugins, we only need to execute the loaded functions
     for name, func in plugins.items():
-        value = _plugin_values.get((DEFAULT_PLUGINS_GROUP, name), "unknown")
-        try:
-            func()
-        except Exception as plugin_error:
-            from vllm.plugins.evidence import _emit_host_event
+        _invoke_general_plugin(name, func)
+        if getattr(func, "__vllm_reinit_after_fork__", False) is True:
+            _fork_reinitializers[name] = func
 
-            try:
-                _emit_host_event(
-                    "failed", DEFAULT_PLUGINS_GROUP, name, value, detail="callable"
-                )
-            except Exception as evidence_error:
-                raise plugin_error from evidence_error
-            raise
+
+def _invoke_general_plugin(name: str, func: Callable[[], Any]) -> None:
+    value = _plugin_values.get((DEFAULT_PLUGINS_GROUP, name), "unknown")
+    try:
+        func()
+    except Exception as plugin_error:
         from vllm.plugins.evidence import _emit_host_event
 
-        _emit_host_event("invoked", DEFAULT_PLUGINS_GROUP, name, value)
+        try:
+            _emit_host_event(
+                "failed", DEFAULT_PLUGINS_GROUP, name, value, detail="callable"
+            )
+        except Exception as evidence_error:
+            raise plugin_error from evidence_error
+        raise
+    from vllm.plugins.evidence import _emit_host_event
+
+    _emit_host_event("invoked", DEFAULT_PLUGINS_GROUP, name, value)
 
 
 def load_endpoint_plugins(

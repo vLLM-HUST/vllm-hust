@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import secrets
 from collections import defaultdict
 from dataclasses import replace
 
@@ -17,6 +18,13 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.config import (
     get_offloading_group_ids,
+)
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.correlated_observability import (  # noqa: E501
+    CorrelatedEvent,
+    JobReceipt,
+    WorkerReceipt,
+    correlated_observers_configured,
+    emit_correlated_observation,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
     ComputeKind,
@@ -64,6 +72,7 @@ class OffloadingConnectorWorker:
         self.kv_cache_config = kv_cache_config
         self.worker: OffloadingWorker | None = None
         self._rank = spec.config.parallel.rank
+        self._worker_generation = secrets.token_hex(16)
         # Non-writers still ack: pending_count waits for world_size per job.
         self._is_store_writer = (
             not self.spec.replicated_layout
@@ -73,6 +82,7 @@ class OffloadingConnectorWorker:
 
         # job_id -> req_id for in-flight loads.
         self._load_jobs: dict[int, ReqId] = {}
+        self._load_contexts: dict[int, tuple[str, int]] = {}
         # job_id -> req_id for submitted stores, kept until the backend
         # reports the transfer result.
         self._store_jobs: dict[int, ReqId] = {}
@@ -83,6 +93,9 @@ class OffloadingConnectorWorker:
         # req_id -> (recovery epoch, restored roster, compute kind) admitted
         # by the scheduler and awaiting that request's first real forward.
         self._recovery_admissions: dict[str, tuple[int, tuple[int, ...], str]] = {}
+        self._recovery_admissions_v2: dict[
+            str, tuple[str, int, tuple[JobReceipt, ...], str]
+        ] = {}
 
     def _init_worker(self, kv_caches: CanonicalKVCaches) -> None:
         self.worker = self.spec.get_worker(kv_caches)
@@ -285,18 +298,25 @@ class OffloadingConnectorWorker:
         stale epoch can never be reported.
         """
         admissions = getattr(kv_connector_metadata, "recovery_admissions", None)
-        if not admissions:
-            return
-        for req_id, admission in admissions.items():
-            epoch, roster, compute_kind = admission
-            self._recovery_admissions[str(req_id)] = (
-                int(epoch),
-                tuple(int(job_id) for job_id in roster),
-                str(compute_kind),
+        if admissions:
+            for req_id, admission in admissions.items():
+                epoch, roster, compute_kind = admission
+                self._recovery_admissions[str(req_id)] = (
+                    int(epoch),
+                    tuple(int(job_id) for job_id in roster),
+                    str(compute_kind),
+                )
+            while len(self._recovery_admissions) > MAX_PENDING_FIRST_COMPUTE:
+                # Oldest first: admissions are consumed in submission order.
+                self._recovery_admissions.pop(next(iter(self._recovery_admissions)))
+        if correlated_observers_configured():
+            self._recovery_admissions_v2.update(
+                kv_connector_metadata.recovery_admissions_v2
             )
-        while len(self._recovery_admissions) > MAX_PENDING_FIRST_COMPUTE:
-            # Oldest first: admissions are consumed in submission order.
-            self._recovery_admissions.pop(next(iter(self._recovery_admissions)))
+            while len(self._recovery_admissions_v2) > MAX_PENDING_FIRST_COMPUTE:
+                self._recovery_admissions_v2.pop(
+                    next(iter(self._recovery_admissions_v2))
+                )
 
     def observe_forward_batch(self, request_ids: list[str]) -> None:
         """Publish each admitted recovery's first real forward, exactly once.
@@ -304,25 +324,44 @@ class OffloadingConnectorWorker:
         Called by the model runner immediately before a real model forward
         for the batch; dummy, profile, and capture batches never call it.
         """
-        if not self._recovery_admissions or not request_ids:
+        if (
+            not self._recovery_admissions and not self._recovery_admissions_v2
+        ) or not request_ids:
             return
         for req_id in request_ids:
             admission = self._recovery_admissions.pop(req_id, None)
-            if admission is None:
-                continue
-            epoch, roster, compute_kind = admission
-            kind = _COMPUTE_KINDS.get(compute_kind)
-            if kind is None:
-                logger.warning_once(
-                    "Unknown compute kind %r for request %s", compute_kind, req_id
+            if admission is not None:
+                epoch, roster, compute_kind = admission
+                kind = _COMPUTE_KINDS.get(compute_kind)
+                if kind is None:
+                    logger.warning_once(
+                        "Unknown compute kind %r for request %s",
+                        compute_kind,
+                        req_id,
+                    )
+                emit_kv_first_compute(
+                    request_id=req_id,
+                    recovery_epoch=epoch,
+                    job_ids=roster,
+                    compute_kind=kind,
+                    rank=self._rank,
                 )
-            emit_kv_first_compute(
-                request_id=req_id,
-                recovery_epoch=epoch,
-                job_ids=roster,
-                compute_kind=kind,
-                rank=self._rank,
-            )
+            v2_admission = self._recovery_admissions_v2.pop(req_id, None)
+            if v2_admission is None:
+                continue
+            scheduler_generation, epoch, v2_roster, compute_kind = v2_admission
+            worker = WorkerReceipt(self._rank, self._worker_generation)
+            if all(worker in job.workers for job in v2_roster):
+                emit_correlated_observation(
+                    CorrelatedEvent.FIRST_COMPUTE,
+                    scheduler_generation=scheduler_generation,
+                    request_id=req_id,
+                    recovery_epoch=epoch,
+                    rank=self._rank,
+                    worker_generation=self._worker_generation,
+                    roster=v2_roster,
+                    compute_kind=compute_kind,
+                )
 
     def start_kv_transfers(self, metadata: OffloadingConnectorMetadata):
         assert self.worker is not None
@@ -333,6 +372,25 @@ class OffloadingConnectorWorker:
             assert isinstance(entry.dst_spec, GPULoadStoreSpec)
             success = self.worker.submit_load(job_id, entry.src_spec, entry.dst_spec)
             assert success
+            if (
+                correlated_observers_configured()
+                and entry.scheduler_generation is not None
+                and entry.recovery_epoch is not None
+            ):
+                self._load_contexts[job_id] = (
+                    entry.scheduler_generation,
+                    entry.recovery_epoch,
+                )
+                emit_correlated_observation(
+                    CorrelatedEvent.RESTORE_SUBMITTED,
+                    scheduler_generation=entry.scheduler_generation,
+                    request_id=entry.req_id,
+                    recovery_epoch=entry.recovery_epoch,
+                    job_id=job_id,
+                    rank=self._rank,
+                    worker_generation=self._worker_generation,
+                    block_count=len(entry.dst_spec.block_ids),
+                )
             emit_kv_transfer_submitted(
                 operation=TransferOperation.H2D_RESTORE,
                 job_id=job_id,
@@ -368,6 +426,7 @@ class OffloadingConnectorWorker:
         assert self.worker is not None
         for finished_req_id in finished_req_ids:
             self._recovery_admissions.pop(finished_req_id, None)
+            self._recovery_admissions_v2.pop(finished_req_id, None)
         finished_recving: set[str] = set()
         for transfer_result in self.worker.get_finished():
             # we currently do not support job failures
@@ -389,8 +448,13 @@ class OffloadingConnectorWorker:
 
             self._connector_worker_meta.mark_completed(job_id)
             if is_load:
-                self._connector_worker_meta.mark_load_completed(job_id, self._rank)
+                self._connector_worker_meta.mark_load_completed(
+                    job_id,
+                    self._rank,
+                    self._worker_generation if job_id in self._load_contexts else None,
+                )
             req_id = self._load_jobs.pop(job_id, None)
+            context = self._load_contexts.pop(job_id, None)
             if req_id is not None:
                 finished_recving.add(req_id)
             else:
@@ -412,6 +476,17 @@ class OffloadingConnectorWorker:
                     else int(transfer_result.transfer_time * 1e9)
                 ),
             )
+            if context is not None and req_id is not None:
+                scheduler_generation, epoch = context
+                emit_correlated_observation(
+                    CorrelatedEvent.RESTORE_COMPLETED,
+                    scheduler_generation=scheduler_generation,
+                    request_id=req_id,
+                    recovery_epoch=epoch,
+                    job_id=job_id,
+                    rank=self._rank,
+                    worker_generation=self._worker_generation,
+                )
 
         return set(), finished_recving
 
@@ -442,8 +517,10 @@ class OffloadingConnectorWorker:
             )
         self._unsubmitted_store_jobs.clear()
         self._load_jobs.clear()
+        self._load_contexts.clear()
         self._store_jobs.clear()
         self._recovery_admissions.clear()
+        self._recovery_admissions_v2.clear()
         self._connector_worker_meta = OffloadingWorkerMetadata()
         if self.worker is not None:
             self.worker.shutdown()

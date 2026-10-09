@@ -7,6 +7,10 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorMetadata,
     KVConnectorWorkerMetadata,
 )
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.correlated_observability import (  # noqa: E501
+    JobReceipt,
+    WorkerReceipt,
+)
 from vllm.v1.kv_offload.base import LoadStoreSpec
 
 ReqId = str
@@ -74,6 +78,8 @@ class TransferJob:
     req_id: ReqId
     src_spec: LoadStoreSpec
     dst_spec: LoadStoreSpec
+    scheduler_generation: str | None = None
+    recovery_epoch: int | None = None
 
 
 @dataclass
@@ -87,6 +93,10 @@ class OffloadingConnectorMetadata(KVConnectorMetadata):
     # consume an entry once, on that request's first real forward.
     recovery_admissions: dict[str, tuple[int, tuple[int, ...], str]] = field(
         default_factory=dict
+    )
+    # request -> (scheduler generation, epoch, exact job/worker roster, kind)
+    recovery_admissions_v2: dict[str, tuple[str, int, tuple[JobReceipt, ...], str]] = (
+        field(default_factory=dict)
     )
 
 
@@ -108,6 +118,10 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
     transfer_stats: TransferStats = field(default_factory=TransferStats)
     # job_id -> sorted ranks that reported completing this load.
     load_receipts: dict[int, tuple[int, ...]] = field(default_factory=dict)
+    # job_id -> exact worker generations; independent of scheduling counts.
+    load_generation_receipts: dict[int, tuple[WorkerReceipt, ...]] = field(
+        default_factory=dict
+    )
     # Load receipts dropped because the bounded map was already full.
     dropped_load_receipts: int = 0
 
@@ -115,7 +129,9 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
         """Record a transfer job completion from this worker."""
         self.completed_jobs[job_id] = 1
 
-    def mark_load_completed(self, job_id: int, rank: int) -> None:
+    def mark_load_completed(
+        self, job_id: int, rank: int, worker_generation: str | None = None
+    ) -> None:
         """Record one rank's completion of a load (H2D) transfer."""
         ranks = self.load_receipts.get(job_id)
         if ranks is None:
@@ -125,6 +141,18 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
             self.load_receipts[job_id] = (rank,)
         elif rank not in ranks:
             self.load_receipts[job_id] = tuple(sorted((*ranks, rank)))
+        if worker_generation is not None:
+            receipt = WorkerReceipt(rank, worker_generation)
+            existing = self.load_generation_receipts.get(job_id)
+            if existing is None:
+                if len(self.load_generation_receipts) >= MAX_LOAD_RECEIPT_JOBS:
+                    self.dropped_load_receipts += 1
+                    return
+                self.load_generation_receipts[job_id] = (receipt,)
+            elif receipt not in existing:
+                self.load_generation_receipts[job_id] = tuple(
+                    sorted((*existing, receipt))
+                )
 
     def aggregate(
         self, other: "KVConnectorWorkerMetadata"
@@ -144,6 +172,15 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
         sorted_receipts = sorted(merged_receipts.items())
         retained_receipts = sorted_receipts[:MAX_LOAD_RECEIPT_JOBS]
         aggregation_drops = len(sorted_receipts) - len(retained_receipts)
+        merged_generations = {
+            job_id: set(workers)
+            for job_id, workers in self.load_generation_receipts.items()
+        }
+        for job_id, workers in other.load_generation_receipts.items():
+            merged_generations.setdefault(job_id, set()).update(workers)
+        generation_receipts = sorted(merged_generations.items())
+        retained_generations = generation_receipts[:MAX_LOAD_RECEIPT_JOBS]
+        generation_drops = len(generation_receipts) - len(retained_generations)
 
         return OffloadingWorkerMetadata(
             completed_jobs=merged,
@@ -151,9 +188,14 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
             load_receipts={
                 job_id: tuple(sorted(ranks)) for job_id, ranks in retained_receipts
             },
+            load_generation_receipts={
+                job_id: tuple(sorted(workers))
+                for job_id, workers in retained_generations
+            },
             dropped_load_receipts=(
                 self.dropped_load_receipts
                 + other.dropped_load_receipts
                 + aggregation_drops
+                + generation_drops
             ),
         )

@@ -3,6 +3,9 @@
 
 import pytest
 
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.correlated_observability import (  # noqa: E501
+    KV_TRANSFER_CORRELATED_OBSERVABILITY_API_VERSION,
+)
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
     KV_TRANSFER_OBSERVABILITY_API_VERSION,
 )
@@ -39,6 +42,9 @@ def test_extension_capability_snapshot_matches_owned_contracts() -> None:
                 KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION
             ),
             "vllm.kv-transfer.observer": KV_TRANSFER_OBSERVABILITY_API_VERSION,
+            "vllm.kv-transfer.observer.v2": (
+                KV_TRANSFER_CORRELATED_OBSERVABILITY_API_VERSION
+            ),
         },
     }
 

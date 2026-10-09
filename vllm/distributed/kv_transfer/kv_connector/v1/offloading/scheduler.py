@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import secrets
 import time
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -17,6 +18,13 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.common import (
     OffloadingWorkerMetadata,
     ReqId,
     TransferJob,
+)
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.correlated_observability import (  # noqa: E501
+    CorrelatedEvent,
+    JobReceipt,
+    WorkerReceipt,
+    correlated_observers_configured,
+    emit_correlated_observation,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.events import (
     OffloadingEventGroupSpec,
@@ -102,6 +110,8 @@ class TransferJobStatus:
     # False when bounded metadata dropped at least one potentially relevant
     # receipt. In that case no exact receipt or recovery roster may be emitted.
     receipt_complete: bool = True
+    recovery_epoch: int | None = None
+    generation_receipts: set[WorkerReceipt] = field(default_factory=set)
 
 
 class GroupOffloadConfig(NamedTuple):
@@ -407,6 +417,10 @@ class RequestOffloadState:
     # Load jobs that completed while the recovery was pending, bounded by
     # MAX_RESTORED_JOBS_PER_RECOVERY.
     restored_job_ids: list[int] = field(default_factory=list)
+    restored_v2_receipts: dict[int, tuple[WorkerReceipt, ...]] = field(
+        default_factory=dict
+    )
+    restored_v2_incomplete: bool = False
     # True when restored_job_ids overflowed; the episode then emits no
     # admission record instead of a partial roster.
     restored_overflow: bool = False
@@ -646,6 +660,10 @@ class OffloadingConnectorScheduler:
         self._pending_recovery_admissions: dict[
             str, tuple[int, tuple[int, ...], str]
         ] = {}
+        self._pending_v2_admissions: dict[
+            str, tuple[str, int, tuple[JobReceipt, ...], str]
+        ] = {}
+        self._scheduler_generation = secrets.token_hex(16)
         # if GPU prefix caching is enabled,
         # Track loaded chunks to avoid redundant loads.
         self._chunks_being_loaded: set[OffloadKey] | None = (
@@ -1295,6 +1313,10 @@ class OffloadingConnectorScheduler:
             req_id=request.request_id,
             src_spec=src_spec,
             dst_spec=dst_spec,
+            scheduler_generation=self._scheduler_generation,
+            recovery_epoch=(
+                request.num_preemptions if req_status.pending_recovery else None
+            ),
         )
         # a load can only be issued when no other jobs are pending.
         assert not req_status.transfer_jobs
@@ -1304,6 +1326,9 @@ class OffloadingConnectorScheduler:
             pending_count=self.config.num_workers,
             keys=set(keys_to_load),
             is_store=False,
+            recovery_epoch=(
+                request.num_preemptions if req_status.pending_recovery else None
+            ),
         )
 
         if self._chunks_being_loaded is not None:
@@ -1880,10 +1905,18 @@ class OffloadingConnectorScheduler:
         req_status.pending_recovery = True
         req_status.restored_job_ids = []
         req_status.restored_overflow = False
+        req_status.restored_v2_receipts = {}
+        req_status.restored_v2_incomplete = False
         emit_kv_recovery_requeued(
             request_id=req_status.req.request_id,
             recovery_epoch=req_status.req.num_preemptions,
             reason=RecoveryRequeueReason.UNCLASSIFIED,
+        )
+        emit_correlated_observation(
+            CorrelatedEvent.RECOVERY_REQUEUED,
+            scheduler_generation=self._scheduler_generation,
+            request_id=req_status.req.request_id,
+            recovery_epoch=req_status.req.num_preemptions,
         )
 
     def _observe_recovery_admitted(self, req_status: RequestOffloadState) -> None:
@@ -1914,7 +1947,35 @@ class OffloadingConnectorScheduler:
             recovery_epoch=epoch,
             job_ids=roster,
         )
+        if (
+            correlated_observers_configured()
+            and not req_status.restored_v2_incomplete
+            and len(req_status.restored_v2_receipts) == len(roster)
+            and len(self._pending_v2_admissions) < MAX_RECOVERY_ADMISSIONS
+        ):
+            try:
+                v2_roster = tuple(
+                    JobReceipt(job_id, req_status.restored_v2_receipts[job_id])
+                    for job_id in roster
+                )
+            except (KeyError, ValueError):
+                pass
+            else:
+                emit_correlated_observation(
+                    CorrelatedEvent.RECOVERY_ADMITTED,
+                    scheduler_generation=self._scheduler_generation,
+                    request_id=req.request_id,
+                    recovery_epoch=epoch,
+                    roster=v2_roster,
+                )
+                self._pending_v2_admissions[req.request_id] = (
+                    self._scheduler_generation,
+                    epoch,
+                    v2_roster,
+                    compute_kind.value,
+                )
         req_status.restored_job_ids = []
+        req_status.restored_v2_receipts = {}
         if len(self._pending_recovery_admissions) < MAX_RECOVERY_ADMISSIONS:
             self._pending_recovery_admissions[req.request_id] = (
                 epoch,
@@ -1978,6 +2039,7 @@ class OffloadingConnectorScheduler:
             store_jobs=partial_store_jobs | normal_store_jobs,
             jobs_to_flush=self._current_batch_jobs_to_flush,
             recovery_admissions=self._pending_recovery_admissions,
+            recovery_admissions_v2=self._pending_v2_admissions,
         )
 
         # All prepare_store calls for finished requests have been issued.
@@ -1994,6 +2056,7 @@ class OffloadingConnectorScheduler:
         self._current_batch_jobs_to_flush = set()
         self._current_batch_allocated_block_ids = set()
         self._pending_recovery_admissions = {}
+        self._pending_v2_admissions = {}
         return meta
 
     def has_pending_push_work(self) -> bool:
@@ -2066,6 +2129,9 @@ class OffloadingConnectorScheduler:
             if not job_status.is_store:
                 job_status.receipt_reports += count
                 job_status.receipt_ranks.update(meta.load_receipts.get(job_id, ()))
+                job_status.generation_receipts.update(
+                    meta.load_generation_receipts.get(job_id, ())
+                )
                 if meta.dropped_load_receipts:
                     job_status.receipt_complete = False
             if job_status.pending_count > 0:
@@ -2090,6 +2156,24 @@ class OffloadingConnectorScheduler:
                         request_id=job_status.req_id,
                         ranks=tuple(sorted(job_status.receipt_ranks)),
                     )
+                exact_v2_receipt = (
+                    exact_receipt
+                    and job_status.recovery_epoch is not None
+                    and len(job_status.generation_receipts)
+                    == job_status.receipt_reports
+                    and {worker.rank for worker in job_status.generation_receipts}
+                    == job_status.receipt_ranks
+                )
+                if exact_v2_receipt and job_status.recovery_epoch is not None:
+                    workers = tuple(sorted(job_status.generation_receipts))
+                    emit_correlated_observation(
+                        CorrelatedEvent.TRANSFER_RECEIPT,
+                        scheduler_generation=self._scheduler_generation,
+                        request_id=job_status.req_id,
+                        recovery_epoch=job_status.recovery_epoch,
+                        job_id=job_id,
+                        workers=workers,
+                    )
                 if req_status.pending_recovery:
                     if not exact_receipt:
                         req_status.restored_overflow = True
@@ -2100,6 +2184,14 @@ class OffloadingConnectorScheduler:
                         req_status.restored_job_ids.append(job_id)
                     else:
                         req_status.restored_overflow = True
+                    if (
+                        exact_v2_receipt
+                        and len(req_status.restored_v2_receipts)
+                        < MAX_RESTORED_JOBS_PER_RECOVERY
+                    ):
+                        req_status.restored_v2_receipts[job_id] = workers
+                    else:
+                        req_status.restored_v2_incomplete = True
             if self._block_id_to_pending_jobs:
                 # Sliding window blocks are tracked from store creation
                 # and must be cleaned up unconditionally.
