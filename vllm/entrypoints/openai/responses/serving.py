@@ -1436,7 +1436,9 @@ class OpenAIServingResponses(GenerateBaseServing):
             except GenerationError as e:
                 error_json = self._convert_generation_error_to_streaming_response(e)
                 yield _increment_sequence_number_and_return(
-                    TypeAdapter(StreamingResponsesResponse).validate_json(error_json)
+                    TypeAdapter[Any](
+                        cast(Any, StreamingResponsesResponse)
+                    ).validate_json(error_json)
                 )
                 return
 

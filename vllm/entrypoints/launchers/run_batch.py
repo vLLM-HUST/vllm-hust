@@ -10,7 +10,7 @@ from argparse import Namespace
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from io import BytesIO, StringIO
-from typing import Any, NoReturn, TypeAlias
+from typing import Any, NoReturn, TypeAlias, cast
 from urllib.parse import urlparse
 
 import aiohttp
@@ -185,16 +185,16 @@ class BatchRequestInput(OpenAIBaseModel):
         if url == "/v1/chat/completions":
             return ChatCompletionRequest.model_validate(value)
         if url == "/v1/embeddings":
-            return TypeAdapter(EmbeddingRequest).validate_python(value)
+            return TypeAdapter[Any](cast(Any, EmbeddingRequest)).validate_python(value)
         if url.endswith("/score"):
-            return TypeAdapter(ScoreRequest).validate_python(value)
+            return TypeAdapter[Any](cast(Any, ScoreRequest)).validate_python(value)
         if url.endswith("/rerank"):
             return RerankRequest.model_validate(value)
         if url == "/v1/audio/transcriptions":
             return BatchTranscriptionRequest.model_validate(value)
         if url == "/v1/audio/translations":
             return BatchTranslationRequest.model_validate(value)
-        return TypeAdapter(BatchRequestInputBody).validate_python(value)
+        return TypeAdapter[Any](cast(Any, BatchRequestInputBody)).validate_python(value)
 
 
 AllResponse: TypeAlias = (
@@ -564,9 +564,9 @@ async def run_request(
 
     if isinstance(response, JSONResponse):
         with contextlib.suppress(pydantic.ValidationError):
-            response = TypeAdapter(AllResponse | ErrorResponse).validate_python(
-                json.loads(response.body)
-            )
+            response = TypeAdapter[Any](
+                cast(Any, AllResponse | ErrorResponse)
+            ).validate_python(json.loads(response.body))
 
     if isinstance(response, AllResponse):
         batch_output = BatchRequestOutput(
