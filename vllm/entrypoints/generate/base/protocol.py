@@ -4,7 +4,7 @@
 # Adapted from
 # https://github.com/lm-sys/FastChat/blob/168ccc29d3f7edc50823016105c024fe2282732a/fastchat/protocol/openai_api_protocol.py
 import json
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias, cast
 
 from pydantic import (
     BaseModel,
@@ -210,9 +210,12 @@ def validate_structural_tag_response_format(
 
     if isinstance(response_format, dict):
         try:
-            response_format = TypeAdapter(
-                AnyStructuralTagResponseFormat
-            ).validate_python(response_format)
+            response_format = cast(
+                AnyStructuralTagResponseFormat,
+                TypeAdapter[Any](
+                    cast(Any, AnyStructuralTagResponseFormat)
+                ).validate_python(response_format),
+            )
         except ValidationError as exc:
             raise VLLMValidationError(
                 "Invalid response_format structural_tag specification.",
