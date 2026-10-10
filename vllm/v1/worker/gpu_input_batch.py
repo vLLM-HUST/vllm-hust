@@ -922,7 +922,9 @@ class InputBatch:
             allowed_token_ids_mask=allowed_token_ids_mask,
             bad_words_token_ids=self.bad_words_token_ids,
             logitsprocs=self.logitsprocs,
-            thinking_budget_state_holder=self.thinking_budget_state_holder,
+            thinking_budget_state_holder=getattr(
+                self, "thinking_budget_state_holder", None
+            ),
         )
 
     def get_pooling_params(self) -> list[PoolingParams]:

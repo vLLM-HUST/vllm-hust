@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import time
+
 import torch
 
 from vllm.config import VllmConfig
@@ -13,7 +15,7 @@ class SuffixDecodingProposer:
     (https://github.com/snowflakedb/ArcticInference).
     """
 
-    def __init__(self, vllm_config: VllmConfig):
+    def __init__(self, vllm_config: VllmConfig, observer=None):
         config = vllm_config.speculative_config
         assert config is not None, "Speculative config must be set"
         self.num_speculative_tokens = config.num_speculative_tokens
@@ -21,6 +23,8 @@ class SuffixDecodingProposer:
         self.max_spec_factor = config.suffix_decoding_max_spec_factor
         self.min_token_prob = config.suffix_decoding_min_token_prob
         self.max_model_len = vllm_config.model_config.max_model_len
+        self.max_cached_requests = config.suffix_decoding_max_cached_requests
+        self.observer = observer
 
         # Lazy import to avoid error when Suffix Decoding is not used.
         from arctic_inference.suffix_decoding import SuffixDecodingCache
@@ -29,7 +33,7 @@ class SuffixDecodingProposer:
         # outputs, evicting old requests, and manages the per-prompt suffix trees.
         self.suffix_cache = SuffixDecodingCache(
             max_tree_depth=config.suffix_decoding_max_tree_depth,
-            max_cached_requests=config.suffix_decoding_max_cached_requests,
+            max_cached_requests=self.max_cached_requests,
         )
 
     def propose(
@@ -40,6 +44,7 @@ class SuffixDecodingProposer:
         slot_mappings: dict[str, torch.Tensor]
         | list[dict[str, torch.Tensor]]
         | None = None,  # unused
+        config_epoch: int | None = None,
     ) -> list[list[int]]:
         assert num_speculative_tokens == self.num_speculative_tokens
         """
@@ -78,6 +83,7 @@ class SuffixDecodingProposer:
             # we extract the pattern from the end of the input.
             start = max(0, num_tokens - self.max_tree_depth)
             pattern = input_batch.token_ids_cpu[i, start:num_tokens]
+            propose_started_ns = time.perf_counter_ns()
             draft = self.suffix_cache.speculate(
                 req_id,
                 pattern,
@@ -88,6 +94,23 @@ class SuffixDecodingProposer:
                 min_token_prob=self.min_token_prob,
             )
 
+            if self.observer is not None and self.observer.enabled:
+                self.observer.record_pre_verification_decision(
+                    request_id=req_id,
+                    request_slot=i,
+                    context_token_count=int(num_tokens),
+                    prompt_token_count=int(input_batch.num_prompt_tokens[index]),
+                    sampled_token_count=len(sampled_ids),
+                    pattern_token_count=len(pattern),
+                    match_length=int(draft.match_len),
+                    draft_token_count=len(draft.token_ids),
+                    draft_score=float(draft.score),
+                    draft_probabilities=draft.probs,
+                    proposer_elapsed_ns=time.perf_counter_ns() - propose_started_ns,
+                    active_request_count=len(input_batch.req_id_to_index),
+                    config_epoch=config_epoch,
+                )
+
             draft_token_ids.append(draft.token_ids)
 
         # Stop requests that were not seen in the input batch.
@@ -97,6 +120,27 @@ class SuffixDecodingProposer:
             self.suffix_cache.stop_request(req_id)
 
         return draft_token_ids
+
+    def reset_cache(self) -> dict[str, int]:
+        """Clear request history for a controlled, scope-matched TRAIN pair."""
+        if self.observer is None or not self.observer.enabled:
+            raise RuntimeError("Suffix cache reset is available only with the TRAIN observer enabled")
+        # A completed request can remain in the local proposer tree until the
+        # next proposal step cleans it up. EngineCore calls this only after its
+        # scheduler proves the service has no unfinished requests.
+        retained_active_requests = len(self.suffix_cache.active_requests)
+        cached_requests = len(self.suffix_cache.cached_requests)
+        from arctic_inference.suffix_decoding import SuffixDecodingCache
+
+        self.suffix_cache = SuffixDecodingCache(
+            max_tree_depth=self.max_tree_depth,
+            max_cached_requests=self.max_cached_requests,
+        )
+        return {
+            "cleared_cached_requests": cached_requests,
+            "cleared_retained_active_requests": retained_active_requests,
+            "active_requests": 0,
+        }
 
     def load_model(self, *args, **kwargs):
         # No model to load.

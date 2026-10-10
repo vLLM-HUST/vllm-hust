@@ -242,6 +242,14 @@ class SchedulerOutput:
     # Number of spec tokens to schedule for the next step.
     num_spec_tokens_to_schedule: int = 0
 
+    # Scheduler-owned epoch copied into the worker batch.  Worker-side
+    # observers must bind pre-action evidence to this value instead of
+    # reconstructing an epoch from scheduled-token counters.
+    runtime_config_epoch: int = 0
+    # Current scheduler speculative depth for this epoch. ``None`` preserves
+    # startup-depth behavior for older and test-created outputs.
+    runtime_num_speculative_tokens: int | None = None
+
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":
         return cls(

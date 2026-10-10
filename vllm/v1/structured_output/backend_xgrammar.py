@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,7 @@ import torch
 import vllm.envs
 from vllm.logger import init_logger
 from vllm.sampling_params import SamplingParams
+from vllm.utils.cache import CacheInfo
 from vllm.utils.import_utils import LazyLoader
 from vllm.utils.mistral import is_mistral_tokenizer
 from vllm.v1.structured_output.backend_types import (
@@ -67,6 +69,11 @@ class XgrammarBackend(StructuredOutputBackend):
             cache_enabled=True,
             cache_limit_bytes=vllm.envs.VLLM_XGRAMMAR_CACHE_MB * 1024 * 1024,
         )
+        # Keep the configured cache capability explicit for the request-bound
+        # pre-action wrapper.  The installed xgrammar builds may expose cache
+        # size but not per-request hit counters.
+        self._qbi_cache_enabled = True
+        self._qbi_cache_limit_bytes = vllm.envs.VLLM_XGRAMMAR_CACHE_MB * 1024 * 1024
 
         self.num_speculative_tokens = 0
         if self.vllm_config.speculative_config is not None:
@@ -74,9 +81,92 @@ class XgrammarBackend(StructuredOutputBackend):
                 self.vllm_config.speculative_config.num_speculative_tokens
             )
 
+    @staticmethod
+    def _cache_info(value: Any) -> CacheInfo | None:
+        """Normalize optional xgrammar cache statistics without inference."""
+
+        if value is None:
+            return None
+        if isinstance(value, Mapping):
+            hits, total = value.get("hits"), value.get("total")
+        else:
+            hits = getattr(value, "hits", None)
+            total = getattr(value, "total", None)
+        if (
+            isinstance(hits, bool)
+            or not isinstance(hits, int)
+            or isinstance(total, bool)
+            or not isinstance(total, int)
+            or hits < 0
+            or total < 0
+            or hits > total
+        ):
+            return None
+        return CacheInfo(hits=hits, total=total)
+
+    def compiled_grammar_cache_stats(self, *, delta: bool = False) -> CacheInfo | None:
+        """Return provider cache counters when the installed compiler exposes them.
+
+        Older xgrammar builds do not expose counters.  In that case the method
+        returns ``None``; callers must keep cache-hit state missing rather than
+        inferring it from schema size or compile readiness.
+        """
+
+        for method_name in (
+            "compiled_grammar_cache_stats",
+            "cache_stats",
+            "get_cache_stats",
+        ):
+            method = getattr(self.compiler, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                value = method(delta=delta)
+            except TypeError:
+                value = method()
+            info = self._cache_info(value)
+            if info is not None:
+                return info
+        return None
+
+    def compiled_grammar_cache_state(self) -> dict[str, Any]:
+        """Expose cache readiness/size without inferring a cache hit.
+
+        xgrammar versions in the wild do not all expose hit/query counters.
+        ``get_cache_size_bytes`` is still a useful provider-owned state fact,
+        but it is intentionally kept separate from hit/miss classification.
+        """
+
+        size_method = getattr(self.compiler, "get_cache_size_bytes", None)
+        size = size_method() if callable(size_method) else None
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            size = None
+        return {
+            "cache_ready": self._qbi_cache_enabled,
+            "cache_size_bytes": size,
+            "cache_limit_bytes": self._qbi_cache_limit_bytes,
+            "source_field": (
+                "vllm.v1.structured_output.backend_xgrammar."
+                "XgrammarBackend.compiler"
+            ),
+            "cache_ready_source_field": (
+                "vllm.v1.structured_output.backend_xgrammar."
+                "XgrammarBackend._qbi_cache_enabled"
+            ),
+            "cache_size_source_field": (
+                "vllm.v1.structured_output.backend_xgrammar."
+                "XgrammarBackend.compiler.get_cache_size_bytes"
+            ),
+            "cache_limit_source_field": (
+                "vllm.v1.structured_output.backend_xgrammar."
+                "XgrammarBackend._qbi_cache_limit_bytes"
+            ),
+        }
+
     def compile_grammar(
         self, request_type: StructuredOutputOptions, grammar_spec: str
     ) -> StructuredOutputGrammar:
+        cache_before = self.compiled_grammar_cache_stats()
         if request_type == StructuredOutputOptions.JSON:
             ctx = self.compiler.compile_json_schema(
                 grammar_spec, any_whitespace=not self.disable_any_whitespace
@@ -112,6 +202,32 @@ class XgrammarBackend(StructuredOutputBackend):
                 f"grammar is not of valid supported types. ({request_type!s})"
             )
 
+        cache_after = self.compiled_grammar_cache_stats()
+        cache_evidence: dict[str, Any] | None = None
+        if cache_before is not None and cache_after is not None:
+            delta_total = cache_after.total - cache_before.total
+            delta_hits = cache_after.hits - cache_before.hits
+            if delta_total >= 0 and 0 <= delta_hits <= delta_total:
+                cache_evidence = {
+                    "status": "observed",
+                    "compile_cache_hit": bool(delta_hits > 0),
+                    "compile_cache_queries": delta_total,
+                    "compile_cache_hits": delta_hits,
+                    "compile_cache_hit_ratio": (
+                        delta_hits / float(delta_total) if delta_total else 0.0
+                    ),
+                    "source_field": "structured_output_backend.compiler.cache_state",
+                }
+        if cache_evidence is None:
+            cache_evidence = {
+                "status": "missing",
+                "compile_cache_hit": None,
+                "compile_cache_queries": None,
+                "compile_cache_hits": None,
+                "compile_cache_hit_ratio": None,
+                "source_field": "structured_output_backend.compiler.cache_state",
+            }
+
         return XgrammarGrammar(
             matcher=xgr.GrammarMatcher(
                 ctx,
@@ -119,6 +235,7 @@ class XgrammarBackend(StructuredOutputBackend):
             ),
             vocab_size=self.vocab_size,
             ctx=ctx,
+            compile_cache_evidence=cache_evidence,
         )
 
     def allocate_token_bitmask(self, max_num_seqs: int):
@@ -140,6 +257,9 @@ class XgrammarGrammar(StructuredOutputGrammar):
     vocab_size: int
     matcher: xgr.GrammarMatcher = field(hash=False)
     ctx: xgr.CompiledGrammar = field(hash=False)
+    compile_cache_evidence: dict[str, Any] = field(
+        default_factory=dict, hash=False, repr=False
+    )
     num_processed_tokens: int = field(
         default_factory=lambda: 0, repr=False, hash=False, init=False
     )

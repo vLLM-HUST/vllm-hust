@@ -117,6 +117,25 @@ class WorkerBase:
     def get_model(self) -> nn.Module:
         raise NotImplementedError
 
+    def get_native_ngram_scope_state(self, after_sequence: int = 0) -> dict:
+        """Expose a model-runner N-gram observer when the runner provides one."""
+        runner = self.model_runner
+        method = getattr(runner, "get_native_ngram_scope_state", None)
+        if not callable(method):
+            return {
+                "schema": "qbi.native-ngram-worker-state.v1",
+                "status": "NOT_READY",
+                "observer_enabled": False,
+                "latest_sequence": 0,
+                "oldest_available_sequence": 0,
+                "receipts": [],
+                "scope": "worker_pre_lookup",
+                "reason": (
+                    "worker model runner does not expose a native N-gram observer"
+                ),
+            }
+        return method(after_sequence)
+
     def apply_model(self, fn: Callable[[nn.Module], _R]) -> _R:
         """Apply a function on the model inside this worker."""
         return fn(self.get_model())

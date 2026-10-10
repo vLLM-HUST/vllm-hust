@@ -100,6 +100,22 @@ class GuidanceBackend(StructuredOutputBackend):
                 self.tokenizer, max(self.vocab_size, len(self.tokenizer))
             )
 
+    def compiled_grammar_cache_state(self) -> dict[str, Any]:
+        """Report that Guidance has no backend-owned grammar cache."""
+        source = (
+            "vllm.v1.structured_output.backend_guidance."
+            "GuidanceBackend.compile_grammar"
+        )
+        return {
+            "cache_ready": False,
+            "cache_size_bytes": None,
+            "cache_limit_bytes": None,
+            "source_field": source,
+            "cache_ready_source_field": source,
+            "cache_size_source_field": source + ".byte_size_unavailable",
+            "cache_limit_source_field": source + ".byte_limit_unavailable",
+        }
+
     def compile_grammar(
         self, request_type: StructuredOutputOptions, grammar_spec: str
     ) -> StructuredOutputGrammar:

@@ -201,6 +201,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
     skip_special_tokens: bool = True
     spaces_between_special_tokens: bool = True
     truncate_prompt_tokens: Annotated[int, Field(ge=-1, le=_INT64_MAX)] | None = None
+    truncation_side: Literal["left", "right"] | None = None
     prompt_logprobs: int | None = None
     allowed_token_ids: list[int] | None = None
     bad_words: list[str] = Field(default_factory=list)
@@ -434,6 +435,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             max_total_tokens=model_config.max_model_len,
             max_output_tokens=max_output_tokens or 0,
             truncate_prompt_tokens=self.truncate_prompt_tokens,
+            truncation_side=self.truncation_side,
             add_special_tokens=self.add_special_tokens,
             needs_detokenization=bool(self.echo and not self.return_token_ids),
             max_total_tokens_param="max_model_len",

@@ -201,9 +201,9 @@ class ModelRunnerOutput:
     # information related to cudagraph execution
     cudagraph_stats: CUDAGraphStat | None = None
 
-    # Prompt-free QBI activation receipts. These fields are populated only by
-    # source-backed candidate paths and are joined to EngineCore identity
-    # before they leave the isolated developer control surface.
+    # Prompt-free QBI runtime receipts. They are populated only on source-backed
+    # candidate paths and joined to EngineCore identity before leaving the
+    # isolated developer control surface.
     qbi_dynamic_mtp_receipt: dict[str, Any] | None = None
     qbi_reasoning_budget_receipts: list[dict[str, Any]] = field(default_factory=list)
 

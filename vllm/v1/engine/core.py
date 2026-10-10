@@ -230,6 +230,12 @@ class EngineCore:
         self._qbi_reasoning_budget_dropped_receipts = 0
         self._qbi_pending_dynamic_mtp_receipt: dict[str, Any] | None = None
 
+        set_scheduler_boot_id = getattr(
+            self.scheduler, "set_runtime_control_boot_id", None
+        )
+        if callable(set_scheduler_boot_id):
+            set_scheduler_boot_id(self._runtime_control_boot_id)
+
         self.aborts_queue = queue.Queue[list[str]]()
 
         self._idle_state_callbacks: list[Callable] = []
@@ -327,6 +333,213 @@ class EngineCore:
     def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         return self.model_executor.supported_tasks
 
+    def _schema_runtime_snapshot(self) -> dict[str, object]:
+        """Read live scheduler/KV state for a Schema pre-action receipt."""
+
+        snapshot: dict[str, object] = {}
+        sources: dict[str, str] = {}
+        running = getattr(self.scheduler, "running", None)
+        if running is not None:
+            try:
+                snapshot["active_request_count"] = len(running)
+                sources["active_request_count"] = "engine_core.scheduler.running"
+            except TypeError:
+                pass
+
+        kv_manager = getattr(self.scheduler, "kv_cache_manager", None)
+        pressure = getattr(kv_manager, "usage", None)
+        if (
+            isinstance(pressure, (int, float))
+            and not isinstance(pressure, bool)
+            and 0.0 <= float(pressure) <= 1.0
+        ):
+            snapshot["runtime_pressure_ratio"] = float(pressure)
+            sources["runtime_pressure_ratio"] = (
+                "engine_core.scheduler.kv_cache_manager.usage"
+            )
+        snapshot["source_fields"] = sources
+        return snapshot
+
+    def prepare_schema_pre_action(
+        self,
+        schema_document: dict[str, object],
+        tool_count: int,
+        requested_max_tokens: int,
+        request_id: str | None = None,
+        require_compile_cache_state: bool = False,
+    ) -> dict[str, object]:
+        """Precompile one request-bound Schema grammar without model work."""
+
+        limits = self.scheduler.get_runtime_scheduler_limits()
+        now = time.perf_counter_ns()
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise ValueError("request_id is required for Schema precompile")
+        return self.structured_output_manager.prepare_pre_action_snapshot(
+            schema_document,
+            tool_count,
+            requested_max_tokens,
+            request_id=request_id,
+            engine_boot_id=self._runtime_control_boot_id,
+            config_epoch=limits["config_epoch"],
+            clock_id="engine-core:" + self._runtime_control_boot_id,
+            observed_at_ns=now,
+            decision_at_ns=now,
+            runtime_snapshot=self._schema_runtime_snapshot(),
+            require_compile_cache_state=require_compile_cache_state,
+        )
+
+    def get_schema_pre_action_state(
+        self,
+        schema_document: dict[str, object],
+        tool_count: int,
+        requested_max_tokens: int,
+        request_sha256: str,
+        request_id: str | None = None,
+        require_compile_cache_state: bool = False,
+    ) -> dict[str, object]:
+        """Return provider-bound schema facts before request admission."""
+
+        manager = self.structured_output_manager
+        backend_initialized_before_prepare = manager.backend is not None
+        limits = self.scheduler.get_runtime_scheduler_limits()
+        state = manager.get_predictor_pre_action_state(
+            schema_document,
+            tool_count,
+            requested_max_tokens,
+            request_sha256=request_sha256,
+            request_id=request_id,
+            engine_boot_id=self._runtime_control_boot_id,
+            config_epoch=limits["config_epoch"],
+            clock_id="engine-core:" + self._runtime_control_boot_id,
+            runtime_snapshot=self._schema_runtime_snapshot(),
+            require_compile_cache_state=require_compile_cache_state,
+        )
+        # This fresh observation has its own clock/binding even when the
+        # compiler snapshot above came from an earlier request cache entry.
+        state["backend_initialization_observation"] = {
+            "schema": "qbi.schema-backend-before-prepare.v1",
+            "status": "observed",
+            "backend_initialized_before_prepare": backend_initialized_before_prepare,
+            "source_field": "engine_core.structured_output_manager.backend",
+            "request_id": state.get("binding", {}).get("request_id"),
+            "schema_document_sha256": hashlib.sha256(
+                json.dumps(schema_document, sort_keys=True, ensure_ascii=False,
+                           separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "engine_boot_id": self._runtime_control_boot_id,
+            "config_epoch": limits["config_epoch"],
+            "clock_id": state.get("binding", {}).get("clock_id"),
+            "observed_at_ns": state.get("binding", {}).get("observed_at_ns"),
+            "boundary": "readonly_getter_before_native_prepare",
+        }
+        return state
+
+    def get_schema_pre_action_capability(self) -> dict[str, object]:
+        """Return a zero-call route capability descriptor for GET gates."""
+
+        limits = self.scheduler.get_runtime_scheduler_limits()
+        return {
+            "schema": "qbi.schema-pre-action-capability.v1",
+            "route": "/qbi/schema/pre-action-state",
+            "methods": ["GET", "POST"],
+            "precompile_route": "/qbi/schema/pre-action-prepare",
+            "provider_bound": True,
+            "request_specific_post_required": True,
+            "engine_boot_id": self._runtime_control_boot_id,
+            "config_epoch": limits["config_epoch"],
+            "status": "READY_FOR_REQUEST_BOUND_POST",
+            "send_allowed": False,
+            "model_calls": 0,
+            "remote": False,
+        }
+
+    def get_prefix_cache_pre_action_state(
+        self,
+        session_plan: dict[str, object] | None = None,
+        request_id: str | None = None,
+        request_sha256: str | None = None,
+    ) -> dict[str, object]:
+        """Return a provider-bound KV/session snapshot before admission."""
+
+        from vllm.v1.structured_output.pre_action_observer import (
+            observe_prefix_pre_action,
+        )
+
+        manager = self.scheduler.kv_cache_manager
+        pool = manager.block_pool
+        # Block zero is vLLM's null block.  A non-positive usable capacity is
+        # an unavailable provider fact, not a capacity of zero to be imputed
+        # into the K feature contract.
+        raw_total_blocks = getattr(pool, "num_gpu_blocks", None)
+        total_blocks = (
+            int(raw_total_blocks) - 1
+            if type(raw_total_blocks) is int and int(raw_total_blocks) > 1
+            else None
+        )
+        free_blocks = int(pool.get_num_free_blocks())
+        pressure = float(pool.get_usage())
+        capacity = (free_blocks / total_blocks) if total_blocks is not None else None
+        cached_hash_map = getattr(pool, "cached_block_hash_to_block", None)
+        cached_hash_count = (
+            len(cached_hash_map)
+            if cached_hash_map is not None and hasattr(cached_hash_map, "__len__")
+            else None
+        )
+        limits = self.scheduler.get_runtime_scheduler_limits()
+        now = time.perf_counter_ns()
+        runtime_state = manager.get_qbi_prefix_cache_pre_action_state()
+        snapshot = {
+            "cache_usage_ratio": pressure,
+            "cache_pressure_ratio": pressure,
+            "cache_capacity_ratio": capacity,
+            "free_gpu_blocks": free_blocks,
+            "capacity_blocks": total_blocks,
+            "cached_block_hash_count": cached_hash_count,
+            "prefix_caching_enabled": bool(manager.enable_caching),
+            "prefix_caching_hash_algo": getattr(
+                self.vllm_config.cache_config, "prefix_caching_hash_algo", None
+            ),
+            "engine_boot_id": self._runtime_control_boot_id,
+            "config_epoch": limits["config_epoch"],
+            "runtime_receipt_contract": runtime_state["runtime_receipt_contract"],
+            "resident_blocks": runtime_state.get("cached_block_hash_count"),
+        }
+        state = observe_prefix_pre_action(
+            engine_snapshot=snapshot,
+            session_plan=session_plan,
+            request_id=request_id,
+            engine_boot_id=self._runtime_control_boot_id,
+            config_epoch=limits["config_epoch"],
+            clock_id="engine-core:" + self._runtime_control_boot_id,
+            observed_at_ns=now,
+            decision_at_ns=now,
+        )
+        if (
+            request_sha256 is not None
+            and request_sha256 != state["binding"]["request_sha256"]
+        ):
+            raise ValueError("Prefix request identity differs from provider binding")
+        state["scheduler_limits"] = limits
+        state["prefix_caching_hash_algo"] = snapshot["prefix_caching_hash_algo"]
+        return state
+
+    def get_prefix_cache_policy_receipts(self) -> dict[str, Any]:
+        """Drain request-bound lookup/admit/residency/eviction receipts."""
+        state = self.scheduler.kv_cache_manager.take_qbi_prefix_cache_policy_receipts()
+        limits = self.scheduler.get_runtime_scheduler_limits()
+        return {
+            **state,
+            "engine_boot_id": self._runtime_control_boot_id,
+            "config_epoch": limits["config_epoch"],
+            "prefix_caching_enabled": bool(
+                self.vllm_config.cache_config.enable_prefix_caching
+            ),
+            "prefix_caching_hash_algo": (
+                self.vllm_config.cache_config.prefix_caching_hash_algo
+            ),
+            "scheduler_limits": limits,
+        }
+
     def get_runtime_transition_state(self) -> dict[str, Any]:
         limits = self.scheduler.get_runtime_scheduler_limits()
         return {
@@ -338,6 +551,453 @@ class EngineCore:
             "pending_epoch_requests": limits["pending_epoch_request_count"],
             "transition_staged": bool(limits["transition_staged"]),
             "scheduler_limits": limits,
+        }
+
+    def get_batch_scope_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        """Read batch proposals and effective receipts bound to this engine epoch."""
+
+        if isinstance(after_sequence, bool) or not isinstance(after_sequence, int):
+            raise ValueError("batch-scope cursor must be an integer")
+        if after_sequence < 0:
+            raise ValueError("batch-scope cursor must be non-negative")
+        limits = self.scheduler.get_runtime_scheduler_limits()
+        return {
+            **self.scheduler.get_batch_scope_state(after_sequence),
+            "engine_boot_id": self._runtime_control_boot_id,
+            "config_epoch": limits["config_epoch"],
+            "scheduler_limits": limits,
+        }
+
+    def propose_batch_scope_budget(
+        self,
+        expected_boot_id: str,
+        expected_config_epoch: int,
+        batch_proposal_id: str,
+        member_request_ids: list[str],
+        token_budget: int,
+        member_match: str = "client_alias",
+        require_prefill_decode_overlap: bool = False,
+        target_prefill_member_id: str | None = None,
+        peer_decode_member_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Accept a proposal only against the exact live boot and config epoch."""
+
+        if not isinstance(expected_boot_id, str) or not expected_boot_id:
+            raise ValueError("expected boot_id must be non-empty text")
+        if isinstance(expected_config_epoch, bool) or not isinstance(
+            expected_config_epoch, int
+        ):
+            raise ValueError("expected config_epoch must be an integer")
+        state = self.get_runtime_transition_state()
+        if expected_boot_id != state["boot_id"]:
+            raise ValueError("batch-scope proposal boot_id is stale")
+        if expected_config_epoch != state["config_epoch"]:
+            raise ValueError("batch-scope proposal config_epoch is stale")
+        proposal = self.scheduler.propose_batch_scope_budget(
+            expected_config_epoch=expected_config_epoch,
+            batch_proposal_id=batch_proposal_id,
+            member_request_ids=member_request_ids,
+            token_budget=token_budget,
+            member_match=member_match,
+            require_prefill_decode_overlap=require_prefill_decode_overlap,
+            target_prefill_member_id=target_prefill_member_id,
+            peer_decode_member_id=peer_decode_member_id,
+        )
+        return {
+            "schema": "qbi.batch-scope-proposal-acceptance.v1",
+            "accepted": True,
+            "engine_boot_id": state["boot_id"],
+            "config_epoch": state["config_epoch"],
+            "proposal": proposal,
+            "effect_status": "pending_until_exact_schedule_confirmation",
+        }
+
+    def cancel_batch_scope_proposal(
+        self, expected_boot_id: str, batch_proposal_id: str
+    ) -> dict[str, Any]:
+        if not isinstance(expected_boot_id, str) or not expected_boot_id:
+            raise ValueError("expected boot_id must be non-empty text")
+        state = self.get_runtime_transition_state()
+        if expected_boot_id != state["boot_id"]:
+            raise ValueError("batch-scope cancellation boot_id is stale")
+        result = self.scheduler.cancel_batch_scope_proposal(batch_proposal_id)
+        return {
+            **result,
+            "engine_boot_id": state["boot_id"],
+            "config_epoch": state["config_epoch"],
+        }
+
+    def run_qbi_online_selector_benchmark(
+        self, run_tag: str, iterations: int
+    ) -> dict[str, Any]:
+        """Time a read-only shadow pass through the formal selector."""
+        import hashlib
+        import json
+        import struct
+        from pathlib import Path
+
+        from vllm_quality_bounded_inference.controller import InvocationContext
+        from vllm_quality_bounded_inference.live_policy import LIVE_POLICY_PROFILES
+        from vllm_quality_bounded_inference.mechanism_registry import (
+            RUNTIME_MECHANISM_BINDINGS,
+            list_runtime_mechanism_configurations,
+        )
+        from vllm_quality_bounded_inference.online_fast_path import (
+            DECISION_RECORD_BYTES,
+            CompiledLinearHead,
+            CompiledMaskedFeatureEncoder,
+            FixedDecisionJournal,
+            NativeSchedulerFeatureReader,
+            benchmark_percentiles,
+        )
+        from vllm_quality_bounded_inference.scope_policy import (
+            ConsequenceEstimate,
+            select_registered_configuration,
+        )
+
+        if (
+            not isinstance(run_tag, str)
+            or not run_tag
+            or len(run_tag) > 40
+            or any(not (char.isalnum() or char in "-_") for char in run_tag)
+        ):
+            raise ValueError(
+                "run_tag must contain at most 40 letters, digits, '-' or '_'"
+            )
+        if (
+            isinstance(iterations, bool)
+            or not isinstance(iterations, int)
+            or not 100 <= iterations <= 20000
+        ):
+            raise ValueError("iterations must be an integer between 100 and 20000")
+
+        artifact_path_text = os.environ.get("ANISE_QBI_FAST_SELECTOR_ARTIFACT")
+        expected_sha256 = os.environ.get("ANISE_QBI_FAST_SELECTOR_ARTIFACT_SHA256")
+        if not artifact_path_text or not expected_sha256:
+            raise ValueError("compiled TRAIN head path and SHA256 must be configured")
+        artifact_bytes = Path(artifact_path_text).read_bytes()
+        artifact_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+        if artifact_sha256 != expected_sha256:
+            raise ValueError("compiled TRAIN head file hash mismatch")
+        artifact = json.loads(artifact_bytes)
+        if (
+            artifact.get("fit_mode") != "train_only_benchmark_compile"
+            or artifact.get("deployment_authorized") is not False
+            or artifact.get("calibration") is not None
+        ):
+            raise ValueError(
+                "shadow benchmark requires the existing uncalibrated TRAIN bundle"
+            )
+
+        boot_id = self._runtime_control_boot_id
+        journal_dir = Path(
+            os.environ.get("ANISE_QBI_FAST_SELECTOR_JOURNAL_DIR", "/tmp")
+        )
+        if not journal_dir.is_dir():
+            raise ValueError("selector journal directory must already exist")
+        policy = LIVE_POLICY_PROFILES["strict"]
+        profile_order = (
+            ("token_budget_output_control", "S1"),
+            ("native_output_stream_batching", "S5"),
+        )
+        warmup = 128
+        results: dict[str, Any] = {}
+        for mechanism, stage_label in profile_order:
+            profile = artifact.get("mechanisms", {}).get(mechanism)
+            if not isinstance(profile, dict):
+                raise ValueError(f"compiled TRAIN bundle misses {mechanism}")
+            if (
+                profile.get("activation_authorized") is not False
+                or profile.get("decision_scope_support") != "invocation"
+            ):
+                raise ValueError(f"{mechanism} is not an invocation-scoped shadow head")
+
+            encoder = CompiledMaskedFeatureEncoder(profile["encoder"])
+            head = CompiledLinearHead(
+                (tuple(profile["head_weights"]),),
+                (float(profile["head_bias"]),),
+            )
+            if encoder.width != head.feature_width:
+                raise ValueError(f"compiled encoder/head width differs for {mechanism}")
+            reader = NativeSchedulerFeatureReader(
+                profile["feature_names"],
+                profile["request_plan_values"],
+                request_plan_mask=0,
+            )
+            live_field_mask = sum(
+                1 << index
+                for index, name in enumerate(profile["feature_names"])
+                if name
+                in {"active_request_count", "queue_depth", "memory_pressure_ratio"}
+            )
+            configurations = list_runtime_mechanism_configurations(
+                decision_scope="invocation"
+            )
+            config_ids = {item.name: index for index, item in enumerate(configurations)}
+            default_name = next(item.name for item in configurations if item.is_default)
+            default_id = config_ids[default_name]
+            estimates = {
+                default_name: ConsequenceEstimate(
+                    estimated_cost=0.0,
+                    predicted_quality_loss=0.0,
+                    predicted_violation_probability=0.0,
+                )
+            }
+            opportunity_configurations = frozenset()
+            capability_mechanisms = frozenset(RUNTIME_MECHANISM_BINDINGS.values())
+            journal_path = journal_dir / (
+                f"online-selector-shadow-{boot_id}-{run_tag}-{stage_label}.bin"
+            )
+            journal = FixedDecisionJournal(
+                journal_path,
+                initial_records=1 << (iterations + warmup).bit_length(),
+            )
+            vector = [0.0] * encoder.width
+            score = [0.0]
+
+            def select_current_scope(
+                decision_id: str,
+                *,
+                _estimates=estimates,
+                _opportunity_configurations=opportunity_configurations,
+                _capability_mechanisms=capability_mechanisms,
+                _default_name=default_name,
+            ):
+                context = InvocationContext(
+                    quality_sensitivity=1.0,
+                    latency_pressure=0.0,
+                    calibration_drift=0.0,
+                    snapshot_id=decision_id,
+                )
+                return select_registered_configuration(
+                    policy,
+                    context,
+                    estimates=_estimates,
+                    opportunity_configurations=_opportunity_configurations,
+                    capability_mechanisms=_capability_mechanisms,
+                    artifact_hash=str(artifact["bundle_sha256"]),
+                    current_configuration=_default_name,
+                    minimum_hold_satisfied=True,
+                    include_traces=False,
+                )
+
+            def one_decision(
+                sequence: int,
+                *,
+                record: bool,
+                _mechanism=mechanism,
+                _stage_label=stage_label,
+                _reader=reader,
+                _live_field_mask=live_field_mask,
+                _encoder=encoder,
+                _vector=vector,
+                _head=head,
+                _score=score,
+                _journal=journal,
+                _config_ids=config_ids,
+                _default_id=default_id,
+                _select_current_scope=select_current_scope,
+            ):
+                epoch = int(self.scheduler._runtime_config_epoch)
+                state = _reader.read(self.scheduler)
+                if state.observed_mask & _live_field_mask != _live_field_mask:
+                    raise RuntimeError(
+                        f"live scheduler fields unavailable for {_mechanism}"
+                    )
+                if not _encoder.encode_state_into(
+                    state, _vector
+                ) or not _head.evaluate_into(_vector, _score):
+                    raise RuntimeError(
+                        f"compiled TRAIN head rejected live state for {_mechanism}"
+                    )
+                decision_id = f"{boot_id}:{run_tag}:{epoch}:{_stage_label}:{sequence}"
+                selected = _select_current_scope(decision_id)
+                decision = selected.decision
+                candidate_mask = (1 << len(decision.assessments)) - 1
+                feasible_mask = sum(
+                    1 << index
+                    for index, assessment in enumerate(decision.assessments)
+                    if assessment.feasible
+                )
+                if record:
+                    _journal.append(
+                        decision_sequence=sequence,
+                        boot_high=int(boot_id.replace("-", "")[:16], 16),
+                        boot_low=int(boot_id.replace("-", "")[16:], 16),
+                        decision_epoch=epoch,
+                        request_sequence=0,
+                        candidate_mask=candidate_mask,
+                        feasible_mask=feasible_mask,
+                        proposed_config_id=_config_ids[
+                            decision.selected_mechanism.name
+                        ],
+                        effective_config_id=_default_id,
+                        effective_epoch=epoch,
+                        decision_status=1 if decision.used_fallback else 0,
+                        action_status=2,
+                        fallback_code=1 if decision.used_fallback else 0,
+                    )
+                return None
+
+            for index in range(warmup):
+                one_decision(index + 1, record=False)
+            timings_ns: list[int] = []
+            for index in range(iterations):
+                started = time.perf_counter_ns()
+                one_decision(index + 1, record=True)
+                timings_ns.append(time.perf_counter_ns() - started)
+
+            component_samples = min(1000, iterations)
+            state_ns: list[int] = []
+            encode_head_ns: list[int] = []
+            selection_ns: list[int] = []
+            observed_masks: list[int] = []
+            for index in range(component_samples):
+                started = time.perf_counter_ns()
+                state = reader.read(self.scheduler)
+                state_ns.append(time.perf_counter_ns() - started)
+                observed_masks.append(state.observed_mask)
+                started = time.perf_counter_ns()
+                if not encoder.encode_state_into(
+                    state, vector
+                ) or not head.evaluate_into(vector, score):
+                    raise RuntimeError(
+                        f"compiled TRAIN head rejected component sample for {mechanism}"
+                    )
+                encode_head_ns.append(time.perf_counter_ns() - started)
+                started = time.perf_counter_ns()
+                select_current_scope(f"{boot_id}:component:{stage_label}:{index}")
+                selection_ns.append(time.perf_counter_ns() - started)
+
+            selection_profile = []
+            if os.environ.get("ANISE_QBI_PROFILE_SELECTOR") == "1":
+                import cProfile
+
+                from vllm_quality_bounded_inference import controller, scope_policy
+
+                constructor_names = {
+                    cls.__init__.__code__: cls.__name__ + ".__init__"
+                    for cls in (
+                        controller.InvocationContext,
+                        controller.MechanismCandidate,
+                        controller.MechanismAssessment,
+                        controller.MechanismDecision,
+                        scope_policy.ScopeSelectionResult,
+                    )
+                }
+                profiler = cProfile.Profile()
+                profiler.enable()
+                try:
+                    for index in range(component_samples):
+                        select_current_scope(
+                            f"{boot_id}:profile:{stage_label}:{index}"
+                        )
+                finally:
+                    profiler.disable()
+                for entry in sorted(
+                    profiler.getstats(), key=lambda item: item.inlinetime,
+                    reverse=True,
+                )[:20]:
+                    code = entry.code
+                    selection_profile.append({
+                        "function": constructor_names.get(
+                            code, getattr(code, "co_name", str(code))
+                        ),
+                        "file": getattr(code, "co_filename", "builtin"),
+                        "line": getattr(code, "co_firstlineno", 0),
+                        "calls": entry.callcount,
+                        "self_ms": entry.inlinetime * 1000,
+                        "cumulative_ms": entry.totaltime * 1000,
+                    })
+
+            journal.flush()
+            decision_count = journal.count
+            journal.close()
+            raw_records = journal_path.read_bytes()
+            records_valid = len(raw_records) >= decision_count * DECISION_RECORD_BYTES
+            fallback_count = 0
+            for index in range(decision_count):
+                record = struct.unpack_from(
+                    "<QQQQQQQQHHBBH", raw_records, index * DECISION_RECORD_BYTES
+                )
+                if (
+                    record[0] != index + 1
+                    or record[7] != record[3]
+                    or record[9] != default_id
+                    or record[11] != 2
+                ):
+                    records_valid = False
+                    break
+                fallback_count += int(record[10] == 1)
+            if not records_valid or decision_count != iterations:
+                raise RuntimeError(
+                    f"shadow decision journal validation failed for {mechanism}"
+                )
+
+            p50_us, p95_us = benchmark_percentiles(timings_ns)
+
+            def percentiles(samples: list[int]) -> dict[str, float]:
+                p50, p95 = benchmark_percentiles(samples)
+                return {"p50_us": p50, "p95_us": p95}
+
+            results[stage_label] = {
+                "mechanism": mechanism,
+                "decision_scope": "invocation",
+                "head": profile["head_name"],
+                "head_is_joint_shared_lifecycle_mechanism": True,
+                "head_prediction_authoritative": False,
+                "feature_width": encoder.width,
+                "live_scheduler_fields": [
+                    name
+                    for name in profile["feature_names"]
+                    if name
+                    in {"active_request_count", "queue_depth", "memory_pressure_ratio"}
+                ],
+                "missing_request_features": len(profile["feature_names"])
+                - live_field_mask.bit_count(),
+                "runtime_candidates": [item.name for item in configurations],
+                "selected_configuration": default_name,
+                "eligible_nondefault_candidates": 0,
+                "warmup_decisions": warmup,
+                "timed_decisions": iterations,
+                "decision_records": decision_count,
+                "decision_record_bytes": DECISION_RECORD_BYTES,
+                "journal_associations_valid": records_valid,
+                "action_submissions": 0,
+                "effective_configuration_changed": False,
+                "fallback_decisions": fallback_count,
+                "observed_feature_masks": sorted(set(observed_masks)),
+                "online_path_including_scheduler_read_encode_head_"
+                "formal_ranking_journal": {
+                    "p50_us": p50_us,
+                    "p95_us": p95_us,
+                },
+                "components": {
+                    "scheduler_state_read": percentiles(state_ns),
+                    "compiled_encoder_plus_head": percentiles(encode_head_ns),
+                    "scope_policy_and_select_for_scope": percentiles(selection_ns),
+                },
+                "journal_path": str(journal_path),
+                "selection_profile_separate_from_timed_pass": selection_profile,
+            }
+
+        return {
+            "schema": "anise.online-selector-cost-shadow.v1",
+            "mode": (
+                "shadow_only; no action submission; no config mutation; "
+                "no model requests"
+            ),
+            "engine_boot_id": boot_id,
+            "train_head_bundle_sha256": artifact.get("bundle_sha256"),
+            "artifact_file_sha256": artifact_sha256,
+            "calibration_present": False,
+            "deployment_authorized": False,
+            "selector": (
+                "scope_policy.select_registered_configuration -> "
+                "controller.select_for_scope"
+            ),
+            "http_round_trip_in_timed_path": False,
+            "profile_results": results,
         }
 
     def get_native_recapture_scope_state(
@@ -360,22 +1020,6 @@ class EngineCore:
             **state,
             "engine_boot_id": self._runtime_control_boot_id,
             "queue_policy": self.scheduler.policy.value,
-            "scheduler_limits": self.scheduler.get_runtime_scheduler_limits(),
-        }
-
-    def get_prefix_cache_policy_receipts(self) -> dict[str, Any]:
-        """Join session APC receipts to the live EngineCore/cache identity."""
-
-        state = self.scheduler.kv_cache_manager.take_qbi_prefix_cache_policy_receipts()
-        return {
-            **state,
-            "engine_boot_id": self._runtime_control_boot_id,
-            "prefix_caching_enabled": bool(
-                self.vllm_config.cache_config.enable_prefix_caching
-            ),
-            "prefix_caching_hash_algo": (
-                self.vllm_config.cache_config.prefix_caching_hash_algo
-            ),
             "scheduler_limits": self.scheduler.get_runtime_scheduler_limits(),
         }
 
@@ -550,6 +1194,382 @@ class EngineCore:
         receipt["draft_receipt_complete"] = True
         self._qbi_pending_dynamic_mtp_receipt = None
 
+    def get_native_ngram_pre_action_state(
+        self,
+        provider_request_id: str,
+        source_request_id: str,
+        source_receipt_sha256: str,
+        checkpoint_sha256: str,
+        config_support_range: str,
+        action_config: dict[str, Any],
+        engine_token_ids: list[int],
+        payload_sha256: str,
+        token_ids_sha256: str,
+        tokenizer_identity_sha256: str,
+        chat_template_sha256: str,
+    ) -> dict[str, Any]:
+        """Build a request-bound N-gram profile before generation is submitted."""
+        from vllm_quality_bounded_inference.mechanism_pre_action_collectors import (
+            ngram_pre_action_profile,
+        )
+
+        def require_sha256(value: Any, name: str) -> str:
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+            return value
+
+        for value, name in (
+            (provider_request_id, "provider_request_id"),
+            (source_request_id, "source_request_id"),
+            (config_support_range, "config_support_range"),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be non-empty text")
+        source_receipt_sha256 = require_sha256(
+            source_receipt_sha256, "source_receipt_sha256"
+        )
+        checkpoint_sha256 = require_sha256(checkpoint_sha256, "checkpoint_sha256")
+        payload_sha256 = require_sha256(payload_sha256, "payload_sha256")
+        token_ids_sha256 = require_sha256(token_ids_sha256, "token_ids_sha256")
+        tokenizer_identity_sha256 = require_sha256(
+            tokenizer_identity_sha256, "tokenizer_identity_sha256"
+        )
+        chat_template_sha256 = require_sha256(
+            chat_template_sha256, "chat_template_sha256"
+        )
+        if os.environ.get("QBI_CHECKPOINT_SHA256") != checkpoint_sha256:
+            raise ValueError("N-gram checkpoint identity differs from service binding")
+        if (
+            os.environ.get("QBI_NATIVE_NGRAM_CONFIG_SUPPORT_RANGE")
+            != config_support_range
+        ):
+            raise ValueError("N-gram config support differs from service binding")
+        if not isinstance(action_config, dict) or set(action_config) != {
+            "method",
+            "num_speculative_tokens",
+            "prompt_lookup_min",
+            "prompt_lookup_max",
+        }:
+            raise ValueError("N-gram action config has unexpected or missing fields")
+        if action_config.get("method") != "ngram":
+            raise ValueError("resident proposer is not N-gram")
+        for field in (
+            "num_speculative_tokens",
+            "prompt_lookup_min",
+            "prompt_lookup_max",
+        ):
+            value = action_config[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"N-gram action config {field} is invalid")
+        if action_config["num_speculative_tokens"] <= 0:
+            raise ValueError("N-gram action depth must be positive")
+        if action_config["prompt_lookup_min"] < 1 or action_config[
+            "prompt_lookup_max"
+        ] < action_config["prompt_lookup_min"]:
+            raise ValueError("N-gram lookup bounds are invalid")
+        speculative_config = self.vllm_config.speculative_config
+        if speculative_config is None or speculative_config.method != "ngram":
+            raise ValueError("resident proposer is not N-gram")
+        if (
+            action_config["num_speculative_tokens"]
+            != speculative_config.num_speculative_tokens
+            or action_config["prompt_lookup_min"]
+            != speculative_config.prompt_lookup_min
+            or action_config["prompt_lookup_max"]
+            != speculative_config.prompt_lookup_max
+        ):
+            raise ValueError("N-gram action config differs from startup proposer")
+        if (
+            not isinstance(engine_token_ids, list)
+            or not engine_token_ids
+            or any(type(token) is not int or token < 0 for token in engine_token_ids)
+        ):
+            raise ValueError("engine_token_ids must be exact non-negative token IDs")
+        computed_token_ids_sha256 = hashlib.sha256(
+            json.dumps(
+                engine_token_ids,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if computed_token_ids_sha256 != token_ids_sha256:
+            raise ValueError("token_ids_sha256 differs from exact engine token IDs")
+
+        runtime_state = self.get_runtime_transition_state()
+        limits = runtime_state["scheduler_limits"]
+        startup_depth = limits["startup_num_speculative_tokens"]
+        current_depth = limits["num_speculative_tokens"]
+        if (
+            limits.get("speculative_method") != "ngram"
+            or action_config["num_speculative_tokens"] != startup_depth
+            or current_depth not in {0, startup_depth}
+            or runtime_state["transition_staged"]
+            or runtime_state["pending_epoch_requests"] != 0
+        ):
+            raise RuntimeError("N-gram runtime epoch is not complete and stable")
+
+        observed_at_ns = time.monotonic_ns()
+        scope_state = self.scheduler.get_native_recapture_scope_state()
+        observation = scope_state.get("pre_action_observation", {})
+        engine_state = observation.get("engine", {})
+        active_request_count = engine_state.get("active_request_count")
+        queue_depth = engine_state.get("queue_depth")
+        runtime_pressure_ratio = engine_state.get("kv_pressure_ratio")
+        if type(active_request_count) is not int or active_request_count < 0:
+            raise RuntimeError("scheduler active-request state is unavailable")
+        if type(queue_depth) is not int or queue_depth < 0:
+            raise RuntimeError("scheduler queue state is unavailable")
+        if (
+            isinstance(runtime_pressure_ratio, bool)
+            or not isinstance(runtime_pressure_ratio, (int, float))
+            or not 0 <= float(runtime_pressure_ratio) <= 1
+        ):
+            raise RuntimeError("scheduler KV pressure is unavailable")
+        profile = ngram_pre_action_profile(
+            engine_token_ids, engine_token_ids, action_config
+        )
+        decision_at_ns = time.monotonic_ns()
+        boot_id = self._runtime_control_boot_id
+        return {
+            "schema": "qbi.native-ngram-pre-action-state.v2",
+            "status": "READY",
+            "scope": "invocation",
+            "provider_request_id": provider_request_id,
+            "source_request_id": source_request_id,
+            "source_receipt_sha256": source_receipt_sha256,
+            "checkpoint_sha256": checkpoint_sha256,
+            "config_support_range": config_support_range,
+            "engine_boot_id": boot_id,
+            "config_epoch": runtime_state["config_epoch"],
+            "clock_id": "engine-core-monotonic:" + boot_id,
+            "observed_at_ns": observed_at_ns,
+            "decision_at_ns": decision_at_ns,
+            "decision_id": provider_request_id,
+            "epoch_complete": True,
+            "payload_sha256": payload_sha256,
+            "token_ids_sha256": token_ids_sha256,
+            "tokenizer_identity_sha256": tokenizer_identity_sha256,
+            "chat_template_sha256": chat_template_sha256,
+            "pre_action_observation": {
+                "schema": "anise-native-ngram-pre-action-observation-v2",
+                "engine": {
+                    **profile,
+                    "engine_token_ids": engine_token_ids,
+                    "lookup_token_ids": engine_token_ids,
+                    "active_request_count": active_request_count,
+                    "queue_depth": queue_depth,
+                    "runtime_pressure_ratio": float(runtime_pressure_ratio),
+                },
+            },
+        }
+
+    def get_causal_pre_decision_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        """Join pre-decision scheduler projections to the live EngineCore."""
+
+        state = self.scheduler.get_causal_pre_decision_state(after_sequence)
+        return {
+            **state,
+            "engine_boot_id": self._runtime_control_boot_id,
+        }
+
+    def get_native_ngram_scope_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        """Join worker-local pre-lookup receipts to this EngineCore.
+
+        N-gram lookup is executed by the model runner, after Scheduler has
+        produced a batch.  The scheduler-only surface therefore cannot be the
+        source of these fields.  This read-only RPC joins every worker's
+        bounded state and keeps the worker states visible for rank auditing.
+        """
+        if isinstance(after_sequence, bool) or not isinstance(after_sequence, int):
+            raise ValueError("native N-gram sequence cursor must be an integer")
+        if after_sequence < 0:
+            raise ValueError("native N-gram sequence cursor must be non-negative")
+        try:
+            worker_states = self.model_executor.collective_rpc(
+                "get_native_ngram_scope_state", args=(after_sequence,)
+            )
+        except Exception as error:
+            return {
+                "schema": "qbi.native-ngram-worker-state.v1",
+                "status": "NOT_READY",
+                "observer_enabled": False,
+                "latest_sequence": 0,
+                "oldest_available_sequence": 0,
+                "receipts": [],
+                "worker_states": [],
+                "scope": "worker_pre_lookup",
+                "reason": (
+                    f"worker observer RPC unavailable: {type(error).__name__}: {error}"
+                ),
+                "required_fields": [
+                    "current_input_token_suffix",
+                    "lookup_token_corpus",
+                    "draft_config",
+                    "clock_id",
+                    "config_epoch",
+                ],
+                "forbidden_substitutes": [
+                    "request_id",
+                    "prompt_token_id_hash",
+                    "scheduled_token_count",
+                    "accepted_token_count",
+                ],
+            }
+        if isinstance(worker_states, dict):
+            worker_states = [worker_states]
+        if not isinstance(worker_states, list) or not all(
+            isinstance(state, dict) for state in worker_states
+        ):
+            raise RuntimeError("worker observer RPC returned a non-object state")
+        receipts = [
+            receipt
+            for state in worker_states
+            for receipt in state.get("receipts", [])
+            if isinstance(receipt, dict)
+        ]
+        latest = max(
+            [int(state.get("latest_sequence", 0)) for state in worker_states] or [0]
+        )
+        oldest_values = [
+            int(state.get("oldest_available_sequence", 0))
+            for state in worker_states
+            if int(state.get("oldest_available_sequence", 0)) > 0
+        ]
+        enabled = bool(worker_states) and all(
+            state.get("status") == "READY" and state.get("observer_enabled") is True
+            for state in worker_states
+        )
+        return {
+            "schema": "qbi.native-ngram-engine-state.v1",
+            "status": "READY" if enabled else "NOT_READY",
+            "observer_enabled": enabled,
+            "engine_boot_id": self._runtime_control_boot_id,
+            "scope": "worker_pre_lookup",
+            "latest_sequence": latest,
+            "oldest_available_sequence": min(oldest_values) if oldest_values else 0,
+            "receipts": receipts,
+            "worker_states": worker_states,
+            "cursor_semantics": (
+                "worker-local sequence cursors are preserved in worker_states"
+            ),
+            "model_calls": 0,
+            "remote_calls": 0,
+            "training": False,
+        }
+
+    def get_repetition_detection_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        """Join provider pre-stop events to the current EngineCore identity."""
+        state = self.scheduler.get_repetition_detection_state(after_sequence)
+        return {
+            **state,
+            "engine_boot_id": self._runtime_control_boot_id,
+            "config_epoch": self.scheduler.get_runtime_scheduler_limits().get(
+                "config_epoch", 0
+            ),
+        }
+
+    def get_suffix_acceptance_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        """Join completed suffix windows to the current EngineCore identity."""
+
+        state = self.scheduler.get_suffix_acceptance_state(after_sequence)
+        return {
+            **state,
+            "engine_boot_id": self._runtime_control_boot_id,
+            "config_epoch": self.scheduler.get_runtime_scheduler_limits().get(
+                "config_epoch", 0
+            ),
+        }
+
+    def get_native_suffix_proposal_state(
+        self, after_sequence: int = 0
+    ) -> dict[str, Any]:
+        """Join worker-local S4 features captured before suffix verification."""
+        if isinstance(after_sequence, bool) or not isinstance(after_sequence, int):
+            raise ValueError("native Suffix sequence cursor must be an integer")
+        if after_sequence < 0:
+            raise ValueError("native Suffix sequence cursor must be non-negative")
+        try:
+            worker_states = self.model_executor.collective_rpc(
+                "get_native_suffix_proposal_state", args=(after_sequence,)
+            )
+        except Exception as error:
+            return {
+                "schema": "qbi.native-suffix-worker-state.v1",
+                "status": "NOT_READY",
+                "observer_enabled": False,
+                "latest_sequence": 0,
+                "oldest_available_sequence": 0,
+                "dropped_receipts": 0,
+                "receipts": [],
+                "worker_states": [],
+                "scope": "s4_pre_verification",
+                "reason": (
+                    f"worker observer RPC unavailable: {type(error).__name__}: {error}"
+                ),
+            }
+        states = [state for state in worker_states if isinstance(state, dict)]
+        receipts = [
+            receipt
+            for state in states
+            for receipt in state.get("receipts", [])
+            if isinstance(receipt, dict)
+        ]
+        return {
+            "schema": "qbi.native-suffix-worker-state.v1",
+            "status": (
+                "READY"
+                if states and all(state.get("status") == "READY" for state in states)
+                else "NOT_READY"
+            ),
+            "observer_enabled": bool(states)
+            and all(state.get("observer_enabled") is True for state in states),
+            "latest_sequence": max(
+                (int(state.get("latest_sequence", 0)) for state in states), default=0
+            ),
+            "oldest_available_sequence": min(
+                (
+                    int(state.get("oldest_available_sequence", 0))
+                    for state in states
+                    if int(state.get("oldest_available_sequence", 0)) > 0
+                ),
+                default=0,
+            ),
+            "dropped_receipts": sum(
+                int(state.get("dropped_receipts", 0)) for state in states
+            ),
+            "receipts": receipts,
+            "worker_states": states,
+            "scope": "s4_pre_verification",
+            "engine_boot_id": self._runtime_control_boot_id,
+            "config_epoch": self.scheduler.get_runtime_scheduler_limits().get(
+                "config_epoch", 0
+            ),
+        }
+
+    def reset_native_suffix_cache(self) -> dict[str, Any]:
+        """Reset all worker-local Suffix trees between controlled TRAIN arms."""
+        state = self.get_runtime_transition_state()
+        if state["unfinished_requests"] != 0 or state["transition_staged"]:
+            raise RuntimeError(
+                "cannot reset Suffix history while the engine has unfinished requests"
+            )
+        worker_results = self.model_executor.collective_rpc(
+            "reset_native_suffix_cache"
+        )
+        return {
+            "schema": "qbi.native-suffix-cache-reset.v1",
+            "status": "RESET",
+            "engine_boot_id": self._runtime_control_boot_id,
+            "config_epoch": state["config_epoch"],
+            "unfinished_requests": state["unfinished_requests"],
+            "worker_results": worker_results,
+        }
+
     def prepare_runtime_transition(
         self, mechanism_name: str, config: dict[str, Any]
     ) -> dict[str, Any]:
@@ -572,6 +1592,14 @@ class EngineCore:
                 )
             return self.scheduler.prepare_runtime_prefill_admission_guard(
                 config["scheduler_reserve_full_isl"]
+            )
+        if mechanism_name == "dynamic_speculative_depth":
+            if set(config) != {"num_speculative_tokens"}:
+                raise ValueError(
+                    "speculative-depth transition requires one registered field"
+                )
+            return self.scheduler.prepare_runtime_speculative_depth(
+                int(config["num_speculative_tokens"])
             )
         raise ValueError(f"runtime transition is not implemented for {mechanism_name}")
 
@@ -598,6 +1626,14 @@ class EngineCore:
             return self.scheduler.stage_runtime_prefill_admission_guard(
                 config["scheduler_reserve_full_isl"]
             )
+        if mechanism_name == "dynamic_speculative_depth":
+            if set(config) != {"num_speculative_tokens"}:
+                raise ValueError(
+                    "speculative-depth transition requires one registered field"
+                )
+            return self.scheduler.stage_runtime_speculative_depth(
+                int(config["num_speculative_tokens"])
+            )
         raise ValueError(
             f"staged runtime transition is not implemented for {mechanism_name}"
         )
@@ -611,6 +1647,8 @@ class EngineCore:
             return self.scheduler.commit_staged_runtime_prefill_admission_guard(
                 next_epoch
             )
+        if mechanism_name == "dynamic_speculative_depth":
+            return self.scheduler.commit_staged_runtime_speculative_depth(next_epoch)
         raise ValueError(
             f"staged runtime transition is not implemented for {mechanism_name}"
         )
@@ -620,6 +1658,8 @@ class EngineCore:
             return self.scheduler.abort_staged_runtime_scheduler_limits()
         if mechanism_name == "prefill_admission_guard":
             return self.scheduler.abort_staged_runtime_prefill_admission_guard()
+        if mechanism_name == "dynamic_speculative_depth":
+            return self.scheduler.abort_staged_runtime_speculative_depth()
         raise ValueError(
             f"staged runtime transition is not implemented for {mechanism_name}"
         )
@@ -633,6 +1673,8 @@ class EngineCore:
             return self.scheduler.commit_runtime_prefill_admission_guard(
                 prepared, next_epoch
             )
+        if mechanism_name == "dynamic_speculative_depth":
+            return self.scheduler.commit_runtime_speculative_depth(prepared, next_epoch)
         raise ValueError(f"runtime transition is not implemented for {mechanism_name}")
 
     def verify_runtime_transition(
@@ -662,6 +1704,25 @@ class EngineCore:
                 )
             receipt_field = "prefill_admission_guard_receipt"
             profile = "prefill_admission_guard"
+        elif mechanism_name == "dynamic_speculative_depth":
+            if set(config) != {"num_speculative_tokens"}:
+                raise ValueError("speculative-depth verification config is invalid")
+            resident_method = limits.get("speculative_method")
+            if (
+                state["config_epoch"] != epoch
+                or int(limits["num_speculative_tokens"])
+                != int(config["num_speculative_tokens"])
+                or resident_method not in {"suffix", "ngram", "ngram_gpu"}
+                or (
+                    resident_method == "suffix"
+                    and int(limits["speculative_method_is_suffix"]) != 1
+                )
+            ):
+                raise RuntimeError(
+                    "speculative-depth transition did not become effective"
+                )
+            receipt_field = "dynamic_speculative_depth_receipt"
+            profile = "dynamic_speculative_depth"
         else:
             raise ValueError(
                 f"runtime transition is not implemented for {mechanism_name}"
@@ -676,6 +1737,11 @@ class EngineCore:
                 "boot_id": self._runtime_control_boot_id,
                 "config_epoch": epoch,
                 "limits": limits,
+                **(
+                    {"resident_speculative_method": resident_method}
+                    if mechanism_name == "dynamic_speculative_depth"
+                    else {}
+                ),
             },
         }
 
@@ -689,6 +1755,8 @@ class EngineCore:
             proof = self.scheduler.rollback_runtime_scheduler_limits(prepared)
         elif mechanism_name == "prefill_admission_guard":
             proof = self.scheduler.rollback_runtime_prefill_admission_guard(prepared)
+        elif mechanism_name == "dynamic_speculative_depth":
+            proof = self.scheduler.rollback_runtime_speculative_depth(prepared)
         else:
             raise ValueError(
                 f"runtime transition is not implemented for {mechanism_name}"
@@ -801,6 +1869,11 @@ class EngineCore:
         scheduler_output = self.scheduler.schedule()
         future = self.model_executor.execute_model(scheduler_output, non_block=True)
         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
+        # Measure the device work of exactly this scheduler output.  The window
+        # covers waiting for the execution future and, when the executor did not
+        # sample, the sampling call, so the recorded value is step device time
+        # rather than scheduler CPU time.
+        qbi_exec_start_ns = time.perf_counter_ns()
         with (
             self.log_error_detail(scheduler_output),
             self.log_iteration_details(scheduler_output),
@@ -808,6 +1881,12 @@ class EngineCore:
             model_output = future.result()
             if model_output is None:
                 model_output = self.model_executor.sample_tokens(grammar_output)
+        qbi_exec_elapsed_ns = time.perf_counter_ns() - qbi_exec_start_ns
+        self.scheduler.record_qbi_model_execution_sample(
+            scheduler_output,
+            elapsed_ns=qbi_exec_elapsed_ns,
+            observed_at_ns=time.perf_counter_ns(),
+        )
 
         # Before processing the model output, process any aborts that happened
         # during the model execution.

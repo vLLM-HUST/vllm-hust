@@ -250,6 +250,7 @@ class NgramProposerGPU:
         self.max_model_len = vllm_config.model_config.max_model_len
         self.max_num_seqs = vllm_config.scheduler_config.max_num_seqs
         self.device = device
+        self.observer = getattr(runner, "_native_ngram_observer", None)
 
         self.kernel = NgramGPUKernel(
             vllm_config=self.vllm_config, prefix="ngram_gpu_kernel", device=device
@@ -318,6 +319,8 @@ class NgramProposerGPU:
         token_ids_gpu: torch.Tensor,  # [batch_size, max_len]
         valid_sampled_token_ids_gpu: torch.Tensor,  # [batch_size, num_spec_tokens + 1]
         valid_sampled_tokens_count: torch.Tensor,  # [batch_size]
+        config_epoch: int | None = None,
+        request_ids: list[str] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Propose draft tokens using GPU-accelerated n-gram matching.
@@ -371,6 +374,26 @@ class NgramProposerGPU:
             torch.int32
         )
 
+        observer_sequences = {}
+        if self.observer is not None and getattr(self.observer, "enabled", False):
+            counts = num_tokens_tmp.detach().to("cpu").tolist()
+            token_rows = token_ids_gpu.detach().to("cpu").tolist()
+            rows = [row[: max(0, int(count))] for row, count in zip(token_rows, counts)]
+            observer_sequences = self.observer.record_pre_lookup_batch(
+                request_ids=request_ids or [""] * len(rows),
+                request_slots=list(range(len(rows))),
+                current_token_ids=rows,
+                lookup_token_ids=rows,
+                draft_config={
+                    "method": "ngram",
+                    "num_speculative_tokens": int(self.k),
+                    "prompt_lookup_min": int(self.min_n),
+                    "prompt_lookup_max": int(self.max_n),
+                },
+                config_epoch=config_epoch,
+                backend="gpu",
+            )
+
         # Compute validity masks.
         sampled_flags = valid_sampled_tokens_count > 0
         valid_mask = torch.ones(batch_size, dtype=torch.bool, device=self.device)
@@ -383,6 +406,17 @@ class NgramProposerGPU:
                     num_tokens_tmp,
                     token_ids_gpu,
                     combined_mask,
+                )
+
+            if observer_sequences:
+                self.observer.record_lookup_results(
+                    observer_sequences,
+                    {
+                        index: int(count)
+                        for index, count in enumerate(
+                            num_valid_draft_tokens.detach().to("cpu").tolist()
+                        )
+                    },
                 )
 
             return draft_tokens, num_valid_draft_tokens

@@ -45,6 +45,12 @@ CACHE = None
 _QBI_SCHEMA_MASK_APPLIED_REQUEST_IDS: set[str] = set()
 _QBI_SCHEMA_MASK_APPLIED_REQUEST_ORDER: deque[str] = deque()
 _QBI_SCHEMA_RECEIPT_WINDOW = max(int(os.getenv("QBI_SCHEMA_RECEIPT_WINDOW", "8192")), 1)
+_QBI_UTILS_SOURCE_FILE = os.path.realpath(__file__)
+try:
+    with open(_QBI_UTILS_SOURCE_FILE, "rb") as _qbi_source_file:
+        _QBI_UTILS_SOURCE_SHA256 = hashlib.sha256(_qbi_source_file.read()).hexdigest()
+except OSError:
+    _QBI_UTILS_SOURCE_SHA256 = "unavailable"
 
 
 def _remember_qbi_mask_request(request_id: str) -> bool:
@@ -70,8 +76,12 @@ def _emit_qbi_schema_mask_applied(
         "request_id": request_id,
         "pid": os.getpid(),
         "time_ns": time.time_ns(),
+        "backend": "XgrammarBackend",
+        "operation": "xgrammar.apply_token_bitmask_inplace",
         "logit_rows": logit_rows,
         "constrained_rows": constrained_rows,
+        "source_file": _QBI_UTILS_SOURCE_FILE,
+        "source_sha256": _QBI_UTILS_SOURCE_SHA256,
     }
     payload = (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode()
     fd = os.open(receipt_path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
@@ -163,10 +173,13 @@ def apply_grammar_bitmask(
             if _remember_qbi_mask_request(req_id):
                 logger.info(
                     "QBI_SCHEMA_EVENT phase=mask_applied request_id=%s "
-                    "logit_rows=%s constrained_rows=%s",
+                    "backend=XgrammarBackend operation=xgrammar.apply_token_bitmask_inplace "
+                    "logit_rows=%s constrained_rows=%s source_file=%s source_sha256=%s",
                     req_id,
                     logits.shape[0],
                     len(out_indices),
+                    _QBI_UTILS_SOURCE_FILE,
+                    _QBI_UTILS_SOURCE_SHA256,
                 )
                 _emit_qbi_schema_mask_applied(
                     req_id,
@@ -191,10 +204,13 @@ def apply_grammar_bitmask(
         if _remember_qbi_mask_request(req_id):
             logger.info(
                 "QBI_SCHEMA_EVENT phase=mask_applied request_id=%s "
-                "logit_rows=%s constrained_rows=%s",
+                "backend=XgrammarBackend operation=xgrammar.apply_token_bitmask_inplace "
+                "logit_rows=%s constrained_rows=%s source_file=%s source_sha256=%s",
                 req_id,
                 logits.shape[0],
                 len(out_indices),
+                _QBI_UTILS_SOURCE_FILE,
+                _QBI_UTILS_SOURCE_SHA256,
             )
             _emit_qbi_schema_mask_applied(
                 req_id,

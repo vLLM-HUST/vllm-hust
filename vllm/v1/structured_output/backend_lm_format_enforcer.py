@@ -97,6 +97,27 @@ class LMFormatEnforcerBackend(StructuredOutputBackend):
             self.tokenizer, self.vocab_size
         )
 
+    def compiled_grammar_cache_state(self) -> dict[str, str | bool | None]:
+        """Report the absence of a compiled-grammar cache.
+
+        The shared LRU in this backend caches tokenizer data, not compiled
+        request grammars. ``compile_grammar`` creates a parser and token
+        enforcer for each request.
+        """
+        source = (
+            "vllm.v1.structured_output.backend_lm_format_enforcer."
+            "LMFormatEnforcerBackend.compile_grammar"
+        )
+        return {
+            "cache_ready": False,
+            "cache_size_bytes": None,
+            "cache_limit_bytes": None,
+            "source_field": source,
+            "cache_ready_source_field": source,
+            "cache_size_source_field": source + ".byte_size_unavailable",
+            "cache_limit_source_field": source + ".byte_limit_unavailable",
+        }
+
     def compile_grammar(
         self, request_type: StructuredOutputOptions, grammar_spec: str
     ) -> StructuredOutputGrammar:

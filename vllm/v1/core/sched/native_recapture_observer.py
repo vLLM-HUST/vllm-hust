@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import os
 import time
+import hashlib
+import json
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from typing import Any
 
 
@@ -62,6 +65,8 @@ class NativeRecaptureScopeObserver:
         config_epoch: int,
         max_num_running_reqs: int,
         max_num_scheduled_tokens: int,
+        request_token_state: Mapping[str, Mapping[str, int]] | None = None,
+        request_prompt_token_ids: Mapping[str, Sequence[int] | None] | None = None,
     ) -> None:
         if not self.enabled:
             return
@@ -73,6 +78,54 @@ class NativeRecaptureScopeObserver:
         ]
         if not matched_request_ids:
             return
+        positions = {}
+        prompt_token_id_hashes = {}
+        for request_id in request_ids:
+            token_ids = (request_prompt_token_ids or {}).get(request_id)
+            if token_ids is None:
+                prompt_token_id_hashes[request_id] = {"status": "missing"}
+            else:
+                try:
+                    normalized_tokens = list(token_ids)
+                except TypeError:
+                    normalized_tokens = []
+                if not normalized_tokens or any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    for value in normalized_tokens
+                ):
+                    prompt_token_id_hashes[request_id] = {"status": "missing"}
+                else:
+                    prompt_token_id_hashes[request_id] = {
+                        "status": "observed",
+                        "sha256": hashlib.sha256(
+                            json.dumps(
+                                normalized_tokens, separators=(",", ":")
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                        "token_count": len(normalized_tokens),
+                        "source": "engine_request.prompt_token_ids",
+                    }
+            state = (request_token_state or {}).get(request_id, {})
+            computed = state.get("num_computed_tokens_before")
+            prompt = state.get("num_prompt_tokens")
+            scheduled = num_scheduled_tokens[request_id]
+            if any(
+                type(value) is not int or value < 0
+                for value in (computed, prompt, scheduled)
+            ):
+                positions[request_id] = {"status": "missing"}
+                continue
+            prompt_scheduled = min(scheduled, max(0, prompt - computed))
+            continuation = scheduled - prompt_scheduled
+            positions[request_id] = {
+                "status": "observed",
+                "num_computed_tokens_before": computed,
+                "num_prompt_tokens": prompt,
+                "prompt_tokens_scheduled": prompt_scheduled,
+                "continuation_tokens_scheduled": continuation,
+                "position_phase": "mixed" if prompt_scheduled and continuation
+                else "prompt" if prompt_scheduled else "continuation",
+            }
         self.sequence += 1
         self._receipts.append(
             {
@@ -92,6 +145,12 @@ class NativeRecaptureScopeObserver:
                 "total_num_scheduled_tokens": int(total_num_scheduled_tokens),
                 "max_num_running_reqs": int(max_num_running_reqs),
                 "max_num_scheduled_tokens": int(max_num_scheduled_tokens),
+                "token_position_schema": "qbi.native-scheduled-token-positions.v1",
+                "token_position_observation_point": "before_update_after_schedule",
+                "request_token_positions": positions,
+                "prompt_token_id_hashes": prompt_token_id_hashes,
+                "prompt_token_observation_point": "engine_request_before_schedule_update",
+                "observation_is_execution_completion": False,
             }
         )
 
@@ -101,7 +160,7 @@ class NativeRecaptureScopeObserver:
         if after_sequence < 0:
             raise ValueError("native recapture sequence cursor must be non-negative")
         receipts = [
-            dict(receipt)
+            deepcopy(receipt)
             for receipt in self._receipts
             if int(receipt["sequence"]) > after_sequence
         ]

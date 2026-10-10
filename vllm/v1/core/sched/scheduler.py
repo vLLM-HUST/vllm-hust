@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
+import threading
 import time
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -38,6 +39,13 @@ from vllm.v1.core.encoder_cache_manager import (
 )
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
+from vllm.v1.core.sched.batch_scope_proposal import (
+    BatchScopeProposalBook,
+    batch_scope_state_of,
+)
+from vllm.v1.core.sched.causal_state_observer import (
+    CausalPreDecisionObserver,
+)
 from vllm.v1.core.sched.interface import PauseState, SchedulerInterface
 from vllm.v1.core.sched.native_recapture_observer import (
     NativeRecaptureScopeObserver,
@@ -50,6 +58,9 @@ from vllm.v1.core.sched.output import (
 )
 from vllm.v1.core.sched.priority_scheduling_observer import (
     PrioritySchedulingObserver,
+)
+from vllm.v1.core.sched.repetition_detection_observer import (
+    RepetitionDetectionObserver,
 )
 from vllm.v1.core.sched.request_queue import (
     RequestQueue,
@@ -129,6 +140,7 @@ class Scheduler(SchedulerInterface):
         self._staged_runtime_prefill_admission_guard: (
             dict[str, bool | int | dict[str, bool]] | None
         ) = None
+        self._staged_runtime_speculative_depth = None
         self._pending_epoch_requests: list[Request] = []
         self._native_recapture_scope_observer = (
             NativeRecaptureScopeObserver.from_environment()
@@ -136,6 +148,20 @@ class Scheduler(SchedulerInterface):
         self._priority_scheduling_observer = (
             PrioritySchedulingObserver.from_environment()
         )
+        self._repetition_detection_observer = RepetitionDetectionObserver()
+        self._causal_pre_decision_observer = (
+            CausalPreDecisionObserver.from_environment()
+        )
+        self._batch_scope_proposal_book = BatchScopeProposalBook.from_environment()
+        self._batch_scope_proposal_lock = threading.RLock()
+        self._runtime_control_boot_id: str | None = None
+        self._qbi_previous_schedule_ms: float | None = None
+        # Measured engine-step device work.  ``_qbi_model_execution_sample`` is
+        # the latest step of any mix; ``_qbi_prefill_cost_sample`` is the latest
+        # pure-prefill step, which is the only one the S3 chunk-cost projection
+        # may use.
+        self._qbi_model_execution_sample: dict | None = None
+        self._qbi_prefill_cost_sample: dict | None = None
         self.max_model_len = vllm_config.model_config.max_model_len
         self.enable_kv_cache_events = (
             self.kv_events_config is not None
@@ -255,6 +281,21 @@ class Scheduler(SchedulerInterface):
                 self.num_lookahead_tokens = self.num_spec_tokens
             if speculative_config.uses_draft_model():
                 self.num_lookahead_tokens = self.num_spec_tokens
+        self._startup_num_spec_tokens = self.num_spec_tokens
+        self._runtime_speculative_method = (
+            speculative_config.method if speculative_config is not None else None
+        )
+        self._runtime_speculative_method_is_suffix = (
+            self._runtime_speculative_method == "suffix"
+        )
+        self._qbi_suffix_acceptance_receipts: deque[dict[str, Any]] = deque(
+            maxlen=32768
+        )
+        self._qbi_suffix_acceptance_sequence = 0
+        self._qbi_suffix_acceptance_dropped = 0
+        self._qbi_speculative_method_is_suffix = bool(
+            speculative_config is not None and speculative_config.method == "suffix"
+        )
 
         # Create the KV cache manager.
         self.kv_cache_manager = KVCacheManager(
@@ -381,6 +422,13 @@ class Scheduler(SchedulerInterface):
         return num_new_tokens
 
     def schedule(self) -> SchedulerOutput:
+        qbi_schedule_start = time.monotonic_ns()
+        # Bounded, disabled-by-default pre-decision projection.  It is recorded
+        # before any token is assigned, so its timestamp precedes the real
+        # scheduling decision for this step.
+        self._causal_pre_decision_observer.observe(
+            self, observed_at_ns=qbi_schedule_start, wall_time=time.time()
+        )
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
         # Each request just has the num_computed_tokens and
@@ -400,9 +448,18 @@ class Scheduler(SchedulerInterface):
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
         token_budget = self.max_num_scheduled_tokens
+        batch_scope_receipt = None
         if self._pause_state == PauseState.PAUSED_ALL:
             # Do not schedule any requests when paused.
             token_budget = 0
+        else:
+            # A B2 batch proposal may narrow this one scheduling event only.
+            # The scheduler's engine-epoch attribute remains untouched.
+            batch_scope_receipt = self._observe_batch_scope_budget(
+                observed_at_ns=qbi_schedule_start
+            )
+            if batch_scope_receipt is not None:
+                token_budget = int(batch_scope_receipt["token_budget"])
 
         # Encoder-related.
         scheduled_encoder_inputs: dict[str, list[int]] = {}
@@ -891,6 +948,13 @@ class Scheduler(SchedulerInterface):
 
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+        if (batch_scope_receipt is not None
+                and batch_scope_receipt.get("schedule_confirmation_required") is True):
+            self._confirm_batch_scope_schedule(
+                batch_scope_receipt,
+                scheduled_token_counts=num_scheduled_tokens,
+                actual_schedule_observed_at_ns=time.monotonic_ns(),
+            )
         assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
 
         assert token_budget >= 0
@@ -975,6 +1039,8 @@ class Scheduler(SchedulerInterface):
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
             new_block_ids_to_zero=new_block_ids_to_zero,
             num_spec_tokens_to_schedule=num_spec_tokens_to_schedule,
+runtime_config_epoch=self._runtime_config_epoch,
+            runtime_num_speculative_tokens=self.num_spec_tokens,
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
@@ -992,30 +1058,439 @@ class Scheduler(SchedulerInterface):
             )
             scheduler_output.ec_connector_metadata = ec_meta
 
+        # Record token positions before the computed-token counters advance.
+        self._record_native_recapture_scope(scheduler_output)
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
         self._record_native_recapture_scope(scheduler_output)
         self._record_priority_scheduling_scope(scheduler_output)
+        self._qbi_previous_schedule_ms = (
+            time.monotonic_ns() - qbi_schedule_start
+        ) / 1e6
         return scheduler_output
 
-    def _record_native_recapture_scope(
-        self, scheduler_output: SchedulerOutput
+    def record_qbi_model_execution_sample(
+        self,
+        scheduler_output: SchedulerOutput,
+        *,
+        elapsed_ns: int,
+        observed_at_ns: int,
     ) -> None:
+        """Record the measured device work of one engine step, split by token class.
+
+        ``elapsed_ns`` is measured by the engine core around the model execution
+        of exactly this ``scheduler_output``, so it is device/step time -- not
+        scheduler CPU time and not a projection.
+
+        Only a step whose scheduled tokens are **all** prefill tokens is kept as
+        the cost sample used by the S3 producer.  A mixed prefill+decode step
+        cannot attribute its elapsed time to prefill alone, and imputing it would
+        rename a different measured quantity into a per-token prefill cost.  When
+        no pure-prefill step has been observed yet the sample stays absent and the
+        typed gate fails closed, exactly as before this instrumentation.
+        """
+
+        scheduled = getattr(scheduler_output, "num_scheduled_tokens", None) or {}
+        total = int(getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0)
+        if total <= 0 or not scheduled or elapsed_ns <= 0:
+            return
+        prefill_tokens = 0
+        for request_id, count in scheduled.items():
+            request = self.requests.get(request_id)
+            if request is None:
+                # An unclassifiable member makes the split unreliable.
+                return
+            if request.num_computed_tokens < request.num_prompt_tokens:
+                prefill_tokens += int(count)
+        decode_tokens = total - prefill_tokens
+        sample = {
+            "observed_at_ns": int(observed_at_ns),
+            "elapsed_ns": int(elapsed_ns),
+            "total_scheduled_tokens": total,
+            "prefill_tokens": prefill_tokens,
+            "decode_tokens": decode_tokens,
+            "ms_per_scheduled_token": (int(elapsed_ns) / 1e6) / total,
+            "source": "engine_core.step:execute_model->future.result",
+        }
+        self._qbi_model_execution_sample = sample
+        if prefill_tokens > 0 and decode_tokens == 0:
+            self._qbi_prefill_cost_sample = sample
+
+    def _record_native_recapture_scope(self, scheduler_output: SchedulerOutput) -> None:
         """Record a bounded, prompt-free scheduler receipt for formal recapture."""
 
+        if not self._native_recapture_scope_observer.enabled:
+            return
         self._native_recapture_scope_observer.record(
             num_scheduled_tokens=scheduler_output.num_scheduled_tokens,
             total_num_scheduled_tokens=scheduler_output.total_num_scheduled_tokens,
             config_epoch=self._runtime_config_epoch,
             max_num_running_reqs=self.max_num_running_reqs,
             max_num_scheduled_tokens=self.max_num_scheduled_tokens,
+            request_token_state={
+                request_id: {
+                    "num_computed_tokens_before": self.requests[
+                        request_id
+                    ].num_computed_tokens,
+                    "num_prompt_tokens": self.requests[request_id].num_prompt_tokens,
+                }
+                for request_id in scheduler_output.num_scheduled_tokens
+                if request_id in self.requests
+            },
+            request_prompt_token_ids={
+                request_id: getattr(self.requests[request_id], "prompt_token_ids", None)
+                for request_id in scheduler_output.num_scheduled_tokens
+                if request_id in self.requests
+            },
         )
     def get_native_recapture_scope_state(
         self, after_sequence: int = 0
     ) -> dict[str, Any]:
         """Return immutable copies of observed scheduler steps after a cursor."""
 
-        return self._native_recapture_scope_observer.state(after_sequence)
+        state = self._native_recapture_scope_observer.state(after_sequence)
+        queued = [
+            *self.waiting,
+            *self.skipped_waiting,
+            *self._pending_epoch_requests,
+        ]
+        received = {
+            request.request_id: request for request in (*self.running, *queued)
+        }
+        queue_ids = {request.request_id for request in queued}
+        # ``ready_count`` is deliberately limited to requests in the native
+        # waiting queue whose scheduler status says they can be considered by
+        # the next scheduling step.  Skipped, remote-KV, streaming, and
+        # pending-next-epoch requests remain in ``queue_depth`` but are not
+        # silently treated as ready.
+        ready_count = sum(
+            1
+            for request in self.waiting
+            if getattr(getattr(request, "status", None), "name", None)
+            in {"WAITING", "PREEMPTED"}
+        )
+        prefill_tokens = sum(
+            max(0, request.num_prompt_tokens - request.num_computed_tokens)
+            for request in received.values()
+        )
+        decode_request_count = sum(
+            request.num_output_tokens > 0
+            and request.num_computed_tokens >= request.num_prompt_tokens
+            for request in self.running
+        )
+        # A decode request contributes exactly one currently schedulable base
+        # token.  This is a state projection, not a prediction of speculative
+        # draft length or future arrivals.  Keep the no-work case missing so an
+        # idle engine is never converted into a fabricated zero-valued mix.
+        work_units = prefill_tokens + decode_request_count
+        prefill_decode_mix = (
+            prefill_tokens / work_units if work_units else None
+        )
+
+        kv_fields: dict[str, Any] = {}
+        kv_manager = getattr(self, "kv_cache_manager", None)
+        if kv_manager is not None:
+            try:
+                usage = kv_manager.usage
+                if isinstance(usage, (int, float)) and not isinstance(usage, bool):
+                    usage = float(usage)
+                    if 0.0 <= usage <= 1.0:
+                        kv_fields["memory_pressure_ratio"] = usage
+                        kv_fields["kv_pressure_ratio"] = usage
+                block_pool = getattr(kv_manager, "block_pool", None)
+                free_blocks = getattr(block_pool, "get_num_free_blocks", None)
+                total_blocks = getattr(block_pool, "num_gpu_blocks", None)
+                if callable(free_blocks):
+                    free_blocks = free_blocks()
+                    if type(free_blocks) is int and free_blocks >= 0:
+                        kv_fields["kv_free_blocks"] = free_blocks
+                if type(total_blocks) is int and total_blocks > 0:
+                    kv_fields["kv_total_blocks"] = total_blocks
+            except (AttributeError, TypeError, ValueError):
+                # An unavailable backend metric is an explicit missing field.
+                # Never derive pressure from request IDs, queue length, or
+                # configured limits.
+                kv_fields = {}
+        state["pre_action_observation"] = {
+            "schema": "anise-native-pre-action-observation-v1",
+            "engine": {
+                "ready_count": ready_count,
+                "queue_depth": len(queue_ids),
+                "active_request_count": len(self.running),
+                **kv_fields,
+            },
+            "batch": {
+                "prefill_tokens": prefill_tokens,
+                "decode_request_count": decode_request_count,
+                "prefill_decode_mix": prefill_decode_mix,
+            },
+            "counter_semantics": {
+                "prefill_tokens": (
+                    "received uncomputed prompt positions; "
+                    "future cache hits are not predicted"
+                ),
+                "queue_depth": (
+                    "unique waiting, skipped-waiting and pending-epoch requests"
+                ),
+                "ready_count": (
+                    "waiting-queue requests with WAITING or PREEMPTED status; "
+                    "blocked and pending-next-epoch requests are excluded"
+                ),
+                "decode_request_count": (
+                    "running requests with observed output "
+                    "and completed prompt positions"
+                ),
+                "prefill_decode_mix": (
+                    "prefill_tokens / (prefill_tokens + decode_request_count); "
+                    "one current base decode token per active decode request"
+                ),
+                "memory_pressure_ratio": "KV block-pool usage at snapshot time",
+                "kv_pressure_ratio": (
+                    "same KV block-pool usage under the S3 lifecycle name"
+                ),
+                "kv_free_blocks": "free blocks reported by the KV block pool",
+                "kv_total_blocks": "total blocks reported by the KV block pool",
+                "unreceived_future_requests_included": False,
+            },
+        }
+        state["ngram_observer"] = {
+            "status": "NOT_READY",
+            "scope": "worker_pre_lookup",
+            "reason": (
+                "exact token window and lookup state live in GPUModelRunner; "
+                "they are outside this scheduler observer"
+            ),
+        }
+        return state
+
+    def set_runtime_control_boot_id(self, boot_id: str) -> None:
+        if not isinstance(boot_id, str) or not boot_id.strip():
+            raise ValueError("runtime control boot id must be non-empty text")
+        self._runtime_control_boot_id = boot_id
+
+    def _observe_batch_scope_budget(
+        self, *, observed_at_ns: int | None = None
+    ) -> dict[str, Any] | None:
+        """Resolve one exact-member-set batch proposal without changing epoch state."""
+
+        if observed_at_ns is None:
+            observed_at_ns = time.monotonic_ns()
+        book = self._batch_scope_proposal_book
+        if not book.enabled:
+            return None
+        try:
+            queues = (
+                ("running", tuple(self.running)),
+                ("waiting", tuple(self.waiting)),
+                ("skipped_waiting", tuple(self.skipped_waiting)),
+            )
+            requests = tuple(request for _, queue in queues for request in queue)
+            member_request_ids = [request.request_id for request in requests]
+            prefill_request_ids = [
+                request.request_id
+                for request in requests
+                if request.num_computed_tokens < request.num_prompt_tokens
+            ]
+            decode_request_ids = [
+                request.request_id
+                for request in requests
+                if request.num_output_tokens > 0
+                and request.num_computed_tokens >= request.num_prompt_tokens
+            ]
+            request_candidates = []
+            for queue_name, queue in queues:
+                for request in queue:
+                    prompt_tokens = getattr(request, "num_prompt_tokens", None)
+                    computed_tokens = getattr(request, "num_computed_tokens", None)
+                    output_tokens = getattr(request, "num_output_tokens", None)
+                    if type(prompt_tokens) is not int:
+                        prompt_tokens = None
+                    if type(computed_tokens) is not int:
+                        computed_tokens = None
+                    if type(output_tokens) is not int:
+                        output_tokens = None
+                    if computed_tokens is not None and prompt_tokens is not None:
+                        role = (
+                            "prefill" if computed_tokens < prompt_tokens
+                            else "decode" if output_tokens is not None and output_tokens > 0
+                            else "other"
+                        )
+                    else:
+                        role = "unknown"
+                    status = getattr(request, "status", None)
+                    status = getattr(status, "value", str(status))
+                    request_candidates.append({
+                        "request_id": request.request_id,
+                        "queue": queue_name,
+                        "status": status,
+                        "role": role,
+                        "num_prompt_tokens": prompt_tokens,
+                        "num_computed_tokens": computed_tokens,
+                        "remaining_prompt_tokens": (
+                            max(0, prompt_tokens - computed_tokens)
+                            if prompt_tokens is not None and computed_tokens is not None
+                            else None
+                        ),
+                        "num_output_tokens": output_tokens,
+                        "num_tokens_with_spec": getattr(request, "num_tokens_with_spec", None),
+                        "num_output_placeholders": getattr(request, "num_output_placeholders", None),
+                        "num_preemptions": getattr(request, "num_preemptions", None),
+                    })
+            pre_action_observation = {
+                "schema": "anise.batch-scope-pre-schedule-observation.v1",
+                "stage": "pre_schedule_candidate_set",
+                "source": "Scheduler.schedule",
+                "clock_id": "monotonic_ns",
+                "observed_at_ns": observed_at_ns,
+                "engine_boot_id": getattr(self, "_runtime_control_boot_id", None),
+                "config_epoch": self._runtime_config_epoch,
+                "scheduler_token_budget": self.max_num_scheduled_tokens,
+                "startup_token_ceiling": self._startup_max_num_scheduled_tokens,
+                "max_num_running_reqs": self.max_num_running_reqs,
+                "running_count": len(self.running),
+                "waiting_count": len(self.waiting),
+                "skipped_waiting_count": len(self.skipped_waiting),
+                "candidate_count": len(request_candidates),
+                "candidate_request_ids": member_request_ids,
+                "prefill_request_ids": prefill_request_ids,
+                "decode_request_ids": decode_request_ids,
+                "request_candidates": request_candidates,
+                "detail_status": "complete",
+            }
+        except Exception:  # noqa: BLE001 -- optional control surface must fail closed
+            return None
+        try:
+            with self._batch_scope_proposal_lock:
+                return book.observe(
+                    member_request_ids=member_request_ids,
+                    scheduler_budget=self.max_num_scheduled_tokens,
+                    startup_ceiling=self._startup_max_num_scheduled_tokens,
+                    config_epoch=self._runtime_config_epoch,
+                    observed_at_ns=observed_at_ns,
+                    prefill_request_ids=prefill_request_ids,
+                    decode_request_ids=decode_request_ids,
+                    pre_action_observation=pre_action_observation,
+                    engine_boot_id=getattr(self, "_runtime_control_boot_id", None),
+                )
+        except Exception:  # noqa: BLE001 -- never let an optional hook break schedule()
+            return None
+
+    def _confirm_batch_scope_schedule(
+        self,
+        receipt: Mapping[str, Any],
+        *,
+        scheduled_token_counts: Mapping[str, int],
+        actual_schedule_observed_at_ns: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Confirm effectiveness against the request/token set actually scheduled."""
+
+        book = self._batch_scope_proposal_book
+        try:
+            with self._batch_scope_proposal_lock:
+                return book.confirm_scheduled_batch(
+                    receipt_sequence=receipt["sequence"],
+                    scheduled_token_counts=scheduled_token_counts,
+                    applied_token_budget=receipt["token_budget"],
+                    actual_schedule_observed_at_ns=(
+                        actual_schedule_observed_at_ns
+                        if actual_schedule_observed_at_ns is not None
+                        else time.monotonic_ns()
+                    ),
+                )
+        except Exception:  # noqa: BLE001 -- receipt confirmation must not break schedule()
+            return None
+
+    def propose_batch_scope_budget(
+        self,
+        *,
+        expected_config_epoch: int,
+        batch_proposal_id: str,
+        member_request_ids: list[str],
+        token_budget: int,
+        member_match: str = "client_alias",
+        require_prefill_decode_overlap: bool = False,
+        target_prefill_member_id: str | None = None,
+        peer_decode_member_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Register a short-lived proposal for one exact formed batch."""
+
+        book = self._batch_scope_proposal_book
+        if not book.enabled:
+            raise RuntimeError("batch-scope proposal channel is disabled")
+        if (
+            isinstance(expected_config_epoch, bool)
+            or not isinstance(expected_config_epoch, int)
+            or expected_config_epoch != self._runtime_config_epoch
+        ):
+            raise ValueError("batch-scope proposal config epoch is stale")
+        with self._batch_scope_proposal_lock:
+            return book.propose(
+                batch_proposal_id=batch_proposal_id,
+                member_request_ids=member_request_ids,
+                token_budget=token_budget,
+                config_epoch=expected_config_epoch,
+                created_at_ns=time.monotonic_ns(),
+                member_match=member_match,
+                require_prefill_decode_overlap=require_prefill_decode_overlap,
+                target_prefill_member_id=target_prefill_member_id,
+                peer_decode_member_id=peer_decode_member_id,
+            )
+
+    def cancel_batch_scope_proposal(self, batch_proposal_id: str) -> dict[str, Any]:
+        with self._batch_scope_proposal_lock:
+            return self._batch_scope_proposal_book.cancel(batch_proposal_id)
+
+    def get_batch_scope_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        with self._batch_scope_proposal_lock:
+            return dict(
+                batch_scope_state_of(self._batch_scope_proposal_book, after_sequence)
+            )
+
+    def get_causal_pre_decision_state(
+        self, after_sequence: int = 0
+    ) -> dict[str, Any]:
+        """Return bounded pre-decision projections captured inside ``schedule``."""
+
+        return self._causal_pre_decision_observer.state(after_sequence)
+
+    def get_native_ngram_scope_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        """Describe the separate worker-side N-gram observation surface.
+
+        N-gram lookup runs in ``GPUModelRunner`` after scheduling.  The
+        scheduler therefore cannot truthfully project the worker's current
+        token window or lookup result into ``/scope``.  Keep this explicit
+        until a worker observer and a worker RPC join are wired together.
+        """
+        if isinstance(after_sequence, bool) or not isinstance(after_sequence, int):
+            raise ValueError("native N-gram sequence cursor must be an integer")
+        if after_sequence < 0:
+            raise ValueError("native N-gram sequence cursor must be non-negative")
+        return {
+            "schema": "qbi.native-ngram-worker-state.v1",
+            "status": "NOT_READY",
+            "observer_enabled": False,
+            "latest_sequence": 0,
+            "oldest_available_sequence": 0,
+            "receipts": [],
+            "scope": "worker_pre_lookup",
+            "reason": (
+                "exact token window and lookup state live in GPUModelRunner; "
+                "EngineCore scheduler scope has no worker-side observer join"
+            ),
+            "required_fields": [
+                "request_slot",
+                "num_tokens_no_spec",
+                "current_token_window",
+                "lookup_match_length",
+                "draft_token_count",
+            ],
+            "forbidden_substitutes": [
+                "request_id",
+                "prompt_token_id_hash",
+                "scheduled_token_count",
+            ],
+            "observation_is_execution_completion": False,
+        }
 
     def _record_priority_scheduling_scope(
         self, scheduler_output: SchedulerOutput
@@ -1057,6 +1532,7 @@ class Scheduler(SchedulerInterface):
         NOTE: The request should be popped from the running queue outside of this
         method.
         """
+        qbi_preempt_start = time.monotonic_ns()
         assert request.status == RequestStatus.RUNNING, (
             "Only running requests can be preempted"
         )
@@ -1072,6 +1548,12 @@ class Scheduler(SchedulerInterface):
 
         # Put the request back to the waiting queue.
         self.waiting.prepend_request(request)
+        self._qbi_preemption_elapsed_ns = (
+            getattr(self, "_qbi_preemption_elapsed_ns", 0)
+            + time.monotonic_ns()
+            - qbi_preempt_start
+        )
+        self._qbi_preemption_count = getattr(self, '_qbi_preemption_count', 0) + 1
 
     def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
         # Advance the number of computed tokens for the request AFTER
@@ -1459,6 +1941,9 @@ class Scheduler(SchedulerInterface):
             if scheduled_spec_token_ids and generated_token_ids:
                 num_draft_tokens = len(scheduled_spec_token_ids)
                 num_accepted = len(generated_token_ids) - 1
+                self._record_suffix_acceptance(
+                    req_id, num_draft_tokens, num_accepted
+                )
                 num_rejected = num_draft_tokens - num_accepted
                 # num_computed_tokens represents the number of tokens
                 # processed in the current step, considering scheduled
@@ -1731,13 +2216,50 @@ class Scheduler(SchedulerInterface):
         for num_new, output_token_id in enumerate(new_token_ids, 1):
             request.append_output_token_ids(output_token_id)
 
+            repetition_detection = (
+                request.sampling_params.repetition_detection
+                if request.sampling_params is not None
+                else None
+            )
+            pre_stop_event = None
+            if repetition_detection is not None:
+                self._repetition_detection_observer.record_check(
+                    request_id=request.request_id,
+                    params=repetition_detection,
+                )
+                pre_stop_event = self._repetition_detection_observer.record_pre_stop(
+                    request_id=request.request_id,
+                    params=repetition_detection,
+                    # Request exposes a ConstantList view.  Freeze a plain
+                    # request-local list at the pre-stop boundary so the
+                    # observer can validate length and hash it deterministically.
+                    generated_token_ids=list(request.output_token_ids),
+                    generated_token_count=request.num_output_tokens,
+                    stop_contract="native_repetition_check_stop",
+                )
+
             # Check for stop and update request state.
             # This must be called before we make the EngineCoreOutput.
             stopped = check_stop(request, self.max_model_len)
             if stopped:
+                if repetition_detection is not None:
+                    self._repetition_detection_observer.record_finish(
+                        request_id=request.request_id,
+                        params=repetition_detection,
+                        finish_reason=request.get_finished_reason(),
+                        stop_reason=request.stop_reason,
+                        generated_token_count=request.num_output_tokens,
+                        pre_stop_event=pre_stop_event,
+                    )
                 del new_token_ids[num_new:]  # Trim new tokens if needed.
                 break
         return new_token_ids, stopped
+
+    def get_repetition_detection_state(
+        self, after_sequence: int = 0
+    ) -> dict[str, Any]:
+        """Read provider-bound pre-stop events and terminal receipts."""
+        return self._repetition_detection_observer.state(after_sequence)
 
     def _free_encoder_inputs(self, request: Request) -> None:
         cached_encoder_input_ids = self.encoder_cache_manager.get_cached_input_ids(
@@ -1986,10 +2508,55 @@ class Scheduler(SchedulerInterface):
             "prefill_admission_transition_staged": int(
                 self._staged_runtime_prefill_admission_guard is not None
             ),
+            "num_speculative_tokens": self.num_spec_tokens,
+            "startup_num_speculative_tokens": self._startup_num_spec_tokens,
+            "speculative_method": self._runtime_speculative_method,
+            "speculative_method_is_suffix": int(
+                self._qbi_speculative_method_is_suffix
+            ),
             "scheduler_reserve_full_isl": int(self.scheduler_reserve_full_isl),
             "startup_scheduler_reserve_full_isl": int(
                 self._startup_scheduler_reserve_full_isl
             ),
+        }
+
+    def _record_suffix_acceptance(
+        self, request_id: str, drafted_tokens: int, accepted_tokens: int
+    ) -> None:
+        """Record completed suffix windows without response content."""
+
+        if not self._qbi_speculative_method_is_suffix:
+            return
+        if len(self._qbi_suffix_acceptance_receipts) == 32768:
+            self._qbi_suffix_acceptance_dropped += 1
+        self._qbi_suffix_acceptance_sequence += 1
+        self._qbi_suffix_acceptance_receipts.append(
+            {
+                "sequence": self._qbi_suffix_acceptance_sequence,
+                "request_id": request_id,
+                "config_epoch": self._runtime_config_epoch,
+                "proposed_token_count": drafted_tokens,
+                "accepted_token_count": accepted_tokens,
+                "native_bounds_valid": (
+                    0 <= accepted_tokens <= drafted_tokens <= self.num_spec_tokens
+                ),
+                "observed_at_ns": time.monotonic_ns(),
+            }
+        )
+
+    def get_suffix_acceptance_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError("suffix acceptance cursor must be a non-negative integer")
+        return {
+            "schema": "qbi.dynamic-suffix-engine-state.v3",
+            "latest_sequence": self._qbi_suffix_acceptance_sequence,
+            "dropped_receipts": self._qbi_suffix_acceptance_dropped,
+            "receipts": [
+                dict(receipt)
+                for receipt in self._qbi_suffix_acceptance_receipts
+                if receipt["sequence"] > after_sequence
+            ],
+            "scheduler_limits": self.get_runtime_scheduler_limits(),
         }
 
     def _validate_runtime_scheduler_limits(
@@ -2009,7 +2576,116 @@ class Scheduler(SchedulerInterface):
         return bool(
             self._staged_runtime_scheduler_limits is not None
             or self._staged_runtime_prefill_admission_guard is not None
+            or self._staged_runtime_speculative_depth is not None
         )
+
+    def _validate_runtime_speculative_depth(self, value: int) -> None:
+        if self._runtime_speculative_method not in {"suffix", "ngram", "ngram_gpu"}:
+            raise RuntimeError(
+                "dynamic speculative depth requires resident suffix or ngram"
+            )
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("num_speculative_tokens must be an integer")
+        if not 0 <= value <= self._startup_num_spec_tokens:
+            raise ValueError("speculative depth exceeds its startup ceiling")
+        if self._runtime_speculative_method in {"ngram", "ngram_gpu"} and value not in {
+            0,
+            self._startup_num_spec_tokens,
+        }:
+            raise ValueError(
+                "resident ngram runtime depth supports only K=0 or the startup ceiling"
+            )
+
+    def prepare_runtime_speculative_depth(
+        self, value: int
+    ) -> dict[str, int | dict[str, int]]:
+        if self._has_runtime_transition_requests():
+            raise RuntimeError("speculative depth may change only at an idle epoch")
+        self._validate_runtime_speculative_depth(value)
+        return {
+            "previous": {"num_speculative_tokens": self.num_spec_tokens},
+            "requested": {"num_speculative_tokens": value},
+            "previous_epoch": self._runtime_config_epoch,
+        }
+
+    def stage_runtime_speculative_depth(
+        self, value: int
+    ) -> dict[str, int | dict[str, int]]:
+        if self._has_staged_runtime_transition():
+            raise RuntimeError("a runtime epoch transition is already staged")
+        self._validate_runtime_speculative_depth(value)
+        prepared: dict[str, int | dict[str, int]] = {
+            "previous": {"num_speculative_tokens": self.num_spec_tokens},
+            "requested": {"num_speculative_tokens": value},
+            "previous_epoch": self._runtime_config_epoch,
+        }
+        self._staged_runtime_speculative_depth = prepared
+        return prepared
+
+    def commit_staged_runtime_speculative_depth(
+        self, next_epoch: int
+    ) -> dict[str, int]:
+        prepared = self._staged_runtime_speculative_depth
+        if prepared is None:
+            raise RuntimeError("no speculative-depth epoch transition is staged")
+        if self._has_runtime_transition_requests():
+            raise RuntimeError("old scheduler epoch has not drained")
+        committed = self.commit_runtime_speculative_depth(prepared, next_epoch)
+        self._staged_runtime_speculative_depth = None
+        committed["released_pending_requests"] = self._release_pending_epoch_requests()
+        return committed
+
+    def abort_staged_runtime_speculative_depth(self) -> dict[str, int]:
+        if self._staged_runtime_speculative_depth is None:
+            raise RuntimeError("no speculative-depth epoch transition is staged")
+        self._staged_runtime_speculative_depth = None
+        return {
+            "config_epoch": self._runtime_config_epoch,
+            "num_speculative_tokens": self.num_spec_tokens,
+            "released_pending_requests": self._release_pending_epoch_requests(),
+        }
+
+    def commit_runtime_speculative_depth(
+        self,
+        prepared: dict[str, int | dict[str, int]],
+        next_epoch: int,
+    ) -> dict[str, int]:
+        if self._has_runtime_transition_requests():
+            raise RuntimeError("idle epoch was lost before speculative-depth commit")
+        if next_epoch != self._runtime_config_epoch + 1:
+            raise RuntimeError("speculative-depth epoch is stale or non-monotonic")
+        requested = prepared.get("requested")
+        if not isinstance(requested, dict):
+            raise ValueError("prepared speculative depth is missing")
+        value = requested.get("num_speculative_tokens")
+        self._validate_runtime_speculative_depth(value)
+        self.prepare_runtime_speculative_depth(value)
+        self.num_spec_tokens = value
+        self.dynamic_sd_lookup = None
+        self._runtime_config_epoch = next_epoch
+        return {
+            "config_epoch": self._runtime_config_epoch,
+            "num_speculative_tokens": self.num_spec_tokens,
+        }
+
+    def rollback_runtime_speculative_depth(
+        self, prepared: dict[str, int | dict[str, int]]
+    ) -> dict[str, int]:
+        if self._has_runtime_transition_requests():
+            raise RuntimeError("speculative-depth rollback requires an idle epoch")
+        previous = prepared.get("previous")
+        if not isinstance(previous, dict):
+            raise ValueError("rollback speculative depth is missing")
+        value = previous.get("num_speculative_tokens")
+        self._validate_runtime_speculative_depth(value)
+        self.prepare_runtime_speculative_depth(value)
+        self.num_spec_tokens = value
+        self.dynamic_sd_lookup = None
+        self._runtime_config_epoch += 1
+        return {
+            "rollback_epoch": self._runtime_config_epoch,
+            "num_speculative_tokens": self.num_spec_tokens,
+        }
 
     def prepare_runtime_scheduler_limits(
         self,

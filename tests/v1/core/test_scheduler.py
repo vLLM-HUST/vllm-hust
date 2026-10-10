@@ -41,6 +41,33 @@ from .utils import EOS_TOKEN_ID, create_requests, create_scheduler, mock_kv
 pytestmark = pytest.mark.cpu_test
 
 
+@pytest.mark.parametrize("method", ["ngram", "ngram_gpu"])
+def test_runtime_ngram_depth_supports_only_off_or_resident_ceiling(method: str):
+    scheduler = object.__new__(Scheduler)
+    scheduler._runtime_speculative_method = method
+    scheduler._startup_num_spec_tokens = 2
+
+    scheduler._validate_runtime_speculative_depth(0)
+    scheduler._validate_runtime_speculative_depth(2)
+    with pytest.raises(ValueError, match="only K=0 or the startup ceiling"):
+        scheduler._validate_runtime_speculative_depth(1)
+
+
+def test_runtime_suffix_depth_keeps_its_existing_intermediate_values():
+    scheduler = object.__new__(Scheduler)
+    scheduler._runtime_speculative_method = "suffix"
+    scheduler._startup_num_spec_tokens = 3
+
+    scheduler._validate_runtime_speculative_depth(1)
+    scheduler._validate_runtime_speculative_depth(2)
+    scheduler._validate_runtime_speculative_depth(3)
+
+
+def test_scheduler_output_binds_runtime_speculative_depth():
+    output = SchedulerOutput.make_empty()
+    assert output.runtime_num_speculative_tokens is None
+
+
 def test_add_requests():
     scheduler = create_scheduler()
     requests = create_requests(num_requests=10)

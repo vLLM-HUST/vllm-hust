@@ -3,6 +3,7 @@
 
 import hashlib
 import itertools
+import time
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -202,6 +203,38 @@ class KVCacheManager:
         )
         self._qbi_prefix_cache_receipt_sequence = 0
         self._qbi_prefix_cache_dropped_receipts = 0
+        self._qbi_prefix_cache_last_admit: dict[str, dict[str, int]] = {}
+        self._qbi_prefix_cache_last_resident_blocks = 0
+
+    def _qbi_prefix_cache_capacity_snapshot(self) -> dict[str, Any]:
+        free_blocks = int(self.block_pool.get_num_free_blocks())
+        total_blocks = getattr(self.kv_cache_config, "num_blocks", None)
+        if not isinstance(total_blocks, int) or total_blocks <= 0:
+            pool_blocks = getattr(self.block_pool, "blocks", None)
+            if isinstance(pool_blocks, (list, tuple)):
+                total_blocks = len(pool_blocks)
+        if not isinstance(total_blocks, int) or total_blocks <= 0:
+            total_blocks = None
+        resident_blocks = len(
+            getattr(self.block_pool, "cached_block_hash_to_block", {})
+        )
+        capacity_ratio = (
+            None
+            if total_blocks is None
+            else max(0.0, min(1.0, free_blocks / total_blocks))
+        )
+        page_bytes = 0
+        for group in getattr(self.kv_cache_config, "kv_cache_groups", ()):
+            spec = getattr(group, "kv_cache_spec", None)
+            value = getattr(spec, "page_size_bytes", None)
+            if isinstance(value, int) and value > 0:
+                page_bytes += value
+        return {
+            "resident_blocks": resident_blocks,
+            "resident_kv_bytes": resident_blocks * page_bytes if page_bytes > 0 else None,
+            "cache_capacity_ratio": capacity_ratio,
+            "cache_pressure_ratio": float(self.usage),
+        }
 
     @property
     def usage(self) -> float:
@@ -238,6 +271,29 @@ class KVCacheManager:
         if policy is None:
             return
         admit_write, policy_version = policy
+        namespace_sha256 = _qbi_prefix_cache_namespace_sha256(request)
+        now_ns = time.monotonic_ns()
+        snapshot = self._qbi_prefix_cache_capacity_snapshot()
+        last_admit = self._qbi_prefix_cache_last_admit.get(namespace_sha256)
+        if operation == "admit":
+            last_admit_sequence = self._qbi_prefix_cache_receipt_sequence + 1
+            reuse_distance_requests = 0
+            block_age_ms = 0.0
+        else:
+            last_admit_sequence = int(last_admit["sequence"]) if last_admit else 0
+            reuse_distance_requests = (
+                max(0, self._qbi_prefix_cache_receipt_sequence + 1 - last_admit_sequence)
+                if last_admit
+                else 0
+            )
+            block_age_ms = (
+                max(0.0, (now_ns - int(last_admit["observed_at_ns"])) / 1_000_000)
+                if last_admit
+                else 0.0
+            )
+        resident_blocks = int(snapshot["resident_blocks"])
+        eviction_count = max(0, self._qbi_prefix_cache_last_resident_blocks - resident_blocks)
+        eviction_reason = "capacity_pressure" if eviction_count else "none"
         if len(self._qbi_prefix_cache_receipts) == _QBI_PREFIX_CACHE_RECEIPT_LIMIT:
             self._qbi_prefix_cache_dropped_receipts += 1
         self._qbi_prefix_cache_receipt_sequence += 1
@@ -246,7 +302,7 @@ class KVCacheManager:
                 "schema": "qbi.session-prefix-cache-runtime-event.v1",
                 "sequence": self._qbi_prefix_cache_receipt_sequence,
                 "request_id": request.request_id,
-                "namespace_sha256": _qbi_prefix_cache_namespace_sha256(request),
+                "namespace_sha256": namespace_sha256,
                 "policy_version": policy_version,
                 "operation": operation,
                 "decision": decision,
@@ -256,8 +312,24 @@ class KVCacheManager:
                 "reused_blocks": reused_blocks,
                 "newly_cached_blocks": newly_cached_blocks,
                 "block_hash_count": len(request.block_hashes),
+                "resident_blocks": resident_blocks,
+                "resident_kv_bytes": snapshot["resident_kv_bytes"],
+                "cache_capacity_ratio": snapshot["cache_capacity_ratio"],
+                "cache_pressure_ratio": snapshot["cache_pressure_ratio"],
+                "eviction_count": eviction_count,
+                "eviction_reason": eviction_reason,
+                "block_age_ms": block_age_ms,
+                "last_admit_sequence": last_admit_sequence,
+                "reuse_distance_requests": reuse_distance_requests,
+                "observed_at_ns": now_ns,
             }
         )
+        self._qbi_prefix_cache_last_resident_blocks = resident_blocks
+        if operation == "admit" and decision == "allow" and newly_cached_blocks > 0:
+            self._qbi_prefix_cache_last_admit[namespace_sha256] = {
+                "sequence": self._qbi_prefix_cache_receipt_sequence,
+                "observed_at_ns": now_ns,
+            }
 
     def take_qbi_prefix_cache_policy_receipts(self) -> dict[str, Any]:
         """Drain bounded prompt-free APC policy receipts for one audit window."""
@@ -267,10 +339,48 @@ class KVCacheManager:
             "capacity": _QBI_PREFIX_CACHE_RECEIPT_LIMIT,
             "dropped_receipts": self._qbi_prefix_cache_dropped_receipts,
             "receipts": list(self._qbi_prefix_cache_receipts),
+            "runtime_event_contract": {
+                "provider_request_bound": True,
+                "schema": "qbi.session-prefix-cache-runtime-event.v1",
+                "fields": [
+                    "sequence", "request_id", "namespace_sha256", "policy_version",
+                    "operation", "decision", "read_allowed", "write_allowed",
+                    "hit_tokens", "reused_blocks", "newly_cached_blocks",
+                    "resident_blocks", "resident_kv_bytes", "cache_capacity_ratio",
+                    "cache_pressure_ratio", "eviction_count", "eviction_reason",
+                    "block_age_ms", "last_admit_sequence", "reuse_distance_requests",
+                    "observed_at_ns",
+                ],
+            },
         }
         self._qbi_prefix_cache_receipts.clear()
         self._qbi_prefix_cache_dropped_receipts = 0
         return receipt
+
+    def get_qbi_prefix_cache_pre_action_state(self) -> dict[str, Any]:
+        """Return aggregate APC capacity state without request or cache keys."""
+
+        return {
+            "schema": "qbi.session-prefix-cache-pre-action-state.v1",
+            "cache_usage_ratio": self.usage,
+            "free_gpu_blocks": self.block_pool.get_num_free_blocks(),
+            "cached_block_hash_count": len(
+                self.block_pool.cached_block_hash_to_block
+            ),
+            "runtime_receipt_contract": {
+                "provider_request_bound": True,
+                "schema": "qbi.session-prefix-cache-runtime-event.v1",
+                "fields": [
+                    "sequence", "request_id", "namespace_sha256", "policy_version",
+                    "operation", "decision", "read_allowed", "write_allowed",
+                    "hit_tokens", "reused_blocks", "newly_cached_blocks",
+                    "resident_blocks", "resident_kv_bytes", "cache_capacity_ratio",
+                    "cache_pressure_ratio", "eviction_count", "eviction_reason",
+                    "block_age_ms", "last_admit_sequence", "reuse_distance_requests",
+                    "observed_at_ns",
+                ],
+            },
+        }
 
     def _qbi_cached_block_count(self, request_id: str) -> int:
         return sum(

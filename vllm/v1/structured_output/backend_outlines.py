@@ -54,6 +54,37 @@ class OutlinesBackend(StructuredOutputBackend):
         self.vocabulary = get_outlines_vocabulary(self.tokenizer)
         self.cache = get_outlines_cache()
 
+    def compiled_grammar_cache_state(self) -> dict[str, object]:
+        """Report whether the provider index cache is available before compile.
+
+        Outlines supports both an entry-count-bounded in-memory LRU and an
+        unbounded disk cache. Neither exposes a comparable byte size/limit, so
+        those fields stay missing. This is cache capability/readiness only; it
+        does not claim that the current request's grammar is already cached.
+        """
+        source = "vllm.v1.structured_output.backend_outlines.OutlinesBackend.cache"
+        cache = getattr(self, "cache", None)
+        if cache is None:
+            cache_ready = None
+        else:
+            cache_ready = all(
+                callable(getattr(cache, name, None))
+                for name in ("__contains__", "__getitem__", "__setitem__")
+            )
+        return {
+            "cache_ready": cache_ready,
+            "cache_size_bytes": None,
+            "cache_limit_bytes": None,
+            "source_field": source,
+            "cache_ready_source_field": source,
+            "cache_size_source_field": (
+                source + ".byte_size_unavailable"
+            ),
+            "cache_limit_source_field": (
+                source + ".byte_limit_unavailable"
+            ),
+        }
+
     def _compile_index(
         self, regex_string: str, vocabulary: OutlinesVocabulary
     ) -> oc.Index:

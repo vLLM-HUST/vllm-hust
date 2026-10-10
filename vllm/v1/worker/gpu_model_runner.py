@@ -193,6 +193,10 @@ from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.kv_connector_model_runner_mixin import KVConnectorModelRunnerMixin
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
+from vllm.v1.worker.native_ngram_observer import NativeNgramWorkerObserver
+from vllm.v1.worker.native_suffix_proposal_observer import (
+    NativeSuffixProposalObserver,
+)
 from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
     check_ubatch_thresholds,
@@ -217,6 +221,35 @@ if TYPE_CHECKING:
     from vllm.v1.worker.encoder_cudagraph import EncoderCudaGraphManager
 
 logger = init_logger(__name__)
+
+
+def _should_run_speculative_drafter(
+    speculative_config: Any,
+    scheduler_output: Any,
+    startup_num_speculative_tokens: int,
+) -> bool:
+    """Honor scheduler-owned N-gram depth before invoking the proposer."""
+    if speculative_config is None:
+        return False
+    if getattr(speculative_config, "method", None) not in {"ngram", "ngram_gpu"}:
+        return True
+    runtime_depth = getattr(
+        scheduler_output, "runtime_num_speculative_tokens", None
+    )
+    if runtime_depth is None:
+        return True
+    if (
+        isinstance(runtime_depth, bool)
+        or not isinstance(runtime_depth, int)
+        or runtime_depth < 0
+        or runtime_depth > startup_num_speculative_tokens
+    ):
+        raise RuntimeError("scheduler output has an invalid N-gram runtime depth")
+    if runtime_depth not in {0, startup_num_speculative_tokens}:
+        raise RuntimeError("scheduler output has an unsupported N-gram runtime depth")
+    # At K=0, sample_tokens leaves the draft-token state empty. No CPU or GPU
+    # prompt lookup is invoked and take_draft_token_ids returns None.
+    return runtime_depth > 0
 
 AttnMetadataDict: TypeAlias = dict[str, AttentionMetadata]
 # list when ubatching is enabled
@@ -410,6 +443,12 @@ class GPUModelRunner(
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
         self.observability_config = vllm_config.observability_config
+        # This worker-local observer is disabled by default and is only a
+        # bounded read-only capture surface when explicitly enabled.
+        self._native_ngram_observer = NativeNgramWorkerObserver.from_environment()
+        self._native_suffix_proposal_observer = (
+            NativeSuffixProposalObserver.from_environment()
+        )
 
         model_config = self.model_config
         cache_config = self.cache_config
@@ -528,7 +567,9 @@ class GPUModelRunner(
             if self.speculative_config.method == "ngram":
                 from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 
-                self.drafter = NgramProposer(self.vllm_config)
+                self.drafter = NgramProposer(
+                    self.vllm_config, observer=self._native_ngram_observer
+                )
             elif self.speculative_config.uses_draft_model():
                 self.drafter = DraftModelProposer(
                     vllm_config=self.vllm_config,
@@ -556,7 +597,9 @@ class GPUModelRunner(
                 self.drafter = DFlashProposer(self.vllm_config, self.device, self)
                 self.use_aux_hidden_state_outputs = True
             elif self.speculative_config.method == "suffix":
-                self.drafter = SuffixDecodingProposer(self.vllm_config)
+                self.drafter = SuffixDecodingProposer(
+                    self.vllm_config, observer=self._native_suffix_proposal_observer
+                )
             elif self.speculative_config.use_eagle():
                 self.drafter = EagleProposer(self.vllm_config, self.device, self)
                 if self.speculative_config.method == "eagle3":
@@ -4223,7 +4266,9 @@ class GPUModelRunner(
                 self._copy_draft_token_ids_to_cpu(scheduler_output)
 
         propose_drafts_after_bookkeeping = False
-        if spec_config is not None:
+        if _should_run_speculative_drafter(
+            spec_config, scheduler_output, self.num_spec_tokens
+        ):
             # Decide whether to run the drafter or zero out draft tokens.
             input_fits_in_drafter = spec_decode_common_attn_metadata is not None and (
                 spec_decode_common_attn_metadata.max_seq_len + self.num_spec_tokens
@@ -4577,6 +4622,8 @@ class GPUModelRunner(
                 self.input_batch.num_tokens_no_spec,
                 self.input_batch.token_ids_cpu,
                 slot_mappings=slot_mappings,
+                config_epoch=getattr(scheduler_output, "runtime_config_epoch", None),
+                request_ids=self.input_batch.req_ids,
             )
         elif spec_config.use_ngram_gpu():
             assert isinstance(self.drafter, NgramProposerGPU)
@@ -4603,6 +4650,8 @@ class GPUModelRunner(
                 self.token_ids_gpu_tensor[:batch_size],
                 valid_sampled_token_ids_gpu,
                 valid_sampled_tokens_count,
+                config_epoch=getattr(scheduler_output, "runtime_config_epoch", None),
+                request_ids=self.input_batch.req_ids[:batch_size],
             )
 
             # Cache valid draft counts for scheduler-side trimming.
@@ -4624,6 +4673,7 @@ class GPUModelRunner(
                 self.input_batch,
                 sampled_token_ids,
                 slot_mappings=slot_mappings,
+                config_epoch=getattr(scheduler_output, "runtime_config_epoch", None),
             )
         elif spec_config.method == "medusa":
             assert isinstance(sampled_token_ids, list)
@@ -4802,6 +4852,28 @@ class GPUModelRunner(
             )
 
         return draft_token_ids
+
+    def get_native_ngram_scope_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        """Return worker-local N-gram receipts for EngineCore RPC joining."""
+        return self._native_ngram_observer.state(after_sequence)
+
+    def get_native_suffix_proposal_state(self, after_sequence: int = 0) -> dict[str, Any]:
+        """Return worker-local S4 pre-verification proposal receipts."""
+        return self._native_suffix_proposal_observer.state(after_sequence)
+
+    def reset_native_suffix_cache(self) -> dict[str, int]:
+        """Reset cached Suffix history between the two arms of a TRAIN pair."""
+        if not isinstance(self.drafter, SuffixDecodingProposer):
+            raise RuntimeError("the active speculative method is not Suffix")
+        observer = self._native_suffix_proposal_observer
+        if not observer.enabled:
+            raise RuntimeError("the native Suffix TRAIN observer is not enabled")
+        # Ascend's NPUModelRunner constructs its own Suffix proposer wrapper after
+        # the base runner initializes this observer. Rebind at the runner RPC
+        # boundary so matched-pair cache reset and proposal capture share the
+        # same observer instance.
+        self.drafter.observer = observer
+        return self.drafter.reset_cache()
 
     def update_config(self, overrides: dict[str, Any]) -> None:
         allowed_config_names = {"load_config", "model_config"}

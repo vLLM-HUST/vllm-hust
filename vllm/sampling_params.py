@@ -466,6 +466,17 @@ class SamplingParams(
         # eos_token_id is added to this by the engine
         self._all_stop_token_ids.update(self.stop_token_ids)
 
+        if self.extra_args and self.extra_args.get("qbi_prefix_cache_policy_version"):
+            bypass = self.extra_args.get("kvplane_bypass_prefix_cache")
+            if bypass is not None:
+                if isinstance(bypass, str) and bypass.lower() in {"true", "false"}:
+                    bypass = bypass.lower() == "true"
+                if not isinstance(bypass, bool):
+                    raise ValueError("kvplane_bypass_prefix_cache must be boolean-like")
+                if self.skip_reading_prefix_cache is not None and self.skip_reading_prefix_cache != bypass:
+                    raise ValueError("conflicting prefix-cache bypass controls")
+                self.skip_reading_prefix_cache = bypass
+
         if self.skip_reading_prefix_cache is None:
             # If prefix caching is enabled,
             # the output of prompt logprobs may less than n_prompt_tokens,

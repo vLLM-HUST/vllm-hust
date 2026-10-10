@@ -32,6 +32,12 @@ def _scheduler() -> Scheduler:
     scheduler._startup_scheduler_reserve_full_isl = True
     scheduler.scheduler_reserve_full_isl = True
     scheduler._staged_runtime_prefill_admission_guard = None
+    scheduler._staged_runtime_speculative_depth = None
+    scheduler.num_spec_tokens = 0
+    scheduler._startup_num_spec_tokens = 0
+    scheduler._runtime_speculative_method = None
+    scheduler._runtime_speculative_method_is_suffix = False
+    scheduler._qbi_speculative_method_is_suffix = False
     scheduler._pending_epoch_requests = []
     scheduler._pause_state = PauseState.UNPAUSED
     scheduler.running = []
@@ -157,6 +163,10 @@ def test_priority_observer_rejects_scoped_request_on_fcfs() -> None:
         )
 
 
+
+
+
+
 def test_runtime_scheduler_limits_commit_and_rollback_without_restart() -> None:
     scheduler = _scheduler()
     prepared = scheduler.prepare_runtime_scheduler_limits(2048, 8)
@@ -239,47 +249,6 @@ def test_staged_epoch_releases_requests_only_after_old_epoch_drains() -> None:
     assert scheduler._runtime_config_epoch == 1
 
 
-class _FinishedRequest:
-    def __init__(self, status: RequestStatus, output_tokens: int = 7) -> None:
-        self.status = status
-        self.output_token_ids = [1] * output_tokens
-
-
-@pytest.mark.parametrize(
-    "status",
-    [RequestStatus.FINISHED_ABORTED, RequestStatus.FINISHED_ERROR],
-)
-def test_past_future_history_excludes_abort_and_error_terminals(
-    monkeypatch: pytest.MonkeyPatch, status: RequestStatus
-) -> None:
-    scheduler = object.__new__(PastFutureSchedulerPort)
-    scheduler._past_future_policy = PastFuturePolicy(seed=1, initial_output_tokens=512)
-    before = tuple(scheduler._past_future_policy.history_output_tokens)
-    monkeypatch.setattr(Scheduler, "_free_request", lambda *_args, **_kwargs: None)
-
-    scheduler._free_request(_FinishedRequest(status))
-
-    assert tuple(scheduler._past_future_policy.history_output_tokens) == before
-
-
-@pytest.mark.parametrize(
-    "status",
-    [
-        RequestStatus.FINISHED_STOPPED,
-        RequestStatus.FINISHED_LENGTH_CAPPED,
-        RequestStatus.FINISHED_REPETITION,
-    ],
-)
-def test_past_future_history_records_successful_generation_terminals(
-    monkeypatch: pytest.MonkeyPatch, status: RequestStatus
-) -> None:
-    scheduler = object.__new__(PastFutureSchedulerPort)
-    scheduler._past_future_policy = PastFuturePolicy(seed=1, initial_output_tokens=512)
-    monkeypatch.setattr(Scheduler, "_free_request", lambda *_args, **_kwargs: None)
-
-    scheduler._free_request(_FinishedRequest(status, output_tokens=37))
-
-    assert tuple(scheduler._past_future_policy.history_output_tokens)[-1] == 37
 def test_prefill_admission_guard_commit_and_rollback_without_restart() -> None:
     scheduler = _scheduler()
     prepared = scheduler.prepare_runtime_prefill_admission_guard(False)
@@ -341,3 +310,46 @@ def test_engine_core_prefill_admission_guard_receipt_is_effective() -> None:
         proof["prefill_admission_guard_receipt"]["limits"]["scheduler_reserve_full_isl"]
         == 0
     )
+
+
+class _FinishedRequest:
+    def __init__(self, status: RequestStatus, output_tokens: int = 7) -> None:
+        self.status = status
+        self.output_token_ids = [1] * output_tokens
+
+
+@pytest.mark.parametrize(
+    "status",
+    [RequestStatus.FINISHED_ABORTED, RequestStatus.FINISHED_ERROR],
+)
+def test_past_future_history_excludes_abort_and_error_terminals(
+    monkeypatch: pytest.MonkeyPatch, status: RequestStatus
+) -> None:
+    scheduler = object.__new__(PastFutureSchedulerPort)
+    scheduler._past_future_policy = PastFuturePolicy(seed=1, initial_output_tokens=512)
+    before = tuple(scheduler._past_future_policy.history_output_tokens)
+    monkeypatch.setattr(Scheduler, "_free_request", lambda *_args, **_kwargs: None)
+
+    scheduler._free_request(_FinishedRequest(status))
+
+    assert tuple(scheduler._past_future_policy.history_output_tokens) == before
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        RequestStatus.FINISHED_STOPPED,
+        RequestStatus.FINISHED_LENGTH_CAPPED,
+        RequestStatus.FINISHED_REPETITION,
+    ],
+)
+def test_past_future_history_records_successful_generation_terminals(
+    monkeypatch: pytest.MonkeyPatch, status: RequestStatus
+) -> None:
+    scheduler = object.__new__(PastFutureSchedulerPort)
+    scheduler._past_future_policy = PastFuturePolicy(seed=1, initial_output_tokens=512)
+    monkeypatch.setattr(Scheduler, "_free_request", lambda *_args, **_kwargs: None)
+
+    scheduler._free_request(_FinishedRequest(status, output_tokens=37))
+
+    assert tuple(scheduler._past_future_policy.history_output_tokens)[-1] == 37

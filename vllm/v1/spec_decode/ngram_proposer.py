@@ -10,7 +10,7 @@ from vllm.config import VllmConfig
 
 
 class NgramProposer:
-    def __init__(self, vllm_config: VllmConfig):
+    def __init__(self, vllm_config: VllmConfig, observer=None):
         assert vllm_config.speculative_config is not None
         assert vllm_config.speculative_config.prompt_lookup_min is not None
         assert vllm_config.speculative_config.prompt_lookup_max is not None
@@ -25,6 +25,7 @@ class NgramProposer:
         self.k = vllm_config.speculative_config.num_speculative_tokens
         # Maximum length of the model.
         self.max_model_len = vllm_config.model_config.max_model_len
+        self.observer = observer
 
         # Pre-allocate buffers for numba batch propose.
         max_num_seqs = vllm_config.scheduler_config.max_num_seqs
@@ -141,6 +142,8 @@ class NgramProposer:
         slot_mappings: dict[str, torch.Tensor]
         | list[dict[str, torch.Tensor]]
         | None = None,  # unused
+        config_epoch: int | None = None,
+        request_ids: list[str] | None = None,
     ) -> list[list[int]]:
         assert num_speculative_tokens <= self.k
 
@@ -159,6 +162,34 @@ class NgramProposer:
 
             valid_ngram_requests.append(i)
 
+        observer_sequences = {}
+        if self.observer is not None and getattr(self.observer, "enabled", False):
+            ids = request_ids or [""] * len(sampled_token_ids)
+            rows = []
+            corpora = []
+            slots = []
+            for index in valid_ngram_requests:
+                token_count = num_tokens_no_spec[index]
+                count = max(0, int(token_count))
+                context = token_ids_cpu[index, :count].tolist()
+                rows.append(context)
+                corpora.append(context)
+                slots.append(index)
+            observer_sequences = self.observer.record_pre_lookup_batch(
+                request_ids=[ids[index] for index in slots],
+                request_slots=slots,
+                current_token_ids=rows,
+                lookup_token_ids=corpora,
+                draft_config={
+                    "method": "ngram",
+                    "num_speculative_tokens": int(self.k),
+                    "prompt_lookup_min": int(self.min_n),
+                    "prompt_lookup_max": int(self.max_n),
+                },
+                config_epoch=config_epoch,
+                backend="cpu",
+            )
+
         draft_token_ids = self.batch_propose(
             len(sampled_token_ids),
             valid_ngram_requests,
@@ -166,6 +197,11 @@ class NgramProposer:
             token_ids_cpu,
             num_speculative_tokens,
         )
+        if observer_sequences:
+            self.observer.record_lookup_results(
+                observer_sequences,
+                {index: len(tokens) for index, tokens in enumerate(draft_token_ids)},
+            )
 
         return draft_token_ids
 

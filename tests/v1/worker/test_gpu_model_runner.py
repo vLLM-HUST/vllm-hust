@@ -40,12 +40,48 @@ from vllm.v1.kv_cache_interface import (
 )
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.worker.gpu_input_batch import InputBatch
-from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+from vllm.v1.worker.gpu_model_runner import (
+    GPUModelRunner,
+    _should_run_speculative_drafter,
+)
 from vllm.v1.worker.utils import AttentionGroup, select_common_block_size
 
 BLOCK_SIZE = 16
 NUM_BLOCKS = 10
 DEVICE_TYPE = current_platform.device_type
+
+
+@pytest.mark.parametrize(
+    "method,runtime_depth,expected",
+    [
+        ("ngram", 0, False),
+        ("ngram", 2, True),
+        ("ngram_gpu", 0, False),
+        ("ngram_gpu", 2, True),
+        ("suffix", 0, True),
+    ],
+)
+def test_drafter_gate_bypasses_ngram_only_at_runtime_k_zero(
+    method: str, runtime_depth: int, expected: bool
+):
+    spec = SimpleNamespace(method=method)
+    scheduler_output = SimpleNamespace(
+        runtime_num_speculative_tokens=runtime_depth
+    )
+    assert (
+        _should_run_speculative_drafter(spec, scheduler_output, 2) is expected
+    )
+
+
+def test_drafter_gate_preserves_legacy_outputs_and_rejects_partial_ngram_depth():
+    spec = SimpleNamespace(method="ngram")
+    assert _should_run_speculative_drafter(spec, SimpleNamespace(), 2) is True
+    with pytest.raises(RuntimeError, match="unsupported N-gram runtime depth"):
+        _should_run_speculative_drafter(
+            spec,
+            SimpleNamespace(runtime_num_speculative_tokens=1),
+            2,
+        )
 
 
 def initialize_kv_cache(runner: GPUModelRunner):

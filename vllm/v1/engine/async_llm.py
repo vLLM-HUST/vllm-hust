@@ -939,6 +939,15 @@ class AsyncLLM(EngineClient):
             method, timeout, args, kwargs
         )
 
+    async def call_utility_async(self, method: str, *args: Any) -> Any:
+        """Expose read-only EngineCore utility methods to internal API routes.
+
+        QBI state routes use the same typed EngineCore utility channel as the
+        native client instead of worker collective RPC, because scheduler and
+        KV-manager state is owned by EngineCore.
+        """
+        return await self.engine_core.call_utility_async(method, *args)
+
     async def wait_for_requests_to_drain(self, drain_timeout: int = 300):
         """Wait for all requests to be drained."""
         start_time = time.time()

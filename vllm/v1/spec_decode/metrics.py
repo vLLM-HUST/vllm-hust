@@ -42,7 +42,24 @@ class SpecDecodingStats:
         self.num_drafts += 1
         self.num_draft_tokens += num_draft_tokens
         self.num_accepted_tokens += num_accepted_tokens
-        assert num_accepted_tokens <= self.num_spec_tokens
+        # Local ANISE carrier patch (not an upstream contribution).
+        #
+        # The per-position list is sized by the depth in force when this object was
+        # created, while a runtime depth change (dynamic_speculative_depth stage ->
+        # commit -> verify) makes a later step's accepted count exceed that size.
+        # The original ``assert num_accepted_tokens <= self.num_spec_tokens``
+        # therefore killed EngineCore on a bookkeeping mismatch -- see
+        # work/replay_validity/suffix_endpoints_20260919_v1/
+        # DEFECT_DYNAMIC_SPEC_DEPTH_METRICS_20260920_V1.json.  Grow the list
+        # instead, so every accepted token is still counted and a depth change
+        # cannot take the lane down.  A depth-relative bound is not checkable here
+        # (the accepted count is an observation, not a choice); the scheduler keeps
+        # its own per-request ``native_bounds_valid`` receipt for auditing.
+        if num_accepted_tokens > len(self.num_accepted_tokens_per_pos):
+            self.num_accepted_tokens_per_pos.extend(
+                [0] * (num_accepted_tokens - len(self.num_accepted_tokens_per_pos))
+            )
+            self.num_spec_tokens = max(self.num_spec_tokens, num_accepted_tokens)
         for i in range(num_accepted_tokens):
             self.num_accepted_tokens_per_pos[i] += 1
         for i in range(num_draft_tokens):
@@ -98,7 +115,14 @@ class SpecDecodingLogging:
         # Conventionally, mean acceptance length includes the bonus token
         mean_acceptance_length = 1 + (num_accepted_tokens / num_drafts)
 
-        pos_matrix = np.array(self.accepted_tokens_per_pos_lists)
+        # Local ANISE carrier patch (not an upstream contribution): a depth change
+        # makes the observed per-position lists ragged, and np.array on ragged rows
+        # is an error in current numpy.  Right-pad with zeros to the widest row so
+        # the per-position rates stay well defined.
+        width = max(len(row) for row in self.accepted_tokens_per_pos_lists)
+        pos_matrix = np.array(
+            [list(row) + [0] * (width - len(row)) for row in self.accepted_tokens_per_pos_lists]
+        )
         acceptance_rates = np.sum(pos_matrix, axis=0) / num_drafts
         rates_str = ", ".join(f"{p:.3f}" for p in acceptance_rates)
 
@@ -213,7 +237,15 @@ class SpecDecodingProm:
         self.counter_spec_decode_num_accepted_tokens[engine_idx].inc(
             spec_decoding_stats.num_accepted_tokens
         )
+        # Local ANISE carrier patch (not an upstream contribution): the per-position
+        # counters are created from the STARTUP depth, while the stats object is
+        # sized by the LIVE depth, so a runtime depth reduction leaves this list
+        # longer than the stats and the original indexing raised IndexError inside
+        # the output handler.  Stop at the shorter of the two.
+        per_pos = spec_decoding_stats.num_accepted_tokens_per_pos
         for pos, counter in enumerate(
             self.counter_spec_decode_num_accepted_tokens_per_pos[engine_idx]
         ):
-            counter.inc(spec_decoding_stats.num_accepted_tokens_per_pos[pos])
+            if pos >= len(per_pos):
+                break
+            counter.inc(per_pos[pos])

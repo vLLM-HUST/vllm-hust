@@ -717,6 +717,26 @@ class Worker(WorkerBase):
         """Get encoder timing stats from model runner."""
         return self.model_runner.get_encoder_timing_stats()
 
+    def get_native_ngram_scope_state(self, after_sequence: int = 0) -> dict:
+        """Return the worker-side pre-lookup observer state for EngineCore."""
+        state = self.model_runner.get_native_ngram_scope_state(after_sequence)
+        if isinstance(state, dict):
+            state = dict(state)
+            state["worker_rank"] = self.rank
+        return state
+
+    def get_native_suffix_proposal_state(self, after_sequence: int = 0) -> dict:
+        """Return worker-local S4 candidate features before verifier admission."""
+        state = self.model_runner.get_native_suffix_proposal_state(after_sequence)
+        if isinstance(state, dict):
+            state = dict(state)
+            state["worker_rank"] = self.rank
+        return state
+
+    def reset_native_suffix_cache(self) -> dict[str, int]:
+        """Clear worker-local Suffix history for a matched TRAIN pair."""
+        return self.model_runner.reset_native_suffix_cache()
+
     def annotate_profile(self, scheduler_output):
         # add trace annotation so that we can easily distinguish
         # context/generation request numbers in each iteration.

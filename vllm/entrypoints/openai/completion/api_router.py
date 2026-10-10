@@ -15,6 +15,7 @@ from vllm.entrypoints.openai.completion.serving import OpenAIServingCompletion
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse
 from vllm.entrypoints.openai.orca_metrics import metrics_header
 from vllm.entrypoints.openai.utils import validate_json_request
+from vllm.entrypoints.serve.rpc.s1_s5_observer import record_request_pre_action
 from vllm.entrypoints.utils import (
     load_aware_call,
     with_cancellation,
@@ -50,6 +51,12 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     handler = completion(raw_request)
     if handler is None:
         raise NotImplementedError("The model does not support Completions API")
+
+    record_request_pre_action(
+        request,
+        path=raw_request.url.path,
+        provider_context=handler,
+    )
 
     generator = await handler.create_completion(request, raw_request)
 
