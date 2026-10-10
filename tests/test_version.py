@@ -1,11 +1,58 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from packaging.version import Version
 
 from vllm import version
+
+ROOT = Path(__file__).resolve().parents[1]
+HUST_VERSION_METADATA = ROOT / "upstream_version.json"
+
+
+def _git(*args: str) -> str:
+    return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True).strip()
+
+
+def test_hust_version_metadata_is_well_formed():
+    metadata = json.loads(HUST_VERSION_METADATA.read_text(encoding="utf-8"))
+
+    assert set(metadata) == {
+        "release_version",
+        "upstream_version",
+        "upstream_commit",
+    }
+    release = Version(metadata["release_version"])
+    upstream = Version(metadata["upstream_version"])
+    assert release.release[:2] == upstream.release[:2]
+    assert len(metadata["upstream_commit"]) == 40
+    int(metadata["upstream_commit"], 16)
+
+
+def test_hust_upstream_anchor_tracks_the_latest_main_sync():
+    if not (ROOT / ".git").exists() and not (ROOT / ".git").is_file():
+        return
+
+    merge = next(
+        commit
+        for commit in _git(
+            "log",
+            "--first-parent",
+            "--merges",
+            "--format=%H%x09%s",
+        ).splitlines()
+        if "Merge upstream vllm-project/vllm main" in commit
+    )
+    merge_commit = merge.split("\t", 1)[0]
+    upstream_parent = _git("rev-parse", f"{merge_commit}^2")
+    metadata = json.loads(HUST_VERSION_METADATA.read_text(encoding="utf-8"))
+
+    assert metadata["upstream_commit"] == upstream_parent
 
 
 def test_version_is_defined():
