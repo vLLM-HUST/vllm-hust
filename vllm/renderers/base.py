@@ -2,10 +2,12 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import asyncio
 import copy
+import os
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
+from contextlib import nullcontext
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Generic, overload
 
@@ -67,6 +69,35 @@ if TYPE_CHECKING:
     )
 
 logger = init_logger(__name__)
+
+
+def _qbi_preparation_phase(phase: str):
+    if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") != "1":
+        return lambda function: function
+    from vllm_quality_bounded_inference.preparation_phase_observation import (
+        observe_preparation_phase,
+    )
+
+    return observe_preparation_phase(
+        phase=phase,
+        producer_ref=f"vllm.renderers.base.BaseRenderer.{phase}",
+    )
+
+
+def _qbi_preparation_context(phase: str, producer_ref: str):
+    if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") != "1":
+        return nullcontext()
+    from vllm_quality_bounded_inference.preparation_phase_observation import (
+        preparation_phase,
+    )
+    from vllm_quality_bounded_inference.request_identity_observer import (
+        current_request_observation,
+    )
+
+    recorder = current_request_observation()
+    if recorder is None:
+        return nullcontext()
+    return preparation_phase(recorder, phase=phase, producer_ref=producer_ref)
 
 
 _T = TypeVar("_T", bound=TokenizerLike, default=TokenizerLike)
@@ -556,6 +587,7 @@ class BaseRenderer(ABC, Generic[_T]):
 
         return await self._tokenize_singleton_prompt_async(prompt, params)
 
+    @_qbi_preparation_phase("tokenize")
     async def tokenize_prompts_async(
         self,
         prompts: Sequence[DictPrompt],
@@ -865,6 +897,7 @@ class BaseRenderer(ABC, Generic[_T]):
 
         return engine_input
 
+    @_qbi_preparation_phase("prepare_input")
     async def process_for_engine_async(
         self,
         prompt: TokPrompt,
@@ -988,16 +1021,17 @@ class BaseRenderer(ABC, Generic[_T]):
         if tok_params is None:
             tok_params = self.default_chat_tok_params
 
-        rendered = [
-            self.render_messages_async(conversation, chat_params)
-            for conversation in conversations
-        ]
-
         out_conversations = list[list["ConversationMessage"]]()
         dict_prompts = list[DictPrompt]()
-        for conv, prompt in await asyncio.gather(*rendered):
-            out_conversations.append(conv)
-            dict_prompts.append(prompt)
+        producer = f"{type(self).__module__}.{type(self).__qualname__}.render_messages_async"
+        with _qbi_preparation_context("render_template", producer):
+            rendered = [
+                self.render_messages_async(conversation, chat_params)
+                for conversation in conversations
+            ]
+            for conv, prompt in await asyncio.gather(*rendered):
+                out_conversations.append(conv)
+                dict_prompts.append(prompt)
 
         tok_prompts = await self.tokenize_prompts_async(dict_prompts, tok_params)
 
