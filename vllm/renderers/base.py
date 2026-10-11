@@ -71,7 +71,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
-def _qbi_preparation_phase(phase: str):
+def _qbi_preparation_phase(phase: str, producer_ref: str):
     if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") != "1":
         return lambda function: function
     from vllm_quality_bounded_inference.preparation_phase_observation import (
@@ -80,7 +80,7 @@ def _qbi_preparation_phase(phase: str):
 
     return observe_preparation_phase(
         phase=phase,
-        producer_ref=f"vllm.renderers.base.BaseRenderer.{phase}",
+        producer_ref=producer_ref,
     )
 
 
@@ -587,7 +587,9 @@ class BaseRenderer(ABC, Generic[_T]):
 
         return await self._tokenize_singleton_prompt_async(prompt, params)
 
-    @_qbi_preparation_phase("tokenize")
+    @_qbi_preparation_phase(
+        "tokenize", "vllm.renderers.base.BaseRenderer.tokenize_prompts_async"
+    )
     async def tokenize_prompts_async(
         self,
         prompts: Sequence[DictPrompt],
@@ -897,7 +899,9 @@ class BaseRenderer(ABC, Generic[_T]):
 
         return engine_input
 
-    @_qbi_preparation_phase("prepare_input")
+    @_qbi_preparation_phase(
+        "prepare_input", "vllm.renderers.base.BaseRenderer.process_for_engine_async"
+    )
     async def process_for_engine_async(
         self,
         prompt: TokPrompt,
