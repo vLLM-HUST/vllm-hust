@@ -14,12 +14,13 @@ from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.sampling_params import SamplingParams
 from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.v1.engine.llm_engine import LLMEngine
-from vllm.v1.executor.abstract import Executor
+from vllm.v1.executor.abstract import Executor, _propagate_compilation_times
 from vllm.v1.executor.multiproc_executor import MultiprocExecutor
 from vllm.v1.executor.uniproc_executor import (
     ExecutorWithExternalLauncher,
     UniProcExecutor,
 )
+from vllm.v1.worker.worker_base import CompilationTimes
 
 
 class Mock: ...
@@ -41,6 +42,40 @@ def test_supports_async_scheduling_executor_with_external_launcher():
 
 def test_supports_async_scheduling_multiproc_executor():
     assert MultiprocExecutor.supports_async_scheduling() is True
+
+
+def test_propagate_structured_worker_compilation_times():
+    config = type(
+        "Config", (), {"compilation_time": 0.0, "encoder_compilation_time": 0.0}
+    )()
+    _propagate_compilation_times(
+        config,
+        [
+            CompilationTimes(language_model=1.25, encoder=0.5),
+            CompilationTimes(language_model=2.0, encoder=0.25),
+        ],
+    )
+    assert config.compilation_time == 2.0
+    assert config.encoder_compilation_time == 0.5
+
+
+def test_propagate_scalar_hust_worker_compilation_time_without_fabricating_encoder():
+    config = type(
+        "Config", (), {"compilation_time": 0.0, "encoder_compilation_time": 0.0}
+    )()
+    _propagate_compilation_times(config, [0.4, 0.7])
+    assert config.compilation_time == 0.7
+    assert config.encoder_compilation_time == 0.0
+
+
+def test_reject_mixed_or_invalid_worker_compilation_time_contracts():
+    config = type(
+        "Config", (), {"compilation_time": 0.0, "encoder_compilation_time": 0.0}
+    )()
+    with pytest.raises(
+        TypeError, match="all CompilationTimes or finite non-negative scalars"
+    ):
+        _propagate_compilation_times(config, [0.4, "unknown"])
 
 
 class CustomMultiprocExecutor(MultiprocExecutor):

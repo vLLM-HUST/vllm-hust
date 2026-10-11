@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import math
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -32,6 +33,36 @@ logger = init_logger(__name__)
 _R = TypeVar("_R")
 
 FailureCallback = Callable[[], None]
+
+
+def _propagate_compilation_times(compilation_config, worker_results: list[object]) -> None:
+    """Preserve worker compilation timing across HUST plugin API variants.
+
+    Upstream workers return ``CompilationTimes`` with separate language-model
+    and encoder fields. The installed vLLM-HUST Ascend plugin returns the
+    measured scalar ``compilation_config.compilation_time`` instead. Preserve
+    that total while leaving the encoder field untouched; do not fabricate a
+    breakdown the plugin did not report.
+    """
+    if not worker_results:
+        return
+    if all(isinstance(value, CompilationTimes) for value in worker_results):
+        compilation_config.compilation_time = max(
+            value.language_model for value in worker_results
+        )
+        compilation_config.encoder_compilation_time = max(
+            value.encoder for value in worker_results
+        )
+        return
+    if all(
+        type(value) in (int, float) and math.isfinite(value) and value >= 0
+        for value in worker_results
+    ):
+        compilation_config.compilation_time = max(worker_results)
+        return
+    raise TypeError(
+        "worker compilation timings must be all CompilationTimes or finite non-negative scalars"
+    )
 
 
 class Executor(ABC):
@@ -121,20 +152,16 @@ class Executor(ABC):
         underlying workers.
         """
         self.collective_rpc("initialize_from_config", args=(kv_cache_configs,))
-        compilation_times: list[CompilationTimes] = self.collective_rpc(
+        compilation_times: list[CompilationTimes] | list[float] = self.collective_rpc(
             "compile_or_warm_up_model"
         )
         # Propagate compilation time from workers back to the main process.
         # With TP>1, compilation happens in worker processes, so the main
         # process config is never updated. Use max across workers since they
         # compile in parallel.
-        if compilation_times:
-            self.vllm_config.compilation_config.compilation_time = max(
-                t.language_model for t in compilation_times
-            )
-            self.vllm_config.compilation_config.encoder_compilation_time = max(
-                t.encoder for t in compilation_times
-            )
+        _propagate_compilation_times(
+            self.vllm_config.compilation_config, compilation_times
+        )
 
     def register_failure_callback(self, callback: FailureCallback):  # noqa: B027
         """
