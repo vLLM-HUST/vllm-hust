@@ -94,6 +94,16 @@ def _native_model_result_context(scheduler, scheduler_output):
 
     return native_model_result(scheduler, scheduler_output)
 
+
+def _prepare_native_worker_plan(core, scheduler_output):
+    if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") != "1":
+        return
+    from vllm_quality_bounded_inference.worker_execution_observation import (
+        prepare_worker_plan,
+    )
+
+    prepare_worker_plan(core, scheduler_output)
+
 HANDSHAKE_TIMEOUT_MINS = 5
 _QBI_MECHANISM_RECEIPT_LIMIT = 4096
 
@@ -1888,6 +1898,7 @@ class EngineCore:
         if not self.scheduler.has_requests():
             return {}, False
         scheduler_output = self.scheduler.schedule()
+        _prepare_native_worker_plan(self, scheduler_output)
         future = self.model_executor.execute_model(scheduler_output, non_block=True)
         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
         # Measure the device work of exactly this scheduler output.  The window
@@ -1962,6 +1973,7 @@ class EngineCore:
         deferred_scheduler_output = None
         if self.scheduler.has_requests():
             scheduler_output = self.scheduler.schedule()
+            _prepare_native_worker_plan(self, scheduler_output)
             with self.log_error_detail(scheduler_output):
                 exec_future = self.model_executor.execute_model(
                     scheduler_output, non_block=True

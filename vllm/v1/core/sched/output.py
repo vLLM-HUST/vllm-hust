@@ -249,6 +249,9 @@ class SchedulerOutput:
     # Current scheduler speculative depth for this epoch. ``None`` preserves
     # startup-depth behavior for older and test-created outputs.
     runtime_num_speculative_tokens: int | None = None
+    # Optional source-bound observer trace. It is added only by ANISE's
+    # explicit observation plan and does not change scheduler decisions.
+    anise_observation_context: dict[str, object] | None = None
 
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":

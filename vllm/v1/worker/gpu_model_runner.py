@@ -4,6 +4,7 @@
 import functools
 import gc
 import itertools
+import os
 import threading
 import time
 from collections import defaultdict
@@ -221,6 +222,26 @@ if TYPE_CHECKING:
     from vllm.v1.worker.encoder_cudagraph import EncoderCudaGraphManager
 
 logger = init_logger(__name__)
+
+
+def _qbi_worker_phase(phase: str):
+    if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") != "1":
+        return lambda function: function
+    from vllm_quality_bounded_inference.worker_phase_observation import (
+        observe_worker_phase,
+    )
+
+    return observe_worker_phase(phase)
+
+
+def _qbi_worker_execution():
+    if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") != "1":
+        return lambda function: function
+    from vllm_quality_bounded_inference.worker_execution_observation import (
+        observe_worker_execution,
+    )
+
+    return observe_worker_execution
 
 
 def _should_run_speculative_drafter(
@@ -901,6 +922,18 @@ class GPUModelRunner(
         self.mamba_state_idx: dict[str, int] = {}
         self._mamba_copy_bufs: mamba_utils.MambaCopyBuffers | None = None
         self.layerwise_nvtx_hooks_registered = False
+        if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") == "1":
+            from vllm_quality_bounded_inference.worker_execution_observation import (
+                bind_worker_execution,
+            )
+
+            bind_worker_execution(
+                self,
+                directory=os.environ["ANISE_OBSERVATION_OUTPUT_DIR"],
+                run_id=os.environ["ANISE_OBSERVATION_RUN_ID"],
+                source_sha256=os.environ["ANISE_SOURCE_MANIFEST_SHA256"],
+                host_boot_id=os.environ["ANISE_HOST_BOOT_ID"],
+            )
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.max_model_len = max_model_len
@@ -1817,6 +1850,7 @@ class GPUModelRunner(
 
         return encoder_seq_lens, encoder_seq_lens_cpu
 
+    @_qbi_worker_phase("prepare_inputs")
     def _prepare_inputs(
         self,
         scheduler_output: "SchedulerOutput",
@@ -3814,6 +3848,8 @@ class GPUModelRunner(
         return bool(self.discard_request_mask.np[:num_reqs].all())
 
     @torch.inference_mode()
+    @_qbi_worker_execution()
+    @_qbi_worker_phase("execute_model")
     def execute_model(
         self,
         scheduler_output: "SchedulerOutput",
@@ -4167,6 +4203,7 @@ class GPUModelRunner(
         return None
 
     @torch.inference_mode
+    @_qbi_worker_phase("sample_tokens")
     def sample_tokens(
         self, grammar_output: "GrammarOutput | None"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors:
@@ -4595,6 +4632,7 @@ class GPUModelRunner(
         sampled_count_event.synchronize()
         return counts_cpu[: prev_sampled_token_ids.shape[0]].tolist()
 
+    @_qbi_worker_phase("propose_draft_token_ids")
     def propose_draft_token_ids(
         self,
         scheduler_output: "SchedulerOutput",
