@@ -249,6 +249,17 @@ class EngineCore:
         # environment variable overrides after this point)
         enable_envs_cache()
 
+        # Bind the opt-in lifecycle observer only after the native Core and
+        # scheduler are fully initialized. This keeps the default runtime
+        # unchanged while making the QBI utility calls available to the API
+        # handler in the same EngineCore process that owns the observations.
+        if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") == "1":
+            from vllm_quality_bounded_inference.native_core_observation import (
+                bind_core_observation,
+            )
+
+            bind_core_observation(self)
+
     @instrument(span_name="Prepare model")
     def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
         start = time.time()
