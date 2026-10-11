@@ -11,7 +11,7 @@ import uuid
 from collections import defaultdict, deque
 from collections.abc import Callable, Generator
 from concurrent.futures import Future
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from enum import IntEnum
 from functools import partial
 from inspect import isclass, signature
@@ -83,6 +83,16 @@ from vllm.v1.utils import compute_iteration_details
 from vllm.version import __version__ as VLLM_VERSION
 
 logger = init_logger(__name__)
+
+
+def _native_model_result_context(scheduler, scheduler_output):
+    if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") != "1":
+        return nullcontext(None)
+    from vllm_quality_bounded_inference.native_lifecycle_observation import (
+        native_model_result,
+    )
+
+    return native_model_result(scheduler, scheduler_output)
 
 HANDSHAKE_TIMEOUT_MINS = 5
 _QBI_MECHANISM_RECEIPT_LIMIT = 4096
@@ -1888,10 +1898,13 @@ class EngineCore:
         with (
             self.log_error_detail(scheduler_output),
             self.log_iteration_details(scheduler_output),
+            _native_model_result_context(self.scheduler, scheduler_output) as _anise_model_result,
         ):
             model_output = future.result()
             if model_output is None:
                 model_output = self.model_executor.sample_tokens(grammar_output)
+            if _anise_model_result is not None:
+                _anise_model_result.received(model_output)
         qbi_exec_elapsed_ns = time.perf_counter_ns() - qbi_exec_start_ns
         self.scheduler.record_qbi_model_execution_sample(
             scheduler_output,
@@ -1997,6 +2010,7 @@ class EngineCore:
         with (
             self.log_error_detail(scheduler_output),
             self.log_iteration_details(scheduler_output),
+            _native_model_result_context(self.scheduler, scheduler_output) as _anise_model_result,
         ):
             model_output = future.result()
             if model_output is None:
@@ -2004,6 +2018,8 @@ class EngineCore:
                 # call failed - raise that exception.
                 exec_model_fut.result()
                 raise RuntimeError("unexpected error")
+            if _anise_model_result is not None:
+                _anise_model_result.received(model_output)
 
         # Before processing the model output, process any aborts that happened
         # during the model execution.

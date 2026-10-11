@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -80,6 +81,17 @@ from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
 
 logger = init_logger(__name__)
+
+
+def _native_lifecycle(operation: str):
+    """Attach QBI scheduler spans only in an explicitly opted-in process."""
+    if os.environ.get("ANISE_LIFECYCLE_OBSERVATION", "0") != "1":
+        return lambda function: function
+    from vllm_quality_bounded_inference.native_lifecycle_observation import (
+        native_lifecycle,
+    )
+
+    return native_lifecycle(operation)
 
 
 class Scheduler(SchedulerInterface):
@@ -421,6 +433,7 @@ class Scheduler(SchedulerInterface):
                 pass
         return num_new_tokens
 
+    @_native_lifecycle("schedule")
     def schedule(self) -> SchedulerOutput:
         qbi_schedule_start = time.monotonic_ns()
         # Bounded, disabled-by-default pre-decision projection.  It is recorded
@@ -1871,6 +1884,7 @@ runtime_config_epoch=self._runtime_config_epoch,
         )
         return GrammarOutput(structured_output_request_ids, bitmask)
 
+    @_native_lifecycle("update_from_output")
     def update_from_output(
         self,
         scheduler_output: SchedulerOutput,
@@ -2349,6 +2363,7 @@ runtime_config_epoch=self._runtime_config_epoch,
         """Returns (num_running_reqs, num_waiting_reqs)."""
         return len(self.running), len(self.waiting) + len(self.skipped_waiting)
 
+    @_native_lifecycle("add_request")
     def add_request(self, request: Request) -> None:
         existing = self.requests.get(request.request_id)
         if existing is not None:
@@ -2444,6 +2459,7 @@ runtime_config_epoch=self._runtime_config_epoch,
 
         return [(r.request_id, r.client_index) for r in valid_requests]
 
+    @_native_lifecycle("_free_request")
     def _free_request(
         self, request: Request, delay_free_blocks: bool = False
     ) -> dict[str, Any] | None:
