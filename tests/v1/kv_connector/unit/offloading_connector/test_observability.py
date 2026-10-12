@@ -24,6 +24,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability impor
     ComputeKind,
     KVRegionDescriptor,
     KVTransferEvent,
+    KVTransferObservation,
     RecoveryRequeueReason,
     TransferCancellationReason,
     TransferOperation,
@@ -69,7 +70,7 @@ _CLOSED_FIELDS = {
 
 
 def test_copy_layout_is_published_after_submission_with_exact_identity():
-    seen = []
+    seen: list[KVTransferObservation] = []
     observability.register_kv_transfer_observer("layout", seen.append)
     worker = _make_worker(rank=2)
 
@@ -97,7 +98,7 @@ def test_copy_layout_is_published_after_submission_with_exact_identity():
 
 
 def test_rejected_backend_submission_never_publishes_a_layout():
-    seen = []
+    seen: list[KVTransferObservation] = []
     observability.register_kv_transfer_observer("layout", seen.append)
     worker = _make_worker()
 
@@ -118,7 +119,7 @@ def test_rejected_backend_submission_never_publishes_a_layout():
 
 
 def test_backend_failure_is_observed_before_fail_stop_without_receipt():
-    seen = []
+    seen: list[KVTransferObservation] = []
     observability.register_kv_transfer_observer("failure", seen.append)
     worker = _make_worker()
     worker.start_kv_transfers(_load_metadata(11, "request"))
