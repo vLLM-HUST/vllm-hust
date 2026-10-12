@@ -46,6 +46,7 @@ from vllm.v1.kv_offload.base import (
 # The record is a closed, address-free primitive set; adding a field is a
 # contract change and must update this test deliberately.
 _CLOSED_FIELDS = {
+    "submission_token",
     "event",
     "operation",
     "job_id",
@@ -65,6 +66,74 @@ _CLOSED_FIELDS = {
     "dropped_descriptors",
     "compute_kind",
 }
+
+
+def test_copy_layout_is_published_after_submission_with_exact_identity():
+    seen = []
+    observability.register_kv_transfer_observer("layout", seen.append)
+    worker = _make_worker(rank=2)
+
+    def copy(job_id, *_):
+        observability.emit_kv_transfer_descriptors(
+            job_id=job_id,
+            rank=None,
+            operation=TransferOperation.H2D_RESTORE,
+            descriptors=(KVRegionDescriptor(0, 1, 0, 64, 32),),
+        )
+        assert not seen
+        return True
+
+    worker.worker.submit_load.side_effect = copy
+    worker.start_kv_transfers(_load_metadata(11, "request"))
+    submit, layout = seen
+    assert [r.event for r in seen] == [
+        KVTransferEvent.TRANSFER_SUBMITTED,
+        KVTransferEvent.TRANSFER_DESCRIPTORS,
+    ]
+    assert layout.request_id == submit.request_id == "request"
+    assert layout.rank == submit.rank == 2
+    assert layout.submission_token == submit.submission_token
+    assert len(layout.submission_token) == 32
+
+
+def test_rejected_backend_submission_never_publishes_a_layout():
+    seen = []
+    observability.register_kv_transfer_observer("layout", seen.append)
+    worker = _make_worker()
+
+    def reject(job_id, *_):
+        observability.emit_kv_transfer_descriptors(
+            job_id=job_id,
+            rank=None,
+            operation=TransferOperation.H2D_RESTORE,
+            descriptors=(KVRegionDescriptor(0, 1, 0, 64, 32),),
+        )
+        return False
+
+    worker.worker.submit_load.side_effect = reject
+    with pytest.raises(AssertionError):
+        worker.start_kv_transfers(_load_metadata(11, "request"))
+    assert seen == []
+    assert observability._descriptor_submission.get() is None
+
+
+def test_backend_failure_is_observed_before_fail_stop_without_receipt():
+    seen = []
+    observability.register_kv_transfer_observer("failure", seen.append)
+    worker = _make_worker()
+    worker.start_kv_transfers(_load_metadata(11, "request"))
+    worker.worker.get_finished.return_value = [
+        TransferResult(job_id=11, success=False, transfer_size=64)
+    ]
+    with pytest.raises(RuntimeError, match="transfer 11 failed"):
+        worker.get_finished(set())
+    assert seen[-1].event is KVTransferEvent.TRANSFER_COMPLETED
+    assert seen[-1].success is False
+    assert seen[-1].bytes_moved is None
+    assert seen[-1].submission_token == seen[0].submission_token
+    assert worker.build_connector_worker_meta() is None
+    worker.shutdown()
+    assert len(seen) == 2
 
 
 class _ExplodingClock:
