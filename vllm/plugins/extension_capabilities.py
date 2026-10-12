@@ -21,6 +21,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.correlated_observab
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability import (
     KV_TRANSFER_OBSERVABILITY_API_VERSION,
 )
+from vllm.v1.core.length_prediction import PREDICTED_LENGTH_API_VERSION
 from vllm.v1.events import REQUEST_LIFECYCLE_EVENTS_API_VERSION
 
 EXTENSION_CAPABILITIES_SCHEMA: Final = "vllm.extension-capabilities/v1"
@@ -44,6 +45,7 @@ _PROTOCOLS: Final = MappingProxyType(
         "vllm.kv-transfer.observer.v2": (
             KV_TRANSFER_CORRELATED_OBSERVABILITY_API_VERSION
         ),
+        "vllm.predicted-length": PREDICTED_LENGTH_API_VERSION,
     }
 )
 

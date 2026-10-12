@@ -14,7 +14,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm.v1.core.length_prediction import predicted_full_sequence_tokens
+from vllm.exceptions import VLLMValidationError
+from vllm.v1.core.length_prediction import (
+    predicted_full_sequence_tokens,
+    validate_predicted_length,
+)
 
 pytestmark = [pytest.mark.cpu_test, pytest.mark.skip_global_cleanup]
 
@@ -114,3 +118,33 @@ def test_partial_output_reduces_the_remaining_reserve():
 def test_zero_prediction_adds_nothing_beyond_the_prompt():
     request = make_request(prompt_tokens=100, computed_tokens=0, max_tokens=256)
     assert predicted_full_sequence_tokens(request, 0, 2048) == 100
+
+
+def test_helper_rejects_non_integer_prediction():
+    """The helper refuses non-integer types with a clear error.
+
+    A string used to crash inside ``min``/``max`` arithmetic; it must instead
+    fail loudly and predictably wherever it is called from.
+    """
+    request = make_request(prompt_tokens=100, computed_tokens=0)
+    with pytest.raises(ValueError, match="predicted_length"):
+        predicted_full_sequence_tokens(request, "64", 4096)
+    with pytest.raises(ValueError, match="predicted_length"):
+        predicted_full_sequence_tokens(request, True, 4096)
+
+
+def test_validate_predicted_length_accepts_none_and_non_negative_ints():
+    assert validate_predicted_length(None) is None
+    for value in (0, 1, 64, 10_000, 10**9):
+        assert validate_predicted_length(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, False, "64", "abc", 64.0, 64.5, -1, -10, [], {}],
+)
+def test_validate_predicted_length_rejects_malformed_values(value):
+    """Fail closed at the boundary: bools, strings, floats and negatives are
+    rejected before any engine object is constructed for the request."""
+    with pytest.raises(VLLMValidationError, match="predicted_length"):
+        validate_predicted_length(value)
