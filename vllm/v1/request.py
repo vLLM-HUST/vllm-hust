@@ -19,6 +19,7 @@ from vllm.v1.core.kv_materialization import (
     KVMaterializationRuntimeControl,
     parse_kv_materialization_runtime_control,
 )
+from vllm.v1.core.length_prediction import validate_predicted_length
 from vllm.v1.engine import (
     EngineCoreEvent,
     EngineCoreEventType,
@@ -230,8 +231,9 @@ class Request:
 
         # Predicted total output length (tokens) from an external length
         # predictor, read before admission. None means no prediction and the
-        # scheduler behaves exactly as upstream.
-        self.predicted_length = predicted_length
+        # scheduler behaves exactly as upstream. Both entry paths are
+        # validated here so a malformed value can never reach the scheduler.
+        self.predicted_length = validate_predicted_length(predicted_length)
         if (
             self.predicted_length is None
             and sampling_params is not None
@@ -239,7 +241,9 @@ class Request:
         ):
             # A client-supplied prediction arrives via OpenAI extra_body and
             # travels in extra_args, like kv_transfer_params.
-            self.predicted_length = sampling_params.extra_args.get("predicted_length")
+            self.predicted_length = validate_predicted_length(
+                sampling_params.extra_args.get("predicted_length")
+            )
 
         # True if this request is scheduled as a non-final prefill chunk.
         self.is_prefill_chunk = False

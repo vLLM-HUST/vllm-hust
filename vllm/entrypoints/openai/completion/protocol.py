@@ -38,6 +38,7 @@ from vllm.sampling_params import (
 )
 from vllm.utils import random_uuid
 from vllm.utils.collection_utils import is_list_of
+from vllm.v1.core.length_prediction import PredictedLength
 
 logger = init_logger(__name__)
 
@@ -264,14 +265,15 @@ class CompletionRequest(OpenAIBaseModel):
         ),
     )
 
-    predicted_length: int | None = Field(
+    predicted_length: PredictedLength = Field(
         default=None,
         description=(
-            "Predicted total output length in tokens. When set, the scheduler's "
-            "full-sequence admission check plans for it, clamped to max_tokens "
-            "and to the model's maximum length. None keeps upstream behaviour."
+            "Predicted total output length in tokens (vLLM extension, not "
+            "part of the OpenAI API). Only affects admission when the "
+            "scheduler's full-sequence reservation is enabled: the admission "
+            "check then plans for it, clamped to max_tokens and to the "
+            "model's maximum length. None keeps upstream behaviour."
         ),
-        ge=0,
     )
 
     vllm_xargs: dict[str, str | int | float | list[str | int | float]] | None = Field(

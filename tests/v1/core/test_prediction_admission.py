@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import pytest
 
+from vllm.exceptions import VLLMValidationError
+from vllm.sampling_params import SamplingParams
 from vllm.v1.outputs import ModelRunnerOutput
-from vllm.v1.request import RequestStatus
+from vllm.v1.request import Request, RequestStatus
 
 from .utils import create_requests, create_scheduler
 
@@ -214,21 +216,52 @@ def test_prediction_does_not_block_decode_after_prefill():
     assert request.request_id in decode_output.num_scheduled_tokens
 
 
-def test_negative_prediction_is_harmless():
-    """A nonsense prediction must not fail the request or panic the scheduler."""
-    requests = create_requests(
-        num_requests=1,
-        num_tokens=32,
-        block_size=BLOCK_SIZE,
-        max_tokens=64,
-        predicted_length=-10,
+def test_negative_prediction_is_rejected_before_scheduling():
+    """A negative prediction fails closed while the request is being built.
+
+    The scheduler never sees the value, so no admission decision can be
+    influenced by it; see also the protocol-level tests for the OpenAI path.
+    """
+    with pytest.raises(VLLMValidationError, match="predicted_length"):
+        create_requests(
+            num_requests=1,
+            num_tokens=32,
+            block_size=BLOCK_SIZE,
+            max_tokens=64,
+            predicted_length=-10,
+        )
+
+
+def test_internal_extra_args_prediction_survives_validation():
+    """A valid prediction on the internal extra_args channel is carried through."""
+    request = Request(
+        request_id="extra-args-ok",
+        prompt_token_ids=[0] * 8,
+        sampling_params=SamplingParams(
+            max_tokens=16, extra_args={"predicted_length": 64}
+        ),
+        pooling_params=None,
     )
-    scheduler = make_scheduler(num_blocks=8)
+    assert request.predicted_length == 64
 
-    scheduler.add_request(requests[0])
-    output = scheduler.schedule()
 
-    assert requests[0].request_id in output.num_scheduled_tokens
+@pytest.mark.parametrize("bad_value", [True, "64", 64.5, -1])
+def test_internal_extra_args_prediction_fails_closed(bad_value):
+    """A malformed value on the internal extra_args channel is rejected.
+
+    An internal caller can put an arbitrary value in ``SamplingParams
+    .extra_args``; it must fail closed while the request is constructed
+    instead of crashing the scheduling path later.
+    """
+    with pytest.raises(VLLMValidationError, match="predicted_length"):
+        Request(
+            request_id="extra-args-bad",
+            prompt_token_ids=[0] * 8,
+            sampling_params=SamplingParams(
+                max_tokens=16, extra_args={"predicted_length": bad_value}
+            ),
+            pooling_params=None,
+        )
 
 
 def test_candidate_carries_the_prediction_into_the_policy() -> None:
