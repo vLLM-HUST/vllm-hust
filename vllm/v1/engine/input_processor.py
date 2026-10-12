@@ -32,6 +32,7 @@ from vllm.utils import length_from_prompt_token_ids_or_embeds, random_uuid
 from vllm.utils.async_utils import make_async
 from vllm.utils.diffusion import validate_diffusion_sampling_params
 from vllm.utils.jsontree import json_iter_leaves
+from vllm.v1.core.length_prediction import validate_predicted_length
 from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.kv_hints import KvHintsEnvelope
 
@@ -547,10 +548,14 @@ class InputProcessor:
 
         # Client-supplied decode-length prediction. It travels inside
         # sampling_params.extra_args so the value survives the msgspec request
-        # channel; see vllm.v1.core.length_prediction for how it is bounded.
+        # channel. Validate it here, before EngineCoreRequest is constructed:
+        # a malformed value must fail closed at this boundary instead of
+        # reaching the scheduling path (see vllm.v1.core.length_prediction).
         predicted_length: int | None = None
         if sampling_params is not None and sampling_params.extra_args:
-            predicted_length = sampling_params.extra_args.get("predicted_length")
+            predicted_length = validate_predicted_length(
+                sampling_params.extra_args.get("predicted_length")
+            )
 
         return EngineCoreRequest(
             request_id=request_id,
