@@ -53,6 +53,7 @@ from vllm.sampling_params import (
     ThinkingTokenBudget,
 )
 from vllm.utils import random_uuid
+from vllm.v1.core.length_prediction import PredictedLength
 
 if TYPE_CHECKING:
     from vllm.parser.abstract_parser import Parser
@@ -496,6 +497,17 @@ class ChatCompletionRequest(OpenAIBaseModel):
         ),
     )
 
+    predicted_length: PredictedLength = Field(
+        default=None,
+        description=(
+            "Predicted total output length in tokens (vLLM extension, not "
+            "part of the OpenAI API). Only affects admission when the "
+            "scheduler's full-sequence reservation is enabled: the admission "
+            "check then plans for it, clamped to max_tokens and to the "
+            "model's maximum length. None keeps upstream behaviour."
+        ),
+    )
+
     vllm_xargs: dict[str, str | int | float | list[str | int | float]] | None = Field(
         default=None,
         description=(
@@ -733,6 +745,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
         if self.ec_transfer_params:
             # Pass in ec_transfer_params via extra_args
             extra_args["ec_transfer_params"] = self.ec_transfer_params
+        if self.predicted_length is not None:
+            # Pass in predicted_length via extra_args
+            extra_args["predicted_length"] = self.predicted_length
         return SamplingParams.from_optional(
             n=self.n,
             **sampling_params,
