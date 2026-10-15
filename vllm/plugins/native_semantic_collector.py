@@ -11,9 +11,11 @@ candidate and real qualification; this module never opens a formal traffic gate.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
+import re
 import socket
 import socketserver
 import stat
@@ -22,9 +24,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-
-import pybase64 as base64
-import regex as re
 
 MAX_FRAME = 65536
 MAPPING = "ecpa-native-request-id-mapping/v1"

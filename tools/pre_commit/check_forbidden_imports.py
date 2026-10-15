@@ -87,6 +87,14 @@ CHECK_IMPORTS = {
             "or 'import pybase64 as base64'."
         ),
         allowed_pattern=re.compile(r"^\s*import\s+pybase64(\s*|\s+as\s+base64\s*)$"),
+        # These bounded protocol modules must also run in an independent
+        # stdlib-only, cross-architecture evidence replayer. Other imports in
+        # these files remain checked; inference code retains the fast imports.
+        allowed_files={
+            "vllm/plugins/native_semantic_collector.py",
+            "vllm/plugins/native_tensor_artifact_transport.py",
+            "vllm/plugins/native_tensor_witness.py",
+        },
     ),
     "re": ForbiddenImport(
         # regex has no equivalent of the private sre modules
@@ -96,7 +104,13 @@ CHECK_IMPORTS = {
         ),
         tip="Replace 'import re' with 'import regex as re' or 'import regex'.",
         allowed_pattern=re.compile(r"^\s*import\s+regex(\s*|\s+as\s+re\s*)$"),
-        allowed_files={"setup.py"},
+        # Exact portable protocol files only; do not exempt their directory.
+        allowed_files={
+            "setup.py",
+            "vllm/plugins/native_semantic_collector.py",
+            "vllm/plugins/native_tensor_artifact_transport.py",
+            "vllm/plugins/native_tensor_runtime_contract.py",
+        },
     ),
     "triton": ForbiddenImport(
         pattern=r"^(from|import)\s+triton(\s|\.|$)",

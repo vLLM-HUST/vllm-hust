@@ -5,11 +5,10 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import time
 from typing import Any, cast
-
-import pybase64 as base64
 
 SCHEMA = "ecpa-selected-KV-materialization-source-candidate/v1"
 _sink: Any = None

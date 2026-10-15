@@ -6,15 +6,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import re
 import stat
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-import pybase64 as base64
-import regex as re
 
 if TYPE_CHECKING or (__package__ and __package__.startswith("vllm.")):
     from . import native_semantic_collector as native
