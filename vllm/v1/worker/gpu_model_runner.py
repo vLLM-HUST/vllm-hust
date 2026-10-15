@@ -1206,6 +1206,18 @@ class GPUModelRunner(
         for req_id in scheduler_output.finished_req_ids:
             self.input_batch.remove_request(req_id)
 
+        # Opt-in source-owned drain follows actual native removal.
+        from vllm.plugins.native_phase_drain import (
+            after_finished_request_removal,
+        )
+        from vllm.plugins.native_block_table_observer import (
+            _scope, emit_native_fact,
+        )
+        after_finished_request_removal(
+            self, scheduler_output, scope=_scope,
+            publish=lambda fact: emit_native_fact(lambda: fact),
+        )
+
         # Zero GPU memory for freshly allocated cache blocks to prevent
         # stale NaN/data from corrupting attention or SSM computation.
         if scheduler_output.new_block_ids_to_zero:
