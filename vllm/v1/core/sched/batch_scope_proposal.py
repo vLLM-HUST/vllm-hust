@@ -527,6 +527,39 @@ class BatchScopeProposalBook:
             raise BatchScopeProposalError(
                 "pre-action observation does not match the proposal schedule context"
             )
+        # Record the actual resolution performed by this proposal book, before
+        # applying the local budget. Clients must not infer aliases themselves.
+        native_snapshot_sha256 = pre_action_observation["sha256"]
+        binding_identity = {
+            "native_candidate_snapshot_sha256": native_snapshot_sha256,
+            "batch_proposal_id": proposal.batch_proposal_id,
+            "caller_member_ids": list(proposal.member_request_ids),
+            "resolved_member_ids": list(resolved_member_ids),
+        }
+        observation_id = hashlib.sha256(json.dumps(
+            binding_identity, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()
+        bound_observation = {
+            key: value for key, value in pre_action_observation.items() if key != "sha256"
+        }
+        bound_observation.update({
+            "observation_id": observation_id,
+            "native_candidate_snapshot_sha256": native_snapshot_sha256,
+            "member_request_bindings": [
+                {
+                    "schema": "anise.batch-scope-member-request-binding.v1",
+                    "caller_request_id": caller_id,
+                    "native_request_id": native_id,
+                    "observation_id": observation_id,
+                    "batch_proposal_id": proposal.batch_proposal_id,
+                    "binding_source": "scheduler_proposal_book_resolution",
+                }
+                for caller_id, native_id in zip(proposal.member_request_ids, resolved_member_ids)
+            ],
+        })
+        pre_action_observation = _seal_observation(
+            bound_observation, expected_schema=SCHEMA_PRE_ACTION_OBSERVATION
+        )
         proposal_age_ns = observed - proposal.created_at_ns
         if proposal.config_epoch != epoch:
             budget = scheduler_value
@@ -638,6 +671,9 @@ class BatchScopeProposalBook:
             receipt["target_prefill_peer_decode_overlap_receipt"] = {
                 "schema": SCHEMA_OVERLAP_RECEIPT,
                 "batch_proposal_id": proposal.batch_proposal_id,
+                "observation_id": observation_id,
+                "caller_target_request_id": dict(zip(resolved_member_ids, proposal.member_request_ids)).get(target_id),
+                "caller_peer_request_id": dict(zip(resolved_member_ids, proposal.member_request_ids)).get(peer_id),
                 "target_request_id": target_id,
                 "peer_request_id": peer_id,
                 "same_scheduling_event": True,
@@ -743,6 +779,7 @@ class BatchScopeProposalBook:
 
         actual_batch = {
             "schema": SCHEMA_ACTUAL_BATCH,
+            "observation_id": pre_action.get("observation_id"),
             "stage": "post_schedule_actual_batch",
             "source": "Scheduler.schedule",
             "clock_id": "monotonic_ns",

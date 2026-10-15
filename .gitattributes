@@ -1,0 +1,4 @@
+
+
+# Receipt source identity must be stable across Windows and Linux checkouts.
+vllm/v1/core/sched/batch_scope_proposal.py text eol=lf
