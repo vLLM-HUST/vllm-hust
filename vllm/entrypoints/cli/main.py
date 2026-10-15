@@ -14,6 +14,15 @@ from vllm.logger import configure_logging_from_args, init_logger
 logger = init_logger(__name__)
 
 
+def _bind_serve_process_identity(argv: list[str]) -> None:
+    """Bind the single-process serve parent before parser plugins execute."""
+    if argv[1:2] != ["serve"]:
+        return
+    from vllm.plugins.evidence import bind_process_identity
+
+    bind_process_identity("api-server", 0)
+
+
 def maybe_run_omni() -> bool:
     # If `--omni` arg is passed to the CLI, delegate to vLLM Omni's entrypoint handling
     if "--omni" not in sys.argv:
@@ -39,6 +48,10 @@ def maybe_run_omni() -> bool:
 def main():
     if maybe_run_omni():
         return
+
+    # Parser construction loads general plugins.  Bind before those imports so
+    # the parent event is host-assigned rather than `unknown`/environment.
+    _bind_serve_process_identity(sys.argv)
 
     import vllm.entrypoints.cli.benchmark.main
     import vllm.entrypoints.cli.collect_env

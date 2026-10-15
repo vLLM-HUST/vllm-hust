@@ -370,6 +370,10 @@ class InputProcessor:
         else:
             request.request_id = f"{request.external_req_id}-{random_uuid():.8}"
 
+        from vllm.plugins.native_block_table_observer import observe_request_id_mapping
+
+        observe_request_id_mapping(request)
+
     def process_inputs(
         self,
         request_id: str,
