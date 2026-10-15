@@ -5,9 +5,8 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
-
-import regex as re
 
 if TYPE_CHECKING or (__package__ and __package__.startswith("vllm.")):
     from . import native_tensor_witness as witness
