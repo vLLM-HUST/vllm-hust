@@ -13,6 +13,7 @@ from unittest.mock import mock_open
 import pytest
 
 import vllm.plugins as plugins
+from vllm.entrypoints.cli.main import _bind_serve_process_identity
 from vllm.plugins import evidence
 
 Payload = dict[str, Any]
@@ -73,6 +74,21 @@ def expected_event_id(payload: Payload) -> str:
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(material).hexdigest()
+
+
+def test_serve_cli_binds_parent_before_general_plugin_loading():
+    _bind_serve_process_identity(["vllm", "serve", "model"])
+    process = evidence.capture_scope()["process"]
+    assert (process["role"], process["ordinal"], process["assignment_source"]) == (
+        "api-server",
+        0,
+        "host",
+    )
+
+
+def test_non_serve_cli_does_not_claim_api_server_role():
+    _bind_serve_process_identity(["vllm", "bench"])
+    assert evidence.capture_scope()["process"]["assignment_source"] == "environment"
 
 
 def test_event_id_and_deduplication_bind_assignment_source(monkeypatch):
