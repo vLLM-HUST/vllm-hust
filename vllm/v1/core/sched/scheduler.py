@@ -30,6 +30,10 @@ from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.multimodal.encoder_budget import MultiModalBudget
 from vllm.multimodal.utils import get_mm_features_in_window
+from vllm.stateaxis_chunked_prefill import (
+    apply_chunked_prefill_limit,
+    parse_chunked_prefill_experiment,
+)
 from vllm.v1.core.encoder_cache_manager import (
     EncoderCacheManager,
     EncoderDecoderCacheManager,
@@ -335,6 +339,54 @@ class Scheduler(SchedulerInterface):
         # async KV loads). Their remaining-block reservation gates async loads.
         self._inflight_prefills: set[Request] = set()
 
+        self._stateaxis_chunked_prefill = parse_chunked_prefill_experiment(
+            vllm_config.additional_config,
+            device_type=vllm_config.device_config.device_type,
+            enable_chunked_prefill=self.scheduler_config.enable_chunked_prefill,
+            max_num_batched_tokens=self.scheduler_config.max_num_batched_tokens,
+        )
+        self._stateaxis_chunked_prefill_chunks = 0
+        self._stateaxis_chunked_prefill_tokens_deferred = 0
+        self._stateaxis_chunked_prefill_bypass_logged = False
+
+    def _apply_stateaxis_chunked_prefill_limit(
+        self,
+        request: Request,
+        num_new_tokens: int,
+        *,
+        is_prefill: bool | None = None,
+    ) -> int:
+        experiment = self._stateaxis_chunked_prefill
+        if is_prefill is None:
+            is_prefill = request.is_prefill_chunk
+        if experiment is None or not is_prefill:
+            return num_new_tokens
+        decision = apply_chunked_prefill_limit(
+            experiment,
+            num_new_tokens,
+            active_decode=any(not item.is_prefill_chunk for item in self.running),
+        )
+        if decision.chunks_applied:
+            self._stateaxis_chunked_prefill_chunks += decision.chunks_applied
+            self._stateaxis_chunked_prefill_tokens_deferred += decision.tokens_deferred
+            logger.info(
+                "StateAxis chunked-prefill effect: chunks_applied=%d "
+                "tokens_deferred=%d cumulative_chunks=%d "
+                "cumulative_tokens_deferred=%d",
+                decision.chunks_applied,
+                decision.tokens_deferred,
+                self._stateaxis_chunked_prefill_chunks,
+                self._stateaxis_chunked_prefill_tokens_deferred,
+            )
+        elif decision.bypassed_no_contention and not (
+            self._stateaxis_chunked_prefill_bypass_logged
+        ):
+            self._stateaxis_chunked_prefill_bypass_logged = True
+            logger.info(
+                "StateAxis chunked-prefill effect: bypassed_no_contention=1"
+            )
+        return decision.num_new_tokens
+
     def _mamba_block_aligned_split(
         self,
         request: Request,
@@ -477,6 +529,9 @@ class Scheduler(SchedulerInterface):
             )
             if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
                 num_new_tokens = self.scheduler_config.long_prefill_token_threshold
+            num_new_tokens = self._apply_stateaxis_chunked_prefill_limit(
+                request, num_new_tokens
+            )
             num_new_tokens = min(num_new_tokens, token_budget)
 
             # Make sure the input position does not exceed the max model len.
@@ -828,6 +883,11 @@ class Scheduler(SchedulerInterface):
                     threshold = self.scheduler_config.long_prefill_token_threshold
                     if 0 < threshold < num_new_tokens:
                         num_new_tokens = threshold
+                    num_new_tokens = self._apply_stateaxis_chunked_prefill_limit(
+                        request,
+                        num_new_tokens,
+                        is_prefill=num_computed_tokens < request.num_tokens - 1,
+                    )
 
                     # chunked prefill has to be enabled explicitly to allow
                     # pooling requests to be chunked
