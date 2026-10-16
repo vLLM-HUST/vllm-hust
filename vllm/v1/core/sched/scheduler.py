@@ -30,6 +30,11 @@ from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.multimodal.encoder_budget import MultiModalBudget
 from vllm.multimodal.utils import get_mm_features_in_window
+from vllm.stateaxis_length_aware_queue import (
+    QueueItem,
+    parse_length_aware_queue_experiment,
+    plan_length_aware_order,
+)
 from vllm.v1.core.encoder_cache_manager import (
     EncoderCacheManager,
     EncoderDecoderCacheManager,
@@ -46,6 +51,7 @@ from vllm.v1.core.sched.output import (
     SchedulerOutput,
 )
 from vllm.v1.core.sched.request_queue import (
+    FCFSRequestQueue,
     RequestQueue,
     SchedulingPolicy,
     create_request_queue,
@@ -334,6 +340,72 @@ class Scheduler(SchedulerInterface):
         # In-flight requests still prefilling (prefill chunks + in-progress
         # async KV loads). Their remaining-block reservation gates async loads.
         self._inflight_prefills: set[Request] = set()
+
+        self._stateaxis_length_aware_queue = parse_length_aware_queue_experiment(
+            vllm_config.additional_config,
+            device_type=vllm_config.device_config.device_type,
+        )
+        self._stateaxis_length_aware_reorders = 0
+        self._stateaxis_length_aware_aged_promotions = 0
+        self._stateaxis_length_aware_fallback_logged: set[str] = set()
+
+    def _apply_stateaxis_length_aware_queue(self) -> None:
+        experiment = self._stateaxis_length_aware_queue
+        if experiment is None or len(self.waiting) < 2:
+            return
+        if self.policy != SchedulingPolicy.FCFS or not isinstance(
+            self.waiting, FCFSRequestQueue
+        ):
+            reason = "non_fcfs_policy"
+            if reason not in self._stateaxis_length_aware_fallback_logged:
+                self._stateaxis_length_aware_fallback_logged.add(reason)
+                logger.info("StateAxis length-aware queue fallback: reason=%s", reason)
+            return
+        requests = list(self.waiting)
+        plan = plan_length_aware_order(
+            experiment,
+            [
+                QueueItem(
+                    request_id=request.request_id,
+                    prompt_tokens=request.num_prompt_tokens,
+                    arrival_time=request.arrival_time,
+                    eligible=(
+                        request.status == RequestStatus.WAITING
+                        and request.num_computed_tokens == 0
+                        and not request.resumable
+                    ),
+                )
+                for request in requests
+            ],
+            now=time.time(),
+        )
+        if plan.fallback_reason is not None:
+            if (
+                plan.fallback_reason
+                not in self._stateaxis_length_aware_fallback_logged
+            ):
+                self._stateaxis_length_aware_fallback_logged.add(plan.fallback_reason)
+                logger.info(
+                    "StateAxis length-aware queue fallback: reason=%s",
+                    plan.fallback_reason,
+                )
+            return
+        if not plan.reordered:
+            return
+        by_id = {request.request_id: request for request in requests}
+        self.waiting.clear()
+        self.waiting.extend(by_id[request_id] for request_id in plan.request_ids)
+        self._stateaxis_length_aware_reorders += 1
+        self._stateaxis_length_aware_aged_promotions += plan.aged_promotions
+        logger.info(
+            "StateAxis length-aware queue effect: reordered=1 "
+            "queue_requests=%d queued_tokens=%d cumulative_reorders=%d "
+            "cumulative_aged_promotions=%d",
+            len(requests),
+            sum(request.num_prompt_tokens for request in requests),
+            self._stateaxis_length_aware_reorders,
+            self._stateaxis_length_aware_aged_promotions,
+        )
 
     def _mamba_block_aligned_split(
         self,
@@ -635,6 +707,7 @@ class Scheduler(SchedulerInterface):
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
+            self._apply_stateaxis_length_aware_queue()
             step_skipped_waiting = create_request_queue(self.policy)
 
             while (self.waiting or self.skipped_waiting) and token_budget > 0:
