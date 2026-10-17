@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Source-state CPU fixtures only; no tensor/device/model/qualification claim."""
 
 import copy
@@ -23,33 +26,57 @@ def load_file(name, filename):
 
 @pytest.fixture
 def observer():
-    return load_file("capacity_observer_fixture", "native_attention_operator_observer.py")
+    return load_file(
+        "capacity_observer_fixture", "native_attention_operator_observer.py"
+    )
 
 
 def fixture_registration(phases=60, layers=28):
     worker = dict(
-        host="CPU-only", role="worker", ordinal=0, pid=100,
-        start_identity="pid:100:start_ticks:99", process_epoch=1,
-        assignment_source="host", start_ticks=99, session=100, boot_id="CPU-only",
+        host="CPU-only",
+        role="worker",
+        ordinal=0,
+        pid=100,
+        start_identity="pid:100:start_ticks:99",
+        process_epoch=1,
+        assignment_source="host",
+        start_ticks=99,
+        session=100,
+        boot_id="CPU-only",
     )
-    phase_rows = [dict(
-        phase_id=f"p-{i:03d}", client_request_id=f"r-{i:03d}",
-        external_request_id=f"cmpl-r-{i:03d}-0", challenge_nonce=f"nonce-{i:03d}",
-        expected_ranks=[0, 1],
-    ) for i in range(phases)]
+    phase_rows = [
+        dict(
+            phase_id=f"p-{i:03d}",
+            client_request_id=f"r-{i:03d}",
+            external_request_id=f"cmpl-r-{i:03d}-0",
+            challenge_nonce=f"nonce-{i:03d}",
+            expected_ranks=[0, 1],
+        )
+        for i in range(phases)
+    ]
     spec = dict(
         schema="ecpa-native-kv-semantic-collector-prereg/v2",
-        classification="CPU_REVIEW_CANDIDATE_ONLY", formal_producer_registration=False,
-        senders=[dict(process=worker, source_files=[])], phases=phase_rows,
-        kv_requirements={p["phase_id"]: dict(semantic_anchor=1195, physical_anchor=1024)
-                         for p in phase_rows},
+        classification="CPU_REVIEW_CANDIDATE_ONLY",
+        formal_producer_registration=False,
+        senders=[dict(process=worker, source_files=[])],
+        phases=phase_rows,
+        kv_requirements={
+            p["phase_id"]: dict(semantic_anchor=1195, physical_anchor=1024)
+            for p in phase_rows
+        },
     )
     policy = dict(
         schema="ecpa-selected-KV-private-artifact-runtime-policy/v1",
-        classification="REAL_RUNTIME_UNQUALIFIED", formal_registration=False,
-        requirements={p["phase_id"]: dict(
-            layer_indices=list(range(layers)), semantic_anchor=1195, physical_anchor=1024
-        ) for p in phase_rows},
+        classification="REAL_RUNTIME_UNQUALIFIED",
+        formal_registration=False,
+        requirements={
+            p["phase_id"]: dict(
+                layer_indices=list(range(layers)),
+                semantic_anchor=1195,
+                physical_anchor=1024,
+            )
+            for p in phase_rows
+        },
     )
     return worker, spec, policy
 
@@ -63,21 +90,31 @@ def encode_registration(observer, spec, policy):
 
 def register(observer, worker, inventory=None):
     observer.register_source_candidate(
-        lambda fact: None, scope=lambda: {"process": worker},
-        current_stream=lambda device: None, get_format=lambda tensor: 0,
+        lambda fact: None,
+        scope=lambda: {"process": worker},
+        current_stream=lambda device: None,
+        get_format=lambda tensor: 0,
         materialization_inventory=inventory,
     )
 
 
 def remembered_fact(observer, worker, phase, layer, *, layers=28):
     fact = dict(
-        native_producer=worker, classification="REAL_RUNTIME_UNQUALIFIED",
-        binding=dict(runtime_request_id=phase["client_request_id"],
-                     layer_name=f"model.layers.{layer}.self_attn", rank=0,
-                     layer_index=layer, expected_layer_indices=list(range(layers))),
+        native_producer=worker,
+        classification="REAL_RUNTIME_UNQUALIFIED",
+        binding=dict(
+            runtime_request_id=phase["client_request_id"],
+            layer_name=f"model.layers.{layer}.self_attn",
+            rank=0,
+            layer_index=layer,
+            expected_layer_indices=list(range(layers)),
+        ),
     )
-    ack = dict(schema="ecpa-native-semantic-collector-ack/v1",
-               formal_producer_registration=False, phase=copy.deepcopy(phase))
+    ack = dict(
+        schema="ecpa-native-semantic-collector-ack/v1",
+        formal_producer_registration=False,
+        phase=copy.deepcopy(phase),
+    )
     ack["ack_sha256"] = observer.sha(observer.canonical(ack))
     return fact, ack
 
@@ -120,12 +157,25 @@ def test_undeclared_legacy_registration_remains_bounded_at_sixty_four(observer):
     assert len(observer._materialized) == 64
 
 
-@pytest.mark.parametrize("mutation", [
-    "phase-missing", "phase-duplicate", "rank-bool", "rank-missing",
-    "layer-missing", "layer-duplicate", "layer-bool", "anchor-mismatch",
-    "spec-hash", "sender-missing", "sender-repeated",
-])
-def test_registration_inventory_must_exactly_cover_original_phases_and_layers(observer, mutation):
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "phase-missing",
+        "phase-duplicate",
+        "rank-bool",
+        "rank-missing",
+        "layer-missing",
+        "layer-duplicate",
+        "layer-bool",
+        "anchor-mismatch",
+        "spec-hash",
+        "sender-missing",
+        "sender-repeated",
+    ],
+)
+def test_registration_inventory_must_exactly_cover_original_phases_and_layers(
+    observer, mutation
+):
     worker, spec, policy = fixture_registration(phases=3)
     if mutation == "phase-missing":
         del policy["requirements"]["p-001"]
@@ -163,7 +213,9 @@ def test_owner_supplied_capacity_is_not_a_registered_token(observer, value):
         register(observer, worker, value)
 
 
-@pytest.mark.parametrize("mutation", ["phase", "rank", "layer", "layer-list", "ack", "token", "forged-token"])
+@pytest.mark.parametrize(
+    "mutation", ["phase", "rank", "layer", "layer-list", "ack", "token", "forged-token"]
+)
 def test_real_ack_and_exact_registered_request_layer_checks_remain(observer, mutation):
     worker, spec, policy = fixture_registration(phases=3)
     token = observer.registered_materialization_inventory(
@@ -173,9 +225,9 @@ def test_real_ack_and_exact_registered_request_layer_checks_remain(observer, mut
     fact, ack = remembered_fact(observer, worker, spec["phases"][0], 0)
     if mutation == "phase":
         ack["phase"]["external_request_id"] = "different-runtime-mapping"
-        ack["ack_sha256"] = observer.sha(observer.canonical(
-            {k: v for k, v in ack.items() if k != "ack_sha256"}
-        ))
+        ack["ack_sha256"] = observer.sha(
+            observer.canonical({k: v for k, v in ack.items() if k != "ack_sha256"})
+        )
     elif mutation == "rank":
         fact["binding"]["rank"] = 1
     elif mutation == "layer":
@@ -187,10 +239,16 @@ def test_real_ack_and_exact_registered_request_layer_checks_remain(observer, mut
     else:
         token.capacity += 1
         if mutation == "forged-token":
-            token.sha256 = observer.sha(observer.canonical({
-                "phases": token.phases, "process": token.process,
-                "rank": token.rank, "capacity": token.capacity,
-            }))
+            token.sha256 = observer.sha(
+                observer.canonical(
+                    {
+                        "phases": token.phases,
+                        "process": token.process,
+                        "rank": token.rank,
+                        "capacity": token.capacity,
+                    }
+                )
+            )
     with pytest.raises(ValueError):
         observer.remember_acknowledged_materialization(fact, ack)
     assert not observer._materialized
@@ -204,19 +262,27 @@ def test_bootstrap_passes_its_private_checked_spec_policy_to_observer(
     policy = json.loads(policy_raw)
     own = tmp_path / "worker"
     own.mkdir(mode=0o700)
-    policy["worker_directories"] = {str(os.getpid()): dict(path=str(own), identity=[1, 2])}
+    policy["worker_directories"] = {
+        str(os.getpid()): dict(path=str(own), identity=[1, 2])
+    }
     worker["pid"] = os.getpid()
     spec["senders"][0]["process"] = worker
     spec_raw, policy_raw = encode_registration(observer, spec, policy)
-    spec_path, policy_path, context_path = [tmp_path / n for n in ("spec", "policy", "context")]
+    spec_path, policy_path, context_path = [
+        tmp_path / n for n in ("spec", "policy", "context")
+    ]
     spec_path.write_bytes(spec_raw)
     policy_path.write_bytes(policy_raw)
     value = dict(
         schema="ecpa-selected-KV-private-artifact-runtime-bootstrap/v1",
-        classification="REAL_RUNTIME_UNQUALIFIED", formal_registration=False,
-        spec_path=str(spec_path), spec_sha256=observer.sha(spec_raw),
-        policy_path=str(policy_path), policy_sha256=observer.sha(policy_raw),
-        ready={}, source_files=[],
+        classification="REAL_RUNTIME_UNQUALIFIED",
+        formal_registration=False,
+        spec_path=str(spec_path),
+        spec_sha256=observer.sha(spec_raw),
+        policy_path=str(policy_path),
+        policy_sha256=observer.sha(policy_raw),
+        ready={},
+        source_files=[],
     )
     context_path.write_bytes(observer.canonical(value))
     package = "vllm.capacity_fixture"
@@ -225,18 +291,23 @@ def test_bootstrap_passes_its_private_checked_spec_policy_to_observer(
     monkeypatch.setitem(sys.modules, package, parent)
     native = SimpleNamespace(
         read_private=lambda path, mode: (Path(path).read_bytes(), Path(path).stat()),
-        sha=observer.sha, source_digests=lambda files: None,
-        identity=lambda pid: {k: worker[k] for k in ("pid", "start_ticks", "session", "boot_id")},
+        sha=observer.sha,
+        source_digests=lambda files: None,
+        identity=lambda pid: {
+            k: worker[k] for k in ("pid", "start_ticks", "session", "boot_id")
+        },
     )
     validations = []
     transport = SimpleNamespace(
-        require=observer.require, RUNTIME_POLICY=policy["schema"],
+        require=observer.require,
+        RUNTIME_POLICY=policy["schema"],
         runtime_contract=SimpleNamespace(CLASSIFICATION="REAL_RUNTIME_UNQUALIFIED"),
         directory=lambda path, expected: (os.open(path, os.O_RDONLY), None),
         policy_predicate=lambda p, s, h: validations.append((p, s, h)),
     )
-    block = SimpleNamespace(_scope=lambda role: {"process": worker},
-                            emit_native_fact=lambda factory: None)
+    block = SimpleNamespace(
+        _scope=lambda role: {"process": worker}, emit_native_fact=lambda factory: None
+    )
     for name, module in {
         "native_semantic_collector": native,
         "native_tensor_artifact_transport": transport,
@@ -245,10 +316,14 @@ def test_bootstrap_passes_its_private_checked_spec_policy_to_observer(
     }.items():
         monkeypatch.setitem(sys.modules, package + "." + name, module)
         setattr(parent, name, module)
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
-        npu=SimpleNamespace(current_stream=lambda device: None)
-    ))
-    monkeypatch.setitem(sys.modules, "torch_npu", SimpleNamespace(get_npu_format=lambda x: 0))
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(npu=SimpleNamespace(current_stream=lambda device: None)),
+    )
+    monkeypatch.setitem(
+        sys.modules, "torch_npu", SimpleNamespace(get_npu_format=lambda x: 0)
+    )
     monkeypatch.setenv("ECPA_NATIVE_ATTENTION_OPERATOR_OBSERVER", "1")
     bootstrap = load_file(package + ".bootstrap", "native_tensor_artifact_bootstrap.py")
     callback = bootstrap.callback_from_context(

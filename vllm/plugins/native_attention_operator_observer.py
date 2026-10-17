@@ -38,60 +38,105 @@ def registered_materialization_inventory(spec_raw, policy_raw, process):
     Returning a token never certifies materialization: every entry still needs
     its original authenticated source ACK and exact registered phase/layer.
     """
-    require(isinstance(spec_raw, bytes) and isinstance(policy_raw, bytes),
-            "raw registered spec/policy required")
-    require(0 < len(spec_raw) <= 65536 and 0 < len(policy_raw) <= 65536,
-            "registered private reader bound exceeded")
+    require(
+        isinstance(spec_raw, bytes) and isinstance(policy_raw, bytes),
+        "raw registered spec/policy required",
+    )
+    require(
+        0 < len(spec_raw) <= 65536 and 0 < len(policy_raw) <= 65536,
+        "registered private reader bound exceeded",
+    )
     spec, policy = json.loads(spec_raw), json.loads(policy_raw)
-    require(spec["schema"] == "ecpa-native-kv-semantic-collector-prereg/v2"
-            and spec["classification"] == "CPU_REVIEW_CANDIDATE_ONLY"
-            and spec["formal_producer_registration"] is False,
-            "original runtime native spec domain required")
-    require(policy["native_spec_sha256"] == sha(spec_raw),
-            "materialization inventory is not bound to native spec")
-    require(policy["schema"] == "ecpa-selected-KV-private-artifact-runtime-policy/v1"
-            and policy["classification"] == "REAL_RUNTIME_UNQUALIFIED"
-            and policy["formal_registration"] is False,
-            "runtime registration required for extended materialization inventory")
-    require(process["role"] == "worker" and type(process["ordinal"]) is int
-            and process["ordinal"] in (0, 1), "registered worker rank required")
-    require(sum(canonical(s["process"]) == canonical(process)
-                for s in spec["senders"]) == 1,
-            "inventory worker absent or repeated in sender registration")
+    require(
+        spec["schema"] == "ecpa-native-kv-semantic-collector-prereg/v2"
+        and spec["classification"] == "CPU_REVIEW_CANDIDATE_ONLY"
+        and spec["formal_producer_registration"] is False,
+        "original runtime native spec domain required",
+    )
+    require(
+        policy["native_spec_sha256"] == sha(spec_raw),
+        "materialization inventory is not bound to native spec",
+    )
+    require(
+        policy["schema"] == "ecpa-selected-KV-private-artifact-runtime-policy/v1"
+        and policy["classification"] == "REAL_RUNTIME_UNQUALIFIED"
+        and policy["formal_registration"] is False,
+        "runtime registration required for extended materialization inventory",
+    )
+    require(
+        process["role"] == "worker"
+        and type(process["ordinal"]) is int
+        and process["ordinal"] in (0, 1),
+        "registered worker rank required",
+    )
+    require(
+        sum(canonical(s["process"]) == canonical(process) for s in spec["senders"])
+        == 1,
+        "inventory worker absent or repeated in sender registration",
+    )
     phases = {}
     clients, externals, nonces = set(), set(), set()
     for phase in spec["phases"]:
-        require(set(phase) == {"phase_id", "client_request_id", "challenge_nonce",
-                              "external_request_id", "expected_ranks"},
-                "registered phase fields differ")
-        require(all(type(phase[k]) is str and phase[k] for k in
-                    ("phase_id", "client_request_id", "challenge_nonce", "external_request_id"))
-                and canonical(phase["expected_ranks"]) == canonical([0, 1]),
-                "registered phase identity/ranks differ")
+        require(
+            set(phase)
+            == {
+                "phase_id",
+                "client_request_id",
+                "challenge_nonce",
+                "external_request_id",
+                "expected_ranks",
+            },
+            "registered phase fields differ",
+        )
+        require(
+            all(
+                type(phase[k]) is str and phase[k]
+                for k in (
+                    "phase_id",
+                    "client_request_id",
+                    "challenge_nonce",
+                    "external_request_id",
+                )
+            )
+            and canonical(phase["expected_ranks"]) == canonical([0, 1]),
+            "registered phase identity/ranks differ",
+        )
         pid = phase["phase_id"]
-        require(pid not in phases and phase["client_request_id"] not in clients
-                and phase["external_request_id"] not in externals
-                and phase["challenge_nonce"] not in nonces,
-                "registered phases/requests/nonces alias")
+        require(
+            pid not in phases
+            and phase["client_request_id"] not in clients
+            and phase["external_request_id"] not in externals
+            and phase["challenge_nonce"] not in nonces,
+            "registered phases/requests/nonces alias",
+        )
         req = policy["requirements"][pid]
         layers = req["layer_indices"]
-        require(type(layers) is list and layers
-                and all(type(x) is int and x >= 0 for x in layers)
-                and len(set(layers)) == len(layers),
-                "registered layer inventory is absent, repeated or untyped")
+        require(
+            type(layers) is list
+            and layers
+            and all(type(x) is int and x >= 0 for x in layers)
+            and len(set(layers)) == len(layers),
+            "registered layer inventory is absent, repeated or untyped",
+        )
         projection = spec["kv_requirements"][pid]
-        require(all(type(req[k]) is int and req[k] > 0
-                    and req[k] == projection[k]
-                    for k in ("semantic_anchor", "physical_anchor"))
-                and req["physical_anchor"] < req["semantic_anchor"],
-                "registered tensor/projection anchors differ")
+        require(
+            all(
+                type(req[k]) is int and req[k] > 0 and req[k] == projection[k]
+                for k in ("semantic_anchor", "physical_anchor")
+            )
+            and req["physical_anchor"] < req["semantic_anchor"],
+            "registered tensor/projection anchors differ",
+        )
         phases[pid] = {"phase": phase, "layers": layers}
         clients.add(phase["client_request_id"])
         externals.add(phase["external_request_id"])
         nonces.add(phase["challenge_nonce"])
-    require(phases and set(policy["requirements"]) == set(phases)
-            and set(spec["kv_requirements"]) == set(phases),
-            "registered phase/layer coverage differs")
+    require(
+        phases
+        and set(policy["requirements"]) == set(phases)
+        and set(spec["kv_requirements"]) == set(phases),
+        "registered phase/layer coverage differs",
+    )
     token = _RegisteredMaterializationInventory()
     # Detached canonical bytes retain exact scalar types; callers cannot mutate
     # the parsed source registration through the returned object.
@@ -99,26 +144,53 @@ def registered_materialization_inventory(spec_raw, policy_raw, process):
     token.process = json.loads(canonical(process))
     token.rank = process["ordinal"]
     token.capacity = max(64, sum(len(p["layers"]) for p in phases.values()))
-    token.sha256 = sha(canonical({"phases": token.phases, "process": token.process,
-                                  "rank": token.rank, "capacity": token.capacity}))
-    _inventory_tokens[id(token)] = (token, canonical({
-        "phases": token.phases, "process": token.process,
-        "rank": token.rank, "capacity": token.capacity,
-    }))
+    token.sha256 = sha(
+        canonical(
+            {
+                "phases": token.phases,
+                "process": token.process,
+                "rank": token.rank,
+                "capacity": token.capacity,
+            }
+        )
+    )
+    _inventory_tokens[id(token)] = (
+        token,
+        canonical(
+            {
+                "phases": token.phases,
+                "process": token.process,
+                "rank": token.rank,
+                "capacity": token.capacity,
+            }
+        ),
+    )
     return token
 
 
 def _inventory_current(token):
     record = _inventory_tokens.get(id(token))
-    require(type(token) is _RegisteredMaterializationInventory
-            and record is not None and record[0] is token,
-            "source-derived inventory token required; caller capacity rejected")
+    require(
+        type(token) is _RegisteredMaterializationInventory
+        and record is not None
+        and record[0] is token,
+        "source-derived inventory token required; caller capacity rejected",
+    )
     # The trust anchor lives in the private issuer registry, independently of
     # every caller-visible mutable field (including the informative checksum).
-    require(canonical({"phases": token.phases, "process": token.process,
-                       "rank": token.rank, "capacity": token.capacity}) == record[1]
-            and token.sha256 == sha(record[1]),
-            "registered materialization inventory changed")
+    require(
+        canonical(
+            {
+                "phases": token.phases,
+                "process": token.process,
+                "rank": token.rank,
+                "capacity": token.capacity,
+            }
+        )
+        == record[1]
+        and token.sha256 == sha(record[1]),
+        "registered materialization inventory changed",
+    )
     return token
 
 
@@ -140,7 +212,12 @@ def enabled():
 
 
 def register_source_candidate(
-    publisher, *, scope, current_stream, get_format, read_prefix=None,
+    publisher,
+    *,
+    scope,
+    current_stream,
+    get_format,
+    read_prefix=None,
     materialization_inventory=None,
 ):
     """Explicit new source-only opt-in. No existing source producer is upgraded."""
@@ -153,8 +230,10 @@ def register_source_candidate(
     )
     if materialization_inventory is not None:
         token = _inventory_current(materialization_inventory)
-        require(canonical(scope()["process"]) == canonical(token.process),
-                "registered inventory belongs to another actual worker")
+        require(
+            canonical(scope()["process"]) == canonical(token.process),
+            "registered inventory belongs to another actual worker",
+        )
         _materialization_inventory = token
     _publisher, _scope = publisher, scope
     _current_stream, _get_format = current_stream, get_format
@@ -187,21 +266,28 @@ def remember_acknowledged_materialization(fact, ack):
     phase_layer = None
     if _materialization_inventory is not None:
         token = _inventory_current(_materialization_inventory)
-        require(canonical(scope["process"]) == canonical(token.process),
-                "registered materialization worker changed")
+        require(
+            canonical(scope["process"]) == canonical(token.process),
+            "registered materialization worker changed",
+        )
         phase = ack["phase"]
         registered = token.phases.get(phase["phase_id"])
-        require(registered is not None
-                and canonical(phase) == canonical(registered["phase"])
-                and type(binding["rank"]) is int and binding["rank"] == token.rank
-                and canonical(binding["expected_layer_indices"])
-                == canonical(registered["layers"])
-                and type(binding["layer_index"]) is int
-                and binding["layer_index"] in registered["layers"],
-                "ACK materialization is outside exact registered phase/rank/layers")
+        require(
+            registered is not None
+            and canonical(phase) == canonical(registered["phase"])
+            and type(binding["rank"]) is int
+            and binding["rank"] == token.rank
+            and canonical(binding["expected_layer_indices"])
+            == canonical(registered["layers"])
+            and type(binding["layer_index"]) is int
+            and binding["layer_index"] in registered["layers"],
+            "ACK materialization is outside exact registered phase/rank/layers",
+        )
         phase_layer = (phase["phase_id"], binding["layer_index"])
-        require(phase_layer not in _registered_phase_layers,
-                "registered phase/layer materialization repeated")
+        require(
+            phase_layer not in _registered_phase_layers,
+            "registered phase/layer materialization repeated",
+        )
         limit = token.capacity
     require(len(_materialized) < limit, "bounded fresh materialization scope exceeded")
     require(key not in _materialized, "ambiguous materialization for request/layer")
