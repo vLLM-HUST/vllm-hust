@@ -194,3 +194,68 @@ def test_narrow_connection_loss_requires_independent_captured_pidfd_death(monkey
             expected_archive_identity={},
         )
     assert observed == [collector] and failure.value.expected_collector == collector
+
+
+@pytest.mark.parametrize(
+    "case", ["exact-reaped", "wrong-peer", "permission-error", "unproven-death"]
+)
+def test_connected_peer_lookup_race_requires_exact_expected_peer_and_captured_pidfd(
+    tmp_path, monkeypatch, case
+):
+    import errno
+    import os
+    import socket
+    import struct
+
+    from vllm.plugins import native_observer_rebind as host
+
+    native = host.native
+    path = tmp_path / "real-unix-inode.sock"
+    original = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    original.bind(str(path))
+    info = path.stat()
+    expected = {"pid": 123, "start_ticks": 5, "boot_id": "CPU-fixture"}
+
+    class Channel:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def settimeout(self, *args):
+            pass
+
+        def connect(self, *args):
+            pass
+
+        def getsockopt(self, *args):
+            return struct.pack(
+                "3i", 124 if case == "wrong-peer" else 123, os.getuid(), os.getgid()
+            )
+
+    def lookup(pid):
+        if case == "permission-error":
+            raise PermissionError(errno.EACCES, "denied", f"/proc/{pid}/stat")
+        raise FileNotFoundError(errno.ENOENT, "reaped", f"/proc/{pid}/stat")
+
+    monkeypatch.setattr(native.socket, "socket", lambda *a, **k: Channel())
+    monkeypatch.setattr(native, "identity", lookup)
+    monkeypatch.setattr(
+        host, "collector_kernel_gone", lambda *a: case != "unproven-death"
+    )
+    expected_error = (
+        native.CollectorKernelGone if case == "exact-reaped" else ValueError
+    )
+    try:
+        with pytest.raises(expected_error):
+            native._submit_fact(
+                path,
+                {},
+                expected_collector=expected,
+                expected_socket_identity=(info.st_dev, info.st_ino),
+                expected_collector_source_sha256="CPU-fixture",
+                expected_archive_identity={},
+            )
+    finally:
+        original.close()

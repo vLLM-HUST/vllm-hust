@@ -10,9 +10,9 @@ No fact is replayed and no attention inventory or drain history is reset.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
-import re
 import secrets
 import select
 import socket
@@ -21,6 +21,8 @@ import struct
 import threading
 import time
 from pathlib import Path
+
+import regex as re
 
 from . import native_semantic_collector as native
 
@@ -356,7 +358,8 @@ class Router:
                     assigned = self.requests.setdefault(rid, generation)
                     require(
                         assigned == generation,
-                        "actual API transport epoch changed for existing runtime request",
+                        "actual API transport epoch changed for existing "
+                        "runtime request",
                     )
                     if assigned != self.generation or rid in self.unavailable_requests:
                         self._unavailable(
@@ -407,7 +410,8 @@ class Router:
 
     def _collector_gone(self, collector):
         fd = self.pidfds.get(native.canonical(collector))
-        require(fd is not None, "exact preregistered collector pidfd unavailable")
+        if fd is None:
+            raise ValueError("exact preregistered collector pidfd unavailable")
         poll = select.poll()
         poll.register(fd, select.POLLIN)
         events = poll.poll(0)
@@ -713,8 +717,10 @@ class Router:
                 self.used.add(command["transition_nonce"])
                 self.pending = (command, next_channels, acknowledgement)
                 return acknowledgement
-            require(self.pending is not None, "no prepared successor")
-            prepared, next_channels, acknowledgement = self.pending
+            pending = self.pending
+            if pending is None:
+                raise ValueError("no prepared successor")
+            prepared, next_channels, acknowledgement = pending
             require(
                 all(command[k] == prepared[k] for k in common if k != "operation")
                 and command["prepared_sha256"]
@@ -724,7 +730,8 @@ class Router:
             for channel, (_, _, value) in next_channels.items():
                 validate_successor(self.channels[channel][2], value, channel, p)
             # All in-progress publication calls share this lock and have finished.
-            # No retry, phase-drain reset, materialization reset or callback registration.
+            # No retry, phase-drain reset, materialization reset or callback
+            # registration.
             self.old_client_ids.update(command["old_client_request_ids"])
             self.channels = next_channels
             self.current = prepared["contexts"]
@@ -844,10 +851,9 @@ class Router:
                             reason=str(error),
                             native_completion_proved=False,
                         )
-                    try:
+                    # A missing ACK leaves authority route closed.
+                    with contextlib.suppress(OSError):
                         connection.sendall(native.canonical(response) + b"\n")
-                    except OSError:
-                        pass  # A missing ACK leaves authority route closed.
             finally:
                 slots.release()
 
