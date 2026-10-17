@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast
 
 from .native_semantic_collector import (
     canonical,
@@ -21,8 +22,15 @@ from .native_semantic_collector import (
     submit_fact,
 )
 
+if TYPE_CHECKING:
+    from .native_sampled_selection import SampledSelection
+
 BOOTSTRAP = "ecpa-native-semantic-bootstrap/v1"
 ENV = "ECPA_NATIVE_SEMANTIC_BOOTSTRAP"
+
+
+class _SampleSelectionCallback(Protocol):
+    h4_sample_selection: SampledSelection
 
 
 def callback_from_context(path: Path, *, _install_rebind=True):
@@ -63,6 +71,26 @@ def callback_from_context(path: Path, *, _install_rebind=True):
     frozen_identity = (metadata.st_dev, metadata.st_ino)
     frozen_sha = sha(raw)
 
+    def selection_current():
+        current, info = read_private(path, 0o600)
+        if (info.st_dev, info.st_ino) != frozen_identity or sha(current) != frozen_sha:
+            raise ValueError("sample selector bootstrap context changed")
+        if read_private(Path(value["spec_path"]), 0o600)[0] != spec_raw:
+            raise ValueError("sample selector preregistered spec changed")
+        source_digests(value["source_files"])
+        source_digests(own_sender["source_files"])
+        from .native_semantic_collector import identity
+
+        if any(
+            own_sender["process"][key] != actual
+            for key, actual in identity(os.getpid()).items()
+        ):
+            raise ValueError("sample selector actual source kernel changed")
+
+    from .native_sampled_selection import register as register_selection
+
+    selector = register_selection(value, spec, selection_current)
+
     def callback(fact):
         current, info = read_private(path, 0o600)
         if (info.st_dev, info.st_ino) != frozen_identity or sha(current) != frozen_sha:
@@ -86,12 +114,16 @@ def callback_from_context(path: Path, *, _install_rebind=True):
     if _install_rebind:
         from .native_observer_rebind import install
 
-        return install(
+        callback = install(
             "semantic",
             path,
             callback,
             lambda next_path: callback_from_context(next_path, _install_rebind=False),
         )
+    # The final transport wrapper must retain pre-drain selection metadata.
+    # Attaching only to the inner callback silently drops the Host63 contract.
+    if selector is not None:
+        cast(_SampleSelectionCallback, callback).h4_sample_selection = selector
     return callback
 
 

@@ -19,6 +19,8 @@ steps:
   - pytest -v -s plugins/test_native_registered_materialization_capacity.py
   - pytest -v -s plugins/test_native_observer_live_rebind.py
   - pytest -v -s plugins/test_native_observer_live_epoch_fences.py
+  - pytest -v -s plugins/test_h4_native_sampled_selection.py
+  - pytest -v -s plugins/test_native_sampled_live_wrapper_binding.py
   # begin platform plugin and general plugin tests, all the code in-between runs on dummy platform
   - pip install -e ./plugins/vllm_add_dummy_platform
   - pytest -v -s plugins_tests/test_platform_plugins.py

@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING or (__package__ and __package__.startswith("vllm.")):
     from . import native_semantic_collector as native
@@ -20,6 +21,10 @@ else:
 SCHEMA = "ecpa-selected-KV-private-artifact-bootstrap/v1"
 RUNTIME_SCHEMA = "ecpa-selected-KV-private-artifact-runtime-bootstrap/v1"
 ENV = "ECPA_NATIVE_TENSOR_ARTIFACT_BOOTSTRAP"
+
+
+class _SampleSelectableCallback(Protocol):
+    native_request_selected: Callable[[str], bool]
 
 
 def callback_from_context(
@@ -184,7 +189,7 @@ def callback_from_context(
     if _install_rebind:
         from .native_observer_rebind import install
 
-        return install(
+        callback = install(
             "tensor",
             path,
             callback,
@@ -195,6 +200,12 @@ def callback_from_context(
                 _initialize_attention=False,
             ),
         )
+    from .native_sampled_selection import runtime_request_selected
+
+    # KV witness code reads the attribute from the final registered callback.
+    cast(
+        _SampleSelectableCallback, callback
+    ).native_request_selected = runtime_request_selected
     return callback
 
 

@@ -5,6 +5,8 @@ on:
     paths:
       - 'vllm/plugins/**'
       - 'tests/plugins/test_native_observer_live*.py'
+      - 'tests/plugins/test_h4_native_sampled_selection.py'
+      - 'tests/plugins/test_native_sampled_live_wrapper_binding.py'
       - '.github/workflows/live-observer-source-contracts.yml'
 
 permissions:
@@ -41,6 +43,8 @@ jobs:
           python -m pytest -q --confcutdir=tests/plugins \
             tests/plugins/test_native_observer_live_rebind.py \
             tests/plugins/test_native_observer_live_epoch_fences.py \
+            tests/plugins/test_h4_native_sampled_selection.py \
+            tests/plugins/test_native_sampled_live_wrapper_binding.py \
             --junitxml=live-observer-source-contracts.xml
       - uses: actions/upload-artifact@v4
         if: always()
