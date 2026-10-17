@@ -134,6 +134,7 @@ def test_registered_sixty_by_twenty_eight_retains_all_history(observer):
                 first = copy.deepcopy(fact), copy.deepcopy(ack)
     assert len(observer._materialized) == len(observer._registered_phase_layers) == 1680
     original = observer._materialized[("r-000", "model.layers.0.self_attn")]
+    assert first is not None
     assert original["fact"] == first[0]
     assert original["ack"] == first[1]
     assert original["fact_sha256"] == observer.sha(observer.canonical(first[0]))

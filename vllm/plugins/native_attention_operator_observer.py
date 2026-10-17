@@ -27,6 +27,12 @@ _inventory_tokens: dict[int, Any] = {}
 
 
 class _RegisteredMaterializationInventory:
+    phases: dict[str, dict[str, Any]]
+    rank: int
+    process: dict[str, Any]
+    capacity: int
+    sha256: str
+
     __slots__ = ("phases", "rank", "process", "capacity", "sha256")
 
 
@@ -176,6 +182,7 @@ def _inventory_current(token):
         and record[0] is token,
         "source-derived inventory token required; caller capacity rejected",
     )
+    assert record is not None
     # The trust anchor lives in the private issuer registry, independently of
     # every caller-visible mutable field (including the informative checksum).
     require(

@@ -16,6 +16,7 @@ steps:
   - pytest -v -s plugins_tests/test_ecpa_plugin_evidence.py
   - pytest -v -s plugins/test_extension_capabilities.py
   - pytest -v -s plugins/test_request_processing.py
+  - pytest -v -s plugins/test_native_registered_materialization_capacity.py
   # begin platform plugin and general plugin tests, all the code in-between runs on dummy platform
   - pip install -e ./plugins/vllm_add_dummy_platform
   - pytest -v -s plugins_tests/test_platform_plugins.py
