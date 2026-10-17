@@ -179,9 +179,9 @@ def callback_from_context(path, *, actual_scope=None):
 
     from .native_sampled_selection import runtime_request_selected
 
-    cast(_SampleSelectableCallback, callback).native_request_selected = (
-        runtime_request_selected
-    )
+    cast(
+        _SampleSelectableCallback, callback
+    ).native_request_selected = runtime_request_selected
     return callback
 
 
