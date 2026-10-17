@@ -1,0 +1,57 @@
+name: Live observer source contracts
+
+on:
+  pull_request:
+    paths:
+      - 'vllm/plugins/**'
+      - 'tests/plugins/test_native_observer_live*.py'
+      - 'tests/plugins/test_h4_native_sampled_selection.py'
+      - 'tests/plugins/test_native_sampled_live_wrapper_binding.py'
+      - '.github/workflows/live-observer-source-contracts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-observer-source-contracts-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-source-contracts:
+    name: CPU source contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      VLLM_PLUGINS: ''
+      CUDA_VISIBLE_DEVICES: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install actual CPU import dependencies
+        run: |
+          python -m pip install --only-binary=:all: torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pytest==9.1.1 regex numpy packaging typing_extensions psutil pyyaml py-cpuinfo
+      - name: Record actual source and dependency identities
+        run: |
+          git rev-parse HEAD 'HEAD^{tree}' > live-observer-source-identities.txt
+          python -m pip freeze > live-observer-cpu-dependencies.txt
+      - name: Run real Host Router and peer epoch contracts
+        run: |
+          python -m pytest -q --confcutdir=tests/plugins \
+            tests/plugins/test_native_observer_live_rebind.py \
+            tests/plugins/test_native_observer_live_epoch_fences.py \
+            tests/plugins/test_h4_native_sampled_selection.py \
+            tests/plugins/test_native_sampled_live_wrapper_binding.py \
+            --junitxml=live-observer-source-contracts.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-observer-source-contracts
+          path: |
+            live-observer-source-identities.txt
+            live-observer-cpu-dependencies.txt
+            live-observer-source-contracts.xml
+          if-no-files-found: warn
