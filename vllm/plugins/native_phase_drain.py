@@ -56,6 +56,7 @@ def acknowledged_publication(runtime_request_id, publish):
             raise ValueError("native publication after source-owned request drain")
         ack = publish()
         from .native_observer_rebind import is_unavailable
+
         if is_unavailable(ack):
             return ack  # Missing actual transport is never recorded as an ACK.
         record_ack(runtime_request_id, ack)
@@ -101,6 +102,7 @@ def _after_finished_request_removal(runner, scheduler_output, *, scope, publish)
                 "actual native request has not been removed or was resubmitted"
             )
         from .native_observer_rebind import request_unavailable
+
         if request_unavailable(runtime):
             continue  # No source drain fact/ACK; original completion must fail.
         records = _records[runtime]
@@ -120,6 +122,7 @@ def _after_finished_request_removal(runner, scheduler_output, *, scope, publish)
         # The publication callback must synchronously verify the collector ACK.
         ack = publish(fact)
         from .native_observer_rebind import is_unavailable
+
         if is_unavailable(ack):
             continue  # Original raw ACK is absent; do not claim source drain.
         if not isinstance(ack, dict) or ack.get("raw_sha256") != digest(fact):

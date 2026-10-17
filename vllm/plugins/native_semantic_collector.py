@@ -783,18 +783,28 @@ def _submit_fact(
             "3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
         )
         try:
-            peer=identity(pid)
+            peer = identity(pid)
         except OSError as error:
             # A connected original peer may be reaped between SO_PEERCRED and
             # /proc lookup. Only its already captured exact pidfd can resolve
             # that absence. Wrong PID/UID and metadata/I/O errors stay fatal.
             from .native_observer_rebind import collector_kernel_gone
-            if (uid == os.getuid() and pid == expected_collector['pid']
-                    and ((isinstance(error, FileNotFoundError)
-                          and error.filename == f'/proc/{pid}/stat')
-                         or (isinstance(error, ProcessLookupError)
-                             and not Path(f'/proc/{pid}').exists()))
-                    and collector_kernel_gone(expected_collector)):
+
+            if (
+                uid == os.getuid()
+                and pid == expected_collector["pid"]
+                and (
+                    (
+                        isinstance(error, FileNotFoundError)
+                        and error.filename == f"/proc/{pid}/stat"
+                    )
+                    or (
+                        isinstance(error, ProcessLookupError)
+                        and not Path(f"/proc/{pid}").exists()
+                    )
+                )
+                and collector_kernel_gone(expected_collector)
+            ):
                 raise CollectorKernelGone(expected_collector) from error
             raise ValueError("ACK kernel peer cannot be authenticated") from error
         if uid != os.getuid() or peer != expected_collector:
@@ -806,8 +816,9 @@ def _submit_fact(
         while not response.endswith(b"\n"):
             chunk = channel.recv(MAX_FRAME + 1)
             if not chunk:
-                if (os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_POLICY")
-                        or os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_DIRECTORY")):
+                if os.environ.get(
+                    "ECPA_NATIVE_OBSERVER_REBIND_POLICY"
+                ) or os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_DIRECTORY"):
                     raise EOFError("native collector closed before an ACK")
                 raise ValueError("native ACK is incomplete or oversized")
             if len(response) + len(chunk) > MAX_FRAME:
@@ -833,26 +844,41 @@ def _submit_fact(
 
 class CollectorKernelGone(ConnectionError):
     """No ACK: exact pinned collector death was independently observed locally."""
+
     def __init__(self, expected_collector):
         super().__init__("pinned native collector kernel gone; no actual ACK")
-        self.expected_collector=dict(expected_collector)
+        self.expected_collector = dict(expected_collector)
 
 
-def submit_fact(path, fact, *, expected_collector, expected_socket_identity,
-                expected_collector_source_sha256, expected_archive_identity):
+def submit_fact(
+    path,
+    fact,
+    *,
+    expected_collector,
+    expected_socket_identity,
+    expected_collector_source_sha256,
+    expected_archive_identity,
+):
     try:
-        return _submit_fact(path, fact, expected_collector=expected_collector,
+        return _submit_fact(
+            path,
+            fact,
+            expected_collector=expected_collector,
             expected_socket_identity=expected_socket_identity,
             expected_collector_source_sha256=expected_collector_source_sha256,
-            expected_archive_identity=expected_archive_identity)
+            expected_archive_identity=expected_archive_identity,
+        )
     except (OSError, EOFError) as error:
-        enabled = (os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_POLICY")
-                   or os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_DIRECTORY"))
-        transport_loss = isinstance(error, (ConnectionRefusedError,
-            ConnectionResetError, BrokenPipeError, EOFError)) or (
-            isinstance(error, FileNotFoundError) and error.filename == str(path))
+        enabled = os.environ.get(
+            "ECPA_NATIVE_OBSERVER_REBIND_POLICY"
+        ) or os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_DIRECTORY")
+        transport_loss = isinstance(
+            error,
+            (ConnectionRefusedError, ConnectionResetError, BrokenPipeError, EOFError),
+        ) or (isinstance(error, FileNotFoundError) and error.filename == str(path))
         if enabled and transport_loss:
             from .native_observer_rebind import collector_kernel_gone
+
             if collector_kernel_gone(expected_collector):
                 raise CollectorKernelGone(expected_collector) from error
         raise

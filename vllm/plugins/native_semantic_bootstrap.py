@@ -85,8 +85,13 @@ def callback_from_context(path: Path, *, _install_rebind=True):
 
     if _install_rebind:
         from .native_observer_rebind import install
-        return install("semantic", path, callback,
-            lambda next_path: callback_from_context(next_path, _install_rebind=False))
+
+        return install(
+            "semantic",
+            path,
+            callback,
+            lambda next_path: callback_from_context(next_path, _install_rebind=False),
+        )
     return callback
 
 
@@ -102,8 +107,9 @@ def ensure_registered(register_observer) -> bool:
     if not context.exists():
         return False
     if os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_DIRECTORY"):
-        from .native_observer_rebind import bootstrap_lock
         from . import native_block_table_observer as observer
+        from .native_observer_rebind import bootstrap_lock
+
         with bootstrap_lock:
             if observer._observer is None:
                 register_observer(callback_from_context(context))

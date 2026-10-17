@@ -130,6 +130,7 @@ def bind_process_identity(role: str, ordinal: int) -> None:
         _process_identity_binding = binding
     if os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_DIRECTORY"):
         from .native_observer_rebind import begin_host_bootstrap
+
         begin_host_bootstrap(role, ordinal)
 
 
