@@ -63,6 +63,26 @@ def callback_from_context(path: Path):
     frozen_identity = (metadata.st_dev, metadata.st_ino)
     frozen_sha = sha(raw)
 
+    def selection_current():
+        current, info = read_private(path, 0o600)
+        if (info.st_dev, info.st_ino) != frozen_identity or sha(current) != frozen_sha:
+            raise ValueError("sample selector bootstrap context changed")
+        if read_private(Path(value["spec_path"]), 0o600)[0] != spec_raw:
+            raise ValueError("sample selector preregistered spec changed")
+        source_digests(value["source_files"])
+        source_digests(own_sender["source_files"])
+        from .native_semantic_collector import identity
+
+        if any(
+            own_sender["process"][key] != actual
+            for key, actual in identity(os.getpid()).items()
+        ):
+            raise ValueError("sample selector actual source kernel changed")
+
+    from .native_sampled_selection import register as register_selection
+
+    selector = register_selection(value, spec, selection_current)
+
     def callback(fact):
         current, info = read_private(path, 0o600)
         if (info.st_dev, info.st_ino) != frozen_identity or sha(current) != frozen_sha:
@@ -83,6 +103,8 @@ def callback_from_context(path: Path):
             raise ValueError("native ACK is not a frozen challenge phase")
         return ack
 
+    if selector is not None:
+        callback.h4_sample_selection = selector
     return callback
 
 

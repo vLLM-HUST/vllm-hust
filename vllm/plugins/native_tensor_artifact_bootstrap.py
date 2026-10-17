@@ -172,6 +172,9 @@ def callback_from_context(path, *, actual_scope=None):
             remember_acknowledged_materialization(published, ack)
         return ack
 
+    from .native_sampled_selection import runtime_request_selected
+
+    callback.native_request_selected = runtime_request_selected
     return callback
 
 

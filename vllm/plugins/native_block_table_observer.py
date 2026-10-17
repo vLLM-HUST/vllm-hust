@@ -24,7 +24,18 @@ def register_observer(observer):
         raise TypeError("observer must be callable")
     from .native_phase_drain import callback_with_drain
 
-    _observer = callback_with_drain(observer)
+    wrapped = callback_with_drain(observer)
+    selection = getattr(observer, "h4_sample_selection", None)
+    if selection is None:
+        _observer = wrapped
+    else:
+
+        def selected_before_ack_tracking(fact):
+            if not selection.fact(fact):
+                return None  # no native submission, fabricated ACK or drain record
+            return wrapped(fact)
+
+        _observer = selected_before_ack_tracking
 
 
 def _scope(role):
@@ -76,6 +87,18 @@ def observe_block_table_upload(runner, scheduler_output):
         ensure_registered(register_observer)
     if _observer is None:
         return
+    from .native_sampled_selection import runtime_request_selected
+
+    batch = runner.input_batch
+    scheduled = scheduler_output.num_scheduled_tokens
+    selected_rows = [
+        (row, request_id)
+        for row, request_id in enumerate(batch.req_ids[: batch.num_reqs])
+        if scheduled.get(request_id, 0) > 0 and runtime_request_selected(request_id)
+    ]
+    if not selected_rows:
+        return  # before observer barrier/readback, not after collector rejection
+
     # Imported only for an opted-in observation. No global device sync, dummy
     # graph interception or model/KV-tensor correctness assertion.
     import torch
@@ -92,9 +115,7 @@ def observe_block_table_upload(runner, scheduler_output):
     # deliberately costly qualification barrier is not a production fast path.
     cast(Any, torch).npu.current_stream(tables[0].block_table.gpu.device).synchronize()
     scheduled = scheduler_output.num_scheduled_tokens
-    for row, request_id in enumerate(batch.req_ids[: batch.num_reqs]):
-        if scheduled.get(request_id, 0) <= 0:
-            continue
+    for row, request_id in selected_rows:
         observed = []
         for group_id, table in enumerate(tables):
             width = int(table.num_blocks_per_row[row])

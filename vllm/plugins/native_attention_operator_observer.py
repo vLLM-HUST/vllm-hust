@@ -323,6 +323,10 @@ def bind_actual_input_batch(runner, metadata, *, eager):
     if len(req_ids) != 1:
         return
     request_id = req_ids[0]
+    from .native_sampled_selection import runtime_request_selected
+
+    if not runtime_request_selected(request_id):
+        return  # before metadata/readback/OP construction, no fake native receipt
     require(
         runner.input_batch.req_id_to_index[request_id] == 0,
         "actual InputBatch request row differs",
