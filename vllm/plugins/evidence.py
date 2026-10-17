@@ -128,6 +128,9 @@ def bind_process_identity(role: str, ordinal: int) -> None:
         if _process_identity_binding not in (None, binding):
             raise EvidenceConfigurationError("host process identity is already bound")
         _process_identity_binding = binding
+    if os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_DIRECTORY"):
+        from .native_observer_rebind import begin_host_bootstrap
+        begin_host_bootstrap(role, ordinal)
 
 
 def capture_scope(*, expected_role: str | None = None) -> EvidenceScope:

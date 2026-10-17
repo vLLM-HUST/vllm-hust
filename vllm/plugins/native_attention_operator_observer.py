@@ -804,6 +804,9 @@ def observe_native_call(operator, native_call, arguments, *, metadata, layer_nam
         bound["object"] is metadata and bound["layer_name"] == layer_name,
         "native metadata/layer source binding changed",
     )
+    from .native_observer_rebind import request_unavailable
+    if request_unavailable(bound["runtime_request_id"]):
+        return native_call(**arguments)  # Execute real OP; emit no witness.
     key_id = (bound["runtime_request_id"], layer_name)
     if key_id in _observed:
         return native_call(**arguments)

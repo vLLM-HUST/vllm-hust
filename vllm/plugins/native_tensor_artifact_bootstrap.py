@@ -22,7 +22,8 @@ RUNTIME_SCHEMA = "ecpa-selected-KV-private-artifact-runtime-bootstrap/v1"
 ENV = "ECPA_NATIVE_TENSOR_ARTIFACT_BOOTSTRAP"
 
 
-def callback_from_context(path, *, actual_scope=None):
+def callback_from_context(path, *, actual_scope=None,
+                          _install_rebind=True, _initialize_attention=True):
     path = Path(path)
     raw, info = native.read_private(path, 0o600)
     value = json.loads(raw)
@@ -85,7 +86,7 @@ def callback_from_context(path, *, actual_scope=None):
         def actual_scope():
             return _scope("worker")
 
-    if os.environ.get("ECPA_NATIVE_ATTENTION_OPERATOR_OBSERVER") == "1":
+    if _initialize_attention and os.environ.get("ECPA_NATIVE_ATTENTION_OPERATOR_OBSERVER") == "1":
         import torch
         import torch_npu
 
@@ -164,6 +165,9 @@ def callback_from_context(path, *, actual_scope=None):
                 },
             ),
         )
+        from .native_observer_rebind import is_unavailable
+        if is_unavailable(ack):
+            return ack  # No genuine artifact ACK; never register materialization.
         if is_runtime:
             from .native_attention_operator_observer import (
                 remember_acknowledged_materialization,
@@ -172,6 +176,11 @@ def callback_from_context(path, *, actual_scope=None):
             remember_acknowledged_materialization(published, ack)
         return ack
 
+    if _install_rebind:
+        from .native_observer_rebind import install
+        return install("tensor", path, callback,
+            lambda next_path: callback_from_context(next_path, actual_scope=actual_scope,
+                _install_rebind=False, _initialize_attention=False))
     return callback
 
 
@@ -183,12 +192,18 @@ def ensure_registered(register):
     transport.require(path.is_absolute(), "tensor bootstrap path must be absolute")
     if not path.exists():
         return False
-    register(callback_from_context(path))
+    if os.environ.get("ECPA_NATIVE_OBSERVER_REBIND_DIRECTORY"):
+        from .native_observer_rebind import bootstrap_lock
+        from . import native_tensor_witness as witness
+        with bootstrap_lock:
+            if not witness.enabled():
+                register(callback_from_context(path))
+    else:
+        register(callback_from_context(path))
     return True
 
 
-def write_context(path, *, spec_path, policy_path, ready, source_files):
-    """Launcher prepares input only; readiness must be authenticated independently."""
+def context_value(*, spec_path, policy_path, ready, source_files):
     policy = json.loads(Path(policy_path).read_bytes())
     is_runtime = policy["schema"] == transport.RUNTIME_POLICY
     value = {
@@ -202,6 +217,12 @@ def write_context(path, *, spec_path, policy_path, ready, source_files):
         "ready": ready,
         "source_files": source_files,
     }
+    return value
+
+
+def write_context(path, *, spec_path, policy_path, ready, source_files):
+    """Launcher prepares input only; readiness must be authenticated independently."""
+    value = context_value(spec_path=spec_path, policy_path=policy_path, ready=ready, source_files=source_files)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         raw = memoryview(native.canonical(value))
