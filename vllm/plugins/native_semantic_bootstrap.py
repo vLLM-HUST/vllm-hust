@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast
 
 from .native_semantic_collector import (
     canonical,
@@ -21,8 +22,15 @@ from .native_semantic_collector import (
     submit_fact,
 )
 
+if TYPE_CHECKING:
+    from .native_sampled_selection import SampledSelection
+
 BOOTSTRAP = "ecpa-native-semantic-bootstrap/v1"
 ENV = "ECPA_NATIVE_SEMANTIC_BOOTSTRAP"
+
+
+class _SampleSelectionCallback(Protocol):
+    h4_sample_selection: SampledSelection
 
 
 def callback_from_context(path: Path):
@@ -104,7 +112,7 @@ def callback_from_context(path: Path):
         return ack
 
     if selector is not None:
-        callback.h4_sample_selection = selector
+        cast(_SampleSelectionCallback, callback).h4_sample_selection = selector
     return callback
 
 

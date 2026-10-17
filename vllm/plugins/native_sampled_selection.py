@@ -159,5 +159,7 @@ def runtime_request_selected(runtime_request_id):
             ensure_registered(register_observer),
             "H4 sample instrumentation has no actual frozen source context",
         )
-    require(_selector is not None, "H4 sample selector not source-registered")
-    return _selector.runtime(runtime_request_id)
+    selector = _selector
+    if selector is None:
+        raise ValueError("H4 sample selector not source-registered")
+    return selector.runtime(runtime_request_id)
