@@ -89,14 +89,26 @@ def callback_from_context(path, *, actual_scope=None):
         import torch
         import torch_npu
 
-        from .native_attention_operator_observer import register_source_candidate
+        from .native_attention_operator_observer import (
+            register_source_candidate,
+            registered_materialization_inventory,
+        )
         from .native_block_table_observer import _scope, emit_native_fact
 
+        inventory = None
+        if is_runtime:
+            # Full existing transport predicate checks the raw private scope,
+            # source closure, TP2 directories, all phases and layer anchors.
+            transport.policy_predicate(policy, spec, native.sha(spec_raw))
+            inventory = registered_materialization_inventory(
+                spec_raw, policy_raw, sender["process"]
+            )
         register_source_candidate(
             lambda fact: emit_native_fact(lambda: fact),
             scope=lambda: _scope("worker"),
             current_stream=cast(Any, torch).npu.current_stream,
             get_format=torch_npu.get_npu_format,
+            materialization_inventory=inventory,
         )
     inode, digest = (info.st_dev, info.st_ino), native.sha(raw)
     ready = value["ready"]
