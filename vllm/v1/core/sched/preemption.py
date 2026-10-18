@@ -135,6 +135,13 @@ def _load_policy(vllm_config: VllmConfig) -> PreemptionPolicy | None:
     configured: Any = vllm_config.scheduler_config.preemption_policy
     if configured is None:
         return None
+    from vllm.plugins.conditional_policy_manual import activation_route, manual_policy
+
+    if activation_route() == "manual-integration":
+        policy = manual_policy("preemption", vllm_config)
+        if not isinstance(policy, PreemptionPolicy):
+            raise TypeError("manual policy violates original PreemptionPolicy")
+        return policy
     implementation = (
         resolve_obj_by_qualname(configured)
         if isinstance(configured, str)
@@ -189,28 +196,59 @@ class PreemptionPolicyController:
         if policy is None:
             return _builtin_victim_id(context)
 
+        from vllm.plugins.conditional_scheduler_evidence import decision
+
         self.stats.calls += 1
         try:
             selected_id = policy.select_victim(context)
-        except Exception:
+        except Exception as error:
             self._emit_invocation("exception")
             self._disable_after_failure("raised an exception", exc_info=True)
-            return _builtin_victim_id(context)
+            fallback = _builtin_victim_id(context)
+            decision(
+                self,
+                "preemption",
+                context,
+                None,
+                fallback,
+                "exception-builtin-fallback",
+                error,
+            )
+            return fallback
 
         if selected_id is None:
             self.stats.abstentions += 1
             self._emit_invocation("abstained")
-            return _builtin_victim_id(context)
+            fallback = _builtin_victim_id(context)
+            decision(
+                self,
+                "preemption",
+                context,
+                None,
+                fallback,
+                "abstained-builtin-fallback",
+            )
+            return fallback
 
         candidate_ids = {candidate.request_id for candidate in context.candidates}
         if selected_id not in candidate_ids:
             self.stats.invalid_selections += 1
             self._emit_invocation("invalid")
             self._disable_after_failure(f"returned unknown request ID {selected_id!r}")
-            return _builtin_victim_id(context)
+            fallback = _builtin_victim_id(context)
+            decision(
+                self,
+                "preemption",
+                context,
+                selected_id,
+                fallback,
+                "invalid-builtin-fallback",
+            )
+            return fallback
 
         self.stats.selections += 1
         self._emit_invocation("selected")
+        decision(self, "preemption", context, selected_id, selected_id, "accepted")
         return selected_id
 
     def _emit_invocation(self, outcome: str) -> None:

@@ -109,6 +109,13 @@ def _load_policy(vllm_config: VllmConfig) -> BatchAdmissionPolicy | None:
     configured: Any = vllm_config.scheduler_config.batch_admission_policy
     if configured is None:
         return None
+    from vllm.plugins.conditional_policy_manual import activation_route, manual_policy
+
+    if activation_route() == "manual-integration":
+        policy = manual_policy("batch", vllm_config)
+        if not isinstance(policy, BatchAdmissionPolicy):
+            raise TypeError("manual policy violates original BatchAdmissionPolicy")
+        return policy
     implementation = (
         resolve_obj_by_qualname(configured)
         if isinstance(configured, str)
@@ -158,11 +165,16 @@ class BatchAdmissionPolicyController:
             self.stats.builtin_fallbacks += int(self.stats.configured)
             return None
 
+        from vllm.plugins.conditional_scheduler_evidence import decision
+
         self.stats.calls += 1
         try:
             admission = policy.admit_batch(context)
-        except Exception:
+        except Exception as error:
             self._disable_after_failure("raised an exception", exc_info=True)
+            decision(
+                self, "batch", context, None, None, "exception-builtin-fallback", error
+            )
             return None
 
         if admission is None:
@@ -171,15 +183,27 @@ class BatchAdmissionPolicyController:
                 self._disable_after_failure(
                     "abstained while work existed and no batch was in flight"
                 )
+            decision(
+                self,
+                "batch",
+                context,
+                None,
+                None,
+                "abstained" if self.enabled else "abstained-builtin-fallback",
+            )
             return None
 
         error = self._validate_admission(admission, context)
         if error is not None:
             self.stats.invalid_admissions += 1
             self._disable_after_failure(error)
+            decision(
+                self, "batch", context, admission, None, "invalid-builtin-fallback"
+            )
             return None
 
         self.stats.admissions += 1
+        decision(self, "batch", context, admission, admission, "accepted")
         return admission
 
     def on_batch_complete(self, batch_id: str) -> None:

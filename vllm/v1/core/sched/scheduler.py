@@ -248,6 +248,9 @@ class Scheduler(SchedulerInterface):
         self.running: list[Request] = []
         self.preemption_policy = PreemptionPolicyController(vllm_config)
         self.batch_admission_policy = BatchAdmissionPolicyController(vllm_config)
+        from vllm.plugins.conditional_scheduler_evidence import configured
+
+        configured(vllm_config, self.batch_admission_policy, self.preemption_policy)
         self._batch_eligible_request_ids: frozenset[str] | None = None
 
         # The request IDs that are finished in between the previous and the
