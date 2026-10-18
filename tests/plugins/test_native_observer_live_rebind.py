@@ -321,3 +321,197 @@ def test_session_change_of_same_live_kernel_is_not_death(monkeypatch):
     )
     with pytest.raises(ValueError, match="live collector session"):
         host.same_kernel_alive(collector)
+
+
+@pytest.fixture
+def h3_status_actor():
+    """Real private UDS and SO_PEERCRED, only synthetic CPU status facts."""
+    import contextlib
+    import copy
+    import socket
+    import tempfile
+    import threading
+
+    @contextlib.contextmanager
+    def actor(change=None):
+        with tempfile.TemporaryDirectory(prefix="h3probe-") as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+
+            def write(name, value):
+                path = root / name
+                path.write_bytes(host.native.canonical(value))
+                path.chmod(0o600)
+                return path
+
+            spec = {"phases": [{"phase_id": f"cpu-{i}"} for i in range(60)]}
+            spec_path = write("native-spec.json", spec)
+            spec_sha = host.native.sha(spec_path.read_bytes())
+            tensor = write("tensor-policy.json", {"native_spec_sha256": spec_sha})
+            drain = write(
+                "drain-policy.json",
+                {
+                    "schema": "ecpa-h3-concurrent-native-drain-policy/v1",
+                    "native_spec_sha256": spec_sha,
+                    "tensor_policy_sha256": host.native.sha(tensor.read_bytes()),
+                    "phase_ids": [phase["phase_id"] for phase in spec["phases"]],
+                    "required_ranks": [0, 1],
+                    "formal_registration": False,
+                },
+            )
+            journal = write("native.jsonl", {})
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            path = root / "native.sock"
+            server.bind(str(path))
+            path.chmod(0o600)
+            server.listen(1)
+            server.settimeout(0.25)
+            info, parent, logged = path.stat(), root.stat(), journal.stat()
+            context = {
+                "spec_path": str(spec_path),
+                "spec_sha256": spec_sha,
+                "socket_path": str(path),
+                "socket_identity": [info.st_dev, info.st_ino],
+                "collector": host.native.identity(os.getpid()),
+                "collector_source_sha256": "c" * 64,
+                "archive_identity": {
+                    "directory_device": parent.st_dev,
+                    "directory_inode": parent.st_ino,
+                    "journal_device": logged.st_dev,
+                    "journal_inode": logged.st_ino,
+                },
+            }
+            status = {
+                key: copy.deepcopy(context[key])
+                for key in (
+                    "socket_path",
+                    "socket_identity",
+                    "collector",
+                    "spec_sha256",
+                    "collector_source_sha256",
+                    "archive_identity",
+                )
+            }
+            status.update(
+                schema="ecpa-h3-concurrent-native-collector-status/v1",
+                classification="REAL_RUNTIME_UNQUALIFIED",
+                formal_producer_registration=False,
+                failed=False,
+                issued_monotonic_ns=host.time.monotonic_ns(),
+                acknowledged_prefix={"next_sequence": 4, "last_event_sha256": "d" * 64},
+                source_drain={
+                    "schema": "ecpa-h3-concurrent-native-drain-policy/v1",
+                    "policy_sha256": host.native.sha(drain.read_bytes()),
+                    "runtimes": {},
+                },
+            )
+            if change:
+                change(context, status, root)
+            stopped = threading.Event()
+            errors = []
+
+            def serve():
+                try:
+                    while not stopped.is_set():
+                        try:
+                            connection, _ = server.accept()
+                        except TimeoutError:
+                            continue
+                        with connection:
+                            connection.settimeout(1)
+                            raw = b""
+                            while not raw.endswith(b"\n"):
+                                piece = connection.recv(host.native.MAX_FRAME + 1)
+                                if not piece:
+                                    break
+                                raw += piece
+                            if raw:
+                                assert (
+                                    raw
+                                    == host.native.canonical({"op": "describe"}) + b"\n"
+                                )
+                                connection.sendall(
+                                    host.native.canonical(status) + b"\n"
+                                )
+                except Exception as error:
+                    errors.append(error)
+
+            thread = threading.Thread(target=serve)
+            thread.start()
+            try:
+                yield context, status
+            finally:
+                stopped.set()
+                thread.join(2)
+                server.close()
+                assert not thread.is_alive(), "owned CPU socket actor leaked"
+                assert errors == []
+
+    return actor
+
+
+def test_live_h3_probe_accepts_actual_h3_status_not_generic(h3_status_actor):
+    with h3_status_actor() as (context, status):
+        with pytest.raises(ValueError, match="collector status failed"):
+            host.native.probe_collector(
+                Path(context["socket_path"]),
+                expected_collector=context["collector"],
+                expected_socket_identity=tuple(context["socket_identity"]),
+                expected_collector_source_sha256=context["collector_source_sha256"],
+                expected_spec_sha256=context["spec_sha256"],
+                expected_archive_identity=context["archive_identity"],
+            )
+        assert host.probe(context, "semantic") == status
+        assert host.probe({"ready": context, **context}, "tensor") == status
+        assert status["formal_producer_registration"] is False
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema", "ecpa-native-semantic-collector-status/v1"),
+        ("failed", True),
+        ("failed", 0),
+        ("formal_producer_registration", 0),
+        ("formal_producer_registration", True),
+        ("classification", "FORMALLY_QUALIFIED"),
+        ("spec_sha256", "f" * 64),
+        ("collector_source_sha256", "f" * 64),
+        ("socket_identity", [0, 0]),
+        ("socket_path", "/substituted"),
+        ("archive_identity", {}),
+        ("collector", {}),
+        (
+            "source_drain",
+            {"schema": "foreign", "policy_sha256": "f" * 64, "runtimes": {}},
+        ),
+        ("acknowledged_prefix", {"next_sequence": True, "last_event_sha256": "d" * 64}),
+        ("extra", "substituted"),
+    ],
+)
+def test_live_h3_probe_rejects_substituted_status(h3_status_actor, field, value):
+    with (
+        h3_status_actor(
+            lambda context, status, root: status.update({field: value})
+        ) as (context, _),
+        pytest.raises(ValueError),
+    ):
+        host.probe(context, "semantic")
+
+
+@pytest.mark.parametrize("change", ["policy", "tensor", "socket", "peer"])
+def test_live_h3_probe_rejects_actual_binding_changes(h3_status_actor, change):
+    def tamper(context, status, root):
+        if change == "policy":
+            (root / "drain-policy.json").write_bytes(b"{}")
+        elif change == "tensor":
+            (root / "tensor-policy.json").write_bytes(
+                b'{"native_spec_sha256":"foreign"}'
+            )
+        elif change == "socket":
+            context["socket_identity"] = [0, 0]
+        else:
+            context["collector"] = dict(context["collector"], start_ticks=0)
+
+    with h3_status_actor(tamper) as (context, _), pytest.raises(ValueError):
+        host.probe(context, "semantic")
