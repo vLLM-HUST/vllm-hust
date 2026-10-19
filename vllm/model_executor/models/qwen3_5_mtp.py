@@ -119,7 +119,7 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
             Qwen3_5DecoderLayer(
                 vllm_config,
                 layer_type="full_attention",
-                prefix=f"{prefix}.layers.{idx}",
+                prefix=f"{prefix}.layers.{self.mtp_start_layer_idx + idx}",
             )
             for idx in range(self.num_mtp_layers)
         )
