@@ -85,6 +85,7 @@ from vllm.v1.engine.utils import (
     SignalCallback,
     get_physical_gpu_ids_for_local_dp_rank,
 )
+from vllm.v1.events import EventBus
 from vllm.v1.executor import Executor
 from vllm.v1.fault_tolerance.engine_core_sentinel import (
     FT_UTILITY_METHOD,
@@ -868,6 +869,14 @@ class EngineCore:
 
     def shutdown(self):
         logger.debug_once("[shutdown] EngineCore: tearing down local resources")
+        # The busy loop has stopped producing scheduler events. Drain before
+        # model-worker teardown can consume the parent's finite shutdown grace.
+        for result in EventBus.close_sinks():
+            if isinstance(result, Exception):
+                logger.warning("Event sink close failed: %r", result)
+            else:
+                logger.debug("Event sink close returned: %r", result)
+
         self.structured_output_manager.clear_backend()
         if self.model_executor:
             self.model_executor.shutdown()

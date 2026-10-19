@@ -1,0 +1,34 @@
+name: Lifecycle drain source contracts
+
+on:
+  pull_request:
+    paths:
+      - 'vllm/v1/events.py'
+      - 'vllm/v1/engine/core.py'
+      - 'vllm/v1/worker/worker_base.py'
+      - 'tests/plugins/test_event_bus_shutdown.py'
+      - '.github/workflows/lifecycle-drain-source-contracts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  shutdown-source-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install pure CPU test dependency
+        run: python -m pip install pytest==9.1.1
+      - name: Exercise real source shutdown boundaries without model imports
+        run: python -m pytest -q --confcutdir=tests/plugins tests/plugins/test_event_bus_shutdown.py

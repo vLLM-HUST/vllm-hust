@@ -20,6 +20,7 @@ from vllm.v1.attention.backends.utils import (
     get_supported_kv_cache_layouts,
     record_kv_cache_layout,
 )
+from vllm.v1.events import EventBus
 from vllm.v1.kv_cache_interface import KVCacheSpec
 
 if TYPE_CHECKING:
@@ -247,6 +248,12 @@ class WorkerWrapperBase:
         self._worker_extension_cls: type | None = None
 
     def shutdown(self) -> None:
+        # The worker busy loop has ended; drain observers before device teardown.
+        for result in EventBus.close_sinks():
+            if isinstance(result, Exception):
+                logger.warning("Event sink close failed: %r", result)
+            else:
+                logger.debug("Event sink close returned: %r", result)
         if self.worker is not None:
             hook = getattr(self._worker_extension_cls, "destroy_worker_extension", None)
             if callable(hook):

@@ -150,6 +150,28 @@ class EventBus:
             cls.enabled = bool(cls._sinks)
 
     @classmethod
+    def close_sinks(cls) -> tuple[object, ...]:
+        """Detach sinks after scheduler quiescence and call opt-in local close.
+
+        Returns actual callback results or exceptions; neither is interpreted
+        as successful persistence. Callers must preserve a finite parent process
+        shutdown grace period for a sink's bounded drain. No MOD is imported.
+        """
+        with cls._lock:
+            sinks = tuple(cls._sinks)
+            cls._sinks.clear()
+            cls.enabled = False
+        results: list[object] = []
+        for sink in sinks:
+            try:
+                close = getattr(sink, "close", None)
+                if callable(close):
+                    results.append(close())
+            except Exception as error:
+                results.append(error)
+        return tuple(results)
+
+    @classmethod
     def emit(cls, event: SchedulerEvent) -> None:
         """Dispatch an event, disabling sinks that fail."""
         if not cls.enabled:
