@@ -17,6 +17,7 @@ def events_module():
     # The production file is standalone; avoid importing the heavy engine graph.
     name = "event_bus_shutdown_contract"
     spec = importlib.util.spec_from_file_location(name, ROOT / "vllm/v1/events.py")
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
