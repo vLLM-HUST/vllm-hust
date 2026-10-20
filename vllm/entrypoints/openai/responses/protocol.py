@@ -81,6 +81,7 @@ from vllm.sampling_params import (
     RequestOutputKind,
     SamplingParams,
     StructuredOutputsParams,
+    ThinkingTokenBudget,
 )
 from vllm.utils import random_uuid
 
@@ -241,6 +242,7 @@ class ResponsesRequest(OpenAIBaseModel):
     )
     instructions: str | None = None
     max_output_tokens: int | None = None
+    thinking_token_budget: ThinkingTokenBudget = None
     max_tool_calls: int | None = None
     metadata: Metadata | None = None
     model: str | None = None
@@ -570,6 +572,11 @@ class ResponsesRequest(OpenAIBaseModel):
             top_k=top_k,
             min_p=min_p,
             max_tokens=max_tokens,
+            thinking_token_budget=(
+                self.thinking_token_budget
+                if "thinking_token_budget" in self.model_fields_set
+                else default_sampling_params.get("thinking_token_budget")
+            ),
             logprobs=self.top_logprobs if self.is_include_output_logprobs() else None,
             stop=stop,
             stop_token_ids=self.stop_token_ids,
