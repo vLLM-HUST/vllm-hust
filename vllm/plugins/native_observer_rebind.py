@@ -89,15 +89,116 @@ def ready_of(context, channel):
 
 
 def probe(context, channel):
+    """Authenticate the actual H3 successor, never the generic semantic ABI.
+
+    Contexts pin the original native spec. The original H3 bootstrap puts its
+    complete tensor/drain policies beside that spec; bind those actual bytes
+    before accepting the collector's source-drain extension. This read-only
+    status establishes transport ownership only, never native completion.
+    """
     ready = ready_of(context, channel)
-    return native.probe_collector(
-        Path(ready["socket_path"]),
-        expected_collector=ready["collector"],
-        expected_socket_identity=tuple(ready["socket_identity"]),
-        expected_collector_source_sha256=ready["collector_source_sha256"],
-        expected_spec_sha256=context["spec_sha256"],
-        expected_archive_identity=ready["archive_identity"],
+    spec_path = Path(context["spec_path"])
+    spec, _, _ = checked({"path": str(spec_path), "sha256": context["spec_sha256"]})
+    tensor_raw, _ = native.read_private(spec_path.parent / "tensor-policy.json", 0o600)
+    drain_raw, _ = native.read_private(spec_path.parent / "drain-policy.json", 0o600)
+    tensor, drain = json.loads(tensor_raw), json.loads(drain_raw)
+    phase_ids = [phase["phase_id"] for phase in spec["phases"]]
+    require(
+        len(phase_ids) == 60
+        and len(set(phase_ids)) == 60
+        and tensor["native_spec_sha256"] == context["spec_sha256"]
+        and drain
+        == {
+            "schema": "ecpa-h3-concurrent-native-drain-policy/v1",
+            "native_spec_sha256": context["spec_sha256"],
+            "tensor_policy_sha256": native.sha(tensor_raw),
+            "phase_ids": phase_ids,
+            "required_ranks": [0, 1],
+            "formal_registration": False,
+        },
+        "original H3 successor spec/tensor/drain policy binding differs",
     )
+    path = Path(ready["socket_path"])
+    require(path.is_absolute() and path.resolve() == path, "noncanonical H3 socket")
+    info, parent = path.lstat(), path.parent.lstat()
+    archive = ready["archive_identity"]
+    require(
+        stat.S_ISSOCK(info.st_mode)
+        and info.st_uid == os.getuid()
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and [info.st_dev, info.st_ino] == ready["socket_identity"]
+        and stat.S_ISDIR(parent.st_mode)
+        and parent.st_uid == os.getuid()
+        and stat.S_IMODE(parent.st_mode) == 0o700
+        and [parent.st_dev, parent.st_ino]
+        == [archive["directory_device"], archive["directory_inode"]],
+        "H3 successor socket/archive owner, mode or inode changed",
+    )
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(5)
+        connection.connect(str(path))
+        pid, uid, gid = struct.unpack(
+            "3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        )
+        require(
+            uid == os.getuid()
+            and gid == os.getgid()
+            and native.identity(pid) == ready["collector"],
+            "H3 successor status peer is not the exact frozen collector",
+        )
+        connection.sendall(native.canonical({"op": "describe"}) + b"\n")
+        raw = b""
+        while not raw.endswith(b"\n"):
+            piece = connection.recv(native.MAX_FRAME + 1)
+            require(
+                piece and len(raw) + len(piece) <= native.MAX_FRAME,
+                "H3 successor status incomplete or oversized",
+            )
+            raw += piece
+    require(
+        native.identity(pid) == ready["collector"],
+        "H3 successor collector epoch changed during status authentication",
+    )
+    status = json.loads(raw)
+    require(raw == native.canonical(status) + b"\n", "noncanonical H3 status")
+    prefix, source_drain = status.get("acknowledged_prefix"), status.get("source_drain")
+    require(
+        isinstance(prefix, dict)
+        and set(prefix) == {"next_sequence", "last_event_sha256"}
+        and type(prefix["next_sequence"]) is int
+        and prefix["next_sequence"] >= 1
+        and type(prefix["last_event_sha256"]) is str
+        and re.fullmatch("[0-9a-f]{64}", prefix["last_event_sha256"])
+        and isinstance(source_drain, dict)
+        and set(source_drain) == {"schema", "policy_sha256", "runtimes"}
+        and source_drain["schema"] == drain["schema"]
+        and source_drain["policy_sha256"] == native.sha(drain_raw)
+        and isinstance(source_drain["runtimes"], dict),
+        "H3 successor durable prefix or source-drain binding differs",
+    )
+    require(
+        status.get("failed") is False
+        and status.get("formal_producer_registration") is False
+        and {
+            k: v
+            for k, v in status.items()
+            if k not in {"acknowledged_prefix", "issued_monotonic_ns", "source_drain"}
+        }
+        == {
+            "schema": "ecpa-h3-concurrent-native-collector-status/v1",
+            "collector": ready["collector"],
+            "socket_identity": ready["socket_identity"],
+            "socket_path": str(path),
+            "collector_source_sha256": ready["collector_source_sha256"],
+            "spec_sha256": context["spec_sha256"],
+            "archive_identity": archive,
+            "classification": "REAL_RUNTIME_UNQUALIFIED",
+            "formal_producer_registration": False,
+            "failed": False,
+        },
+        "H3 successor status differs from frozen owner/source/spec/archive",
+    )
+    return status
 
 
 def stable_spec(context):
