@@ -374,6 +374,12 @@ class InputProcessor:
                         prompt_token_ids, prompt_embeds
                     ),
                 )
+            if self.vllm_config.use_v2_model_runner:
+                from vllm.v1.worker.gpu.sample.logit_bias import (
+                    validate_logit_bias_params,
+                )
+
+                validate_logit_bias_params(sampling_params)
         else:
             pooling_params = params.clone()
 
