@@ -531,6 +531,12 @@ Model Runner V2 can opt into bounded-window repeated n-gram suppression with
 `--additional-config '{"reasoning_repetition_guard":{"ngram_size":32,"max_occurrences":3,"window_size":512}}'`.
 It requires an uninterrupted periodic suffix before masking a repeated
 continuation, so shared phrasing in distinct paragraphs does not trigger it.
+For a detected period `p`, the required contiguous span is the larger of
+`ngram_size + p * (max_occurrences - 1)` and `p * max_occurrences`. Overlapping
+n-grams count as distinct observations; short-period loops do not have to wait
+for `ngram_size * max_occurrences` tokens. Finite alternatives are checked in
+parallel only after detecting a loop, without a full-vocabulary temporary mask
+on each decode step. A row with only one finite continuation is never emptied.
 It masks an observed repeated continuation only while reasoning is active;
 prompt tokens do not count as repetitions, stop/marker tokens are protected,
 and final-answer logits are unchanged. It does not force a reasoning transition
