@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 import vllm.envs as envs
+from vllm.config import VllmConfig
 from vllm.config.model import PROCESSED_LOGPROBS_MODES, LogprobsMode
 from vllm.config.reasoning import ReasoningConfig
 from vllm.sampling_params import SamplingParams
@@ -43,6 +44,7 @@ class Sampler:
         enable_trace_replay: bool = False,
         reasoning_config: ReasoningConfig | None = None,
         return_sampling_mask: bool = False,
+        vllm_config: VllmConfig | None = None,
     ):
         self.logprobs_mode = logprobs_mode
         self.compute_nans = envs.VLLM_COMPUTE_NANS_IN_LOGITS  # False by default.
@@ -55,6 +57,24 @@ class Sampler:
         self.bad_words_state = BadWordsState(req_states)
         self.logprob_token_ids_state = LogprobTokenIdsState(max_num_reqs, device)
         self.thinking_budget_state = ThinkingBudgetState(req_states, reasoning_config)
+        self.reasoning_repetition_state = None
+        if (
+            vllm_config is not None
+            and isinstance(vllm_config.additional_config, dict)
+            and "reasoning_repetition_guard" in vllm_config.additional_config
+        ):
+            from vllm.v1.worker.gpu.sample.logits_processor import (
+                reasoning_repetition,
+            )
+            from vllm.v1.worker.gpu.sample.logits_processor.interface import (
+                LogitsProcRequestState,
+            )
+
+            self.reasoning_repetition_state = (
+                reasoning_repetition.ReasoningRepetitionLogitsProcessor(
+                    vllm_config, LogitsProcRequestState.from_request_state(req_states)
+                )
+            )
         self.trace_replay_state = (
             TraceReplayState(req_states) if enable_trace_replay else None
         )
@@ -74,6 +94,8 @@ class Sampler:
         self.bad_words_state.add_request(req_idx, sampling_params)
         self.logprob_token_ids_state.add_request(req_idx, sampling_params)
         self.thinking_budget_state.add_request(req_idx, sampling_params)
+        if self.reasoning_repetition_state is not None:
+            self.reasoning_repetition_state.add_request(req_idx, sampling_params)
         if self.trace_replay_state is not None:
             self.trace_replay_state.add_request(req_idx, sampling_params)
 
@@ -83,6 +105,7 @@ class Sampler:
             self.logit_bias_state.use_logit_bias[req_idx]
             or self.penalties_state.use_penalty[req_idx]
             or self.bad_words_state.num_bad_words.np[req_idx] > 0
+            or self.reasoning_repetition_state is not None
             or (
                 self.thinking_budget_state.enabled
                 and self.thinking_budget_state.use_thinking_budget[req_idx]
@@ -100,6 +123,8 @@ class Sampler:
         self.bad_words_state.apply_staged_writes()
         self.logprob_token_ids_state.apply_staged_writes()
         self.thinking_budget_state.apply_staged_writes()
+        if self.reasoning_repetition_state is not None:
+            self.reasoning_repetition_state.apply_staged_writes()
         if self.trace_replay_state is not None:
             self.trace_replay_state.apply_staged_writes()
 
@@ -243,6 +268,24 @@ class Sampler:
             input_ids,
             expanded_local_pos,
         )
+
+        if self.reasoning_repetition_state is not None:
+            from vllm.v1.worker.gpu.sample.logits_processor.interface import (
+                LogitsContext,
+            )
+
+            self.reasoning_repetition_state.apply(
+                logits,
+                LogitsContext(
+                    expanded_idx_mapping=expanded_idx_mapping,
+                    idx_mapping=idx_mapping,
+                    idx_mapping_np=idx_mapping_np,
+                    expanded_local_pos=expanded_local_pos,
+                    input_ids=input_ids,
+                    pos=pos,
+                    seq_lens_upper_bound_np=np.zeros_like(idx_mapping_np),
+                ),
+            )
 
         # Force the reasoning end marker once a request's thinking budget is
         # reached; applied before temperature so the forced token is always kept.
