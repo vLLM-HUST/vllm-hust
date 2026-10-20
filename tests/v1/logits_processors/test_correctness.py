@@ -3,6 +3,7 @@
 
 import random
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import NamedTuple, NoReturn, TypeAlias
 
 import numpy as np
@@ -1880,3 +1881,132 @@ class TestThinkingBudgetNaturalEndReentry:
         )
 
     # --- Forced-end re-entry tests ---
+
+
+class TestReasoningRepetitionGuard:
+    """CPU checks: repeated paths, not elapsed tokens, alter only reasoning logits."""
+
+    @staticmethod
+    def make_processor(*, start=(98,), end=(99,), natural_end=None, **overrides):
+        from vllm.v1.sample.logits_processor.reasoning_repetition import (
+            ReasoningRepetitionLogitsProcessor,
+        )
+
+        config = dict(ngram_size=4, max_occurrences=3, window_size=64)
+        config.update(overrides)
+        return ReasoningRepetitionLogitsProcessor(
+            SimpleNamespace(
+                additional_config={"reasoning_repetition_guard": config},
+                reasoning_config=SimpleNamespace(
+                    reasoning_start_token_ids=list(start),
+                    reasoning_end_token_ids=list(end),
+                    natural_reasoning_end_token_ids=natural_end,
+                ),
+                structured_outputs_config=SimpleNamespace(enable_in_reasoning=False),
+            ),
+            torch.device("cpu"),
+            False,
+        )
+
+    @staticmethod
+    def add(processor, output, prompt=(98,), params=None, index=0, removed=()):
+        processor.update_state(
+            BatchUpdate(
+                batch_size=index + 1,
+                removed=removed,
+                added=[(index, params or SamplingParams(), list(prompt), output)],
+                moved=(),
+            )
+        )
+
+    def test_blocks_only_repeated_continuation_and_not_unique_progress(self):
+        processor = self.make_processor()
+        output = [1, 2, 3, 4] * 3 + [1, 2, 3]
+        self.add(processor, output)
+        logits = processor.apply(torch.zeros(1, 128))
+        assert torch.isneginf(logits[0, 4])
+        assert torch.isfinite(logits).sum() == 127
+        output.append(5)
+        processor.update_state(None)
+        assert torch.equal(processor.apply(torch.zeros(1, 128)), torch.zeros(1, 128))
+
+    @pytest.mark.parametrize("prompt,ending", [((), []), ((98,), [99])])
+    def test_never_constrains_non_thinking_or_final_formula_tokens(
+        self, prompt, ending
+    ):
+        processor = self.make_processor()
+        output = [1, 2, 3, 4] * 3 + list(ending) + [1, 2, 3]
+        self.add(processor, output, prompt=prompt)
+        assert torch.equal(processor.apply(torch.zeros(1, 128)), torch.zeros(1, 128))
+
+    def test_protects_stop_tokens_and_keeps_a_valid_distribution(self):
+        processor = self.make_processor()
+        output = [1, 2, 3, 4] * 3 + [1, 2, 3]
+        self.add(processor, output, params=SamplingParams(stop_token_ids=[4]))
+        assert torch.isfinite(processor.apply(torch.zeros(1, 128))).all()
+        self.add(processor, output)
+        logits = torch.full((1, 128), -float("inf"))
+        logits[0, 4] = 1
+        assert processor.apply(logits)[0, 4] == 1
+
+    @pytest.mark.parametrize("natural_end", [None, [99]])
+    def test_multitoken_markers_and_natural_end_leave_final_logits_unchanged(
+        self, natural_end
+    ):
+        processor = self.make_processor(
+            start=(96, 98), end=(97, 99), natural_end=natural_end
+        )
+        output = [1, 2, 3, 4] * 3 + [1, 2, 3]
+        self.add(processor, output, prompt=(96, 98))
+        assert torch.isneginf(processor.apply(torch.zeros(1, 128))[0, 4])
+        output.extend((natural_end or [97, 99]) + [1, 2, 3, 4] * 3)
+        processor.update_state(None)
+        assert torch.isfinite(processor.apply(torch.zeros(1, 128))).all()
+
+    def test_bounded_history_expires_and_natural_reasoning_reentry_resets(self):
+        processor = self.make_processor(window_size=16)
+        output = [1, 2, 3, 4] * 3 + [1, 2, 3]
+        self.add(processor, output)
+        assert torch.isneginf(processor.apply(torch.zeros(1, 128))[0, 4])
+        output.extend(list(range(10, 30)) + [1, 2, 3])
+        processor.update_state(None)
+        assert torch.isfinite(processor.apply(torch.zeros(1, 128))).all()
+        output.extend([99, 98] + [1, 2, 3, 4] * 3 + [1, 2, 3])
+        processor.update_state(None)
+        assert torch.isneginf(processor.apply(torch.zeros(1, 128))[0, 4])
+        assert len(processor.states[0].history) <= 13
+
+    @pytest.mark.parametrize("direction", list(MoveDirectionality))
+    def test_request_moves_and_remove_then_reuse_preserve_isolation(self, direction):
+        processor = self.make_processor()
+        output = [1, 2, 3, 4] * 3 + [1, 2, 3]
+        self.add(processor, output)
+        self.add(processor, [], index=1)
+        processor.update_state(BatchUpdate(2, (), (), [(0, 1, direction)]))
+        logits = processor.apply(torch.zeros(2, 128))
+        assert torch.isneginf(logits[1, 4])
+        assert torch.isfinite(logits[0]).all()
+        self.add(processor, [], index=1, removed=(1,))
+        assert torch.isfinite(processor.apply(torch.zeros(2, 128))).all()
+
+    def test_does_not_consume_unresolved_async_placeholder(self):
+        processor = self.make_processor()
+        output = [1, 2, 3, 4] * 3 + [1, 2, -1]
+        self.add(processor, output)
+        assert torch.isfinite(processor.apply(torch.zeros(1, 128))).all()
+        output[-1] = 3
+        processor.update_state(None)
+        assert torch.isneginf(processor.apply(torch.zeros(1, 128))[0, 4])
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            dict(ngram_size=1),
+            dict(max_occurrences=1),
+            dict(window_size=3),
+            dict(ngram_size=True),
+        ],
+    )
+    def test_rejects_invalid_configuration(self, overrides):
+        with pytest.raises(ValueError, match="window configuration"):
+            self.make_processor(**overrides)

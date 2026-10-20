@@ -267,3 +267,38 @@ The examples below show how a user would pass a custom argument (`target_token`)
 * Stage host-side writes in `add_request()` and flush them once per step in `apply_staged_writes()`, instead of writing device tensors directly; this is the discipline every built-in sampler state follows
 
 * Since there is no removal hook, `add_request()` must fully (re)initialize the slot's state; do not rely on state left behind by the slot's previous occupant
+
+## Experimental reasoning repetition guard (legacy V1 only)
+
+`vllm.v1.sample.logits_processor.reasoning_repetition:ReasoningRepetitionLogitsProcessor`
+implements the **legacy V1** interface, not the MRV2 interface described above.
+It is opt-in, requires initialized reasoning markers, and does not support
+speculative decoding or structured output constraints inside reasoning.
+
+```bash
+VLLM_USE_V2_MODEL_RUNNER=0 vllm serve YOUR_EXISTING_MODEL \
+  --reasoning-parser YOUR_EXISTING_REASONING_PARSER \
+  --logits-processors vllm.v1.sample.logits_processor.reasoning_repetition:ReasoningRepetitionLogitsProcessor \
+  --additional-config '{"reasoning_repetition_guard":{"ngram_size":32,"max_occurrences":3,"window_size":512}}'
+```
+
+Preserve the remaining launch flags, model and sampling policy. Do not enable
+this by restarting shared services without the deployment owner's permission.
+
+The processor only suppresses a continuation when it would repeat the same
+n-gram more than the configured number of times within a bounded token window
+**inside reasoning**. Unique progress, final-answer logits, stop tokens and
+reasoning-boundary tokens are left alone. It never inserts a reasoning-end token
+or sets a generation budget. If other constraints leave no alternative finite
+logit, it preserves the existing distribution. A first-detection log contains
+only token counts/settings, not prompts, token identities or reasoning text.
+
+This is not a factual verifier: it cannot guarantee correct formulas or prevent
+semantic loops expressed with different words. Legitimate repeated reasoning can
+also trigger it. Validate unchanged original questions and held-out tasks for
+quality, repetitions and latency before adopting it; keep a rollback artifact.
+
+An offline replay of one synthetic Qwen3.5 failure (16,383 reasoning tokens,
+6,675 repetitions of one 32-token n-gram) first identifies a suppressed original
+continuation at token3,040 with the settings above. That counterfactual replay
+does not establish improved live model quality or production acceptance.
