@@ -529,6 +529,8 @@ Finally, you can enable reasoning for the model by using the `--reasoning-parser
 
 Model Runner V2 can opt into bounded-window repeated n-gram suppression with
 `--additional-config '{"reasoning_repetition_guard":{"ngram_size":32,"max_occurrences":3,"window_size":512}}'`.
+It requires an uninterrupted periodic suffix before masking a repeated
+continuation, so shared phrasing in distinct paragraphs does not trigger it.
 It masks an observed repeated continuation only while reasoning is active;
 prompt tokens do not count as repetitions, stop/marker tokens are protected,
 and final-answer logits are unchanged. It does not force a reasoning transition

@@ -31,6 +31,7 @@ BOOST = 100.0
 TEMPERATURE = 2.0
 
 
+@pytest.mark.parametrize("max_occurrences", [3, 4])
 @pytest.mark.parametrize(
     "tokens,prompt_len,expected_blocked,ngram_size",
     [
@@ -42,6 +43,15 @@ TEMPERATURE = 2.0
         ([90] + [10, 91] * 4 + [10], 1, None, 2),
         ([90] + list(range(10, 42)) * 4 + list(range(10, 41)), 1, 41, 32),
         (
+            [90]
+            + sum([list(range(10, 42)) + [50 + i] for i in range(4)], [])
+            + list(range(10, 41)),
+            1,
+            None,
+            32,
+        ),
+        ([90] + [10] * 128, 1, 10, 32),
+        (
             [90] + list(range(10, 42)) * 4 + [50] * 600 + list(range(10, 41)),
             1,
             None,
@@ -50,7 +60,7 @@ TEMPERATURE = 2.0
     ],
 )
 def test_v2_reasoning_guard_only_masks_observed_reasoning_loops(
-    tokens, prompt_len, expected_blocked, ngram_size
+    tokens, prompt_len, expected_blocked, ngram_size, max_occurrences
 ):
     """Keep prompt repetitions and all post-thinking logits byte-identical."""
     from vllm.v1.worker.gpu.sample.logits_processor.interface import (
@@ -77,7 +87,12 @@ def test_v2_reasoning_guard_only_masks_observed_reasoning_loops(
     )
     req_states.apply_staged_writes()
     config = SimpleNamespace(
-        additional_config={"reasoning_repetition_guard": {"ngram_size": ngram_size}},
+        additional_config={
+            "reasoning_repetition_guard": {
+                "ngram_size": ngram_size,
+                "max_occurrences": max_occurrences,
+            }
+        },
         reasoning_config=MockReasoningConfig(),
         speculative_config=None,
         structured_outputs_config=SimpleNamespace(enable_in_reasoning=False),
