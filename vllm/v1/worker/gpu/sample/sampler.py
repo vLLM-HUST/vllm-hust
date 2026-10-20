@@ -66,6 +66,18 @@ class Sampler:
         logit_bias_state = LogitBiasState(vllm_config, lp_req_state)
         bad_words_state = BadWordsState(vllm_config, lp_req_state)
 
+        reasoning_processors: list[LogitsProcessor] = []
+        if "reasoning_repetition_guard" in getattr(
+            vllm_config, "additional_config", {}
+        ):
+            from vllm.v1.worker.gpu.sample.logits_processor import (
+                reasoning_repetition,
+            )
+
+            processor_type = reasoning_repetition.ReasoningRepetitionLogitsProcessor
+            if not any(isinstance(p, processor_type) for p in custom_logits_processors):
+                reasoning_processors.append(processor_type(vllm_config, lp_req_state))
+
         # List order is pipeline order: bias adds, penalties scale, so the
         # two do not commute.
         self.logits_processors: list[LogitsProcessor] = [
@@ -73,6 +85,7 @@ class Sampler:
             self.penalties_state,
             bad_words_state,
             *custom_logits_processors,
+            *reasoning_processors,
         ]
 
         self.logprob_token_ids_state = LogprobTokenIdsState(max_num_reqs, device)

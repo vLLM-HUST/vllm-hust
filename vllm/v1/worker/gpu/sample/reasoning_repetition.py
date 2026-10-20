@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""GPU-only bounded-window matching for the opt-in V2 reasoning guard."""
+
+import torch
+
+from vllm.triton_utils import tl, triton
+from vllm.v1.worker.gpu.sample.logits_processor.interface import (
+    LogitsContext,
+    LogitsProcRequestState,
+)
+from vllm.v1.worker.gpu.sample.thinking_budget import (
+    _COLD_SCAN_BLOCK,
+    _update_committed_marker_cache_kernel,
+)
+
+
+@triton.jit
+def _repeat_kernel(
+    logits,
+    logits_stride,
+    mapping,
+    tokens,
+    token_stride,
+    prompt_lens,
+    total_lens,
+    starts,
+    ends,
+    protected,
+    finite_counts,
+    NGRAM: tl.constexpr,
+    WINDOW: tl.constexpr,
+    OCCURRENCES: tl.constexpr,
+    VOCAB: tl.constexpr,
+    START_LEN: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    row = tl.program_id(0)
+    slot = tl.load(mapping + row)
+    start = tl.load(starts + slot)
+    end = tl.load(ends + slot)
+    length = tl.load(total_lens + slot)
+    if start < 0 or start <= end:
+        return
+    # Prompt text establishes the reasoning mode but never counts as repetition.
+    lower = tl.maximum(tl.load(prompt_lens + slot), start + START_LEN)
+    lower = tl.maximum(lower, length - WINDOW)
+    positions = lower + tl.arange(0, BLOCK)
+    valid = positions + NGRAM <= length
+    match = valid
+    for j in tl.static_range(NGRAM - 1):
+        actual = tl.load(
+            tokens + slot * token_stride + positions + j, mask=valid, other=-1
+        )
+        suffix = tl.load(
+            tokens + slot * token_stride + length - NGRAM + 1 + j,
+            mask=length - NGRAM + 1 >= lower,
+            other=-2,
+        )
+        match = match & (actual == suffix)
+    latest = tl.max(tl.where(match, positions, -1), 0)
+    if latest < 0:
+        return
+    candidate = tl.load(tokens + slot * token_stride + latest + NGRAM - 1)
+    next_ids = tl.load(
+        tokens + slot * token_stride + positions + NGRAM - 1, mask=valid, other=-1
+    )
+    count = tl.sum((match & (next_ids == candidate)).to(tl.int32), 0)
+    safe = ~tl.load(protected + slot * VOCAB + candidate)
+    if count >= OCCURRENCES and safe and tl.load(finite_counts + row) > 1:
+        tl.store(logits + row * logits_stride + candidate, -float("inf"))
+
+
+def apply_reasoning_repetition(
+    logits: torch.Tensor,
+    ctx: LogitsContext,
+    states: LogitsProcRequestState,
+    enabled: torch.Tensor,
+    last_start: torch.Tensor,
+    last_end: torch.Tensor,
+    scan_pos: torch.Tensor,
+    start: torch.Tensor,
+    end: torch.Tensor,
+    protected: torch.Tensor,
+    ngram_size: int,
+    window_size: int,
+    max_occurrences: int,
+) -> None:
+    # Reuse the qualified incremental marker scan, not its budget-forcing stage.
+    _update_committed_marker_cache_kernel[(ctx.idx_mapping.shape[0],)](
+        ctx.idx_mapping,
+        enabled,
+        states.all_token_ids.gpu,
+        states.all_token_ids.gpu.stride(0),
+        states.total_len.gpu,
+        last_start,
+        last_end,
+        scan_pos,
+        start,
+        end,
+        START_LEN=start.numel(),
+        NATURAL_END_LEN=end.numel(),
+        MAX_LEN=max(start.numel(), end.numel()),
+        BLOCK=_COLD_SCAN_BLOCK,
+    )
+    finite_counts = torch.isfinite(logits).sum(dim=1)
+    _repeat_kernel[(logits.shape[0],)](
+        logits,
+        logits.stride(0),
+        ctx.expanded_idx_mapping,
+        states.all_token_ids.gpu,
+        states.all_token_ids.gpu.stride(0),
+        states.prompt_len.gpu,
+        states.total_len.gpu,
+        last_start,
+        last_end,
+        protected,
+        finite_counts,
+        NGRAM=ngram_size,
+        WINDOW=window_size,
+        OCCURRENCES=max_occurrences,
+        VOCAB=logits.shape[1],
+        START_LEN=start.numel(),
+        BLOCK=triton.next_power_of_2(window_size),
+    )

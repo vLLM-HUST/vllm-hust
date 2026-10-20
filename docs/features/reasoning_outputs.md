@@ -525,6 +525,18 @@ The structured output engine like [xgrammar](https://github.com/mlc-ai/xgrammar)
 
 Finally, you can enable reasoning for the model by using the `--reasoning-parser` flags.
 
+### Experimental V2 repeated-path suppression
+
+Model Runner V2 can opt into bounded-window repeated n-gram suppression with
+`--additional-config '{"reasoning_repetition_guard":{"ngram_size":32,"max_occurrences":3,"window_size":512}}'`.
+It masks an observed repeated continuation only while reasoning is active;
+prompt tokens do not count as repetitions, stop/marker tokens are protected,
+and final-answer logits are unchanged. It does not force a reasoning transition
+or rewrite output. The option is disabled by default and rejects speculative
+decoding and structured reasoning. It is not a factual-correctness guarantee;
+qualify natural completion, original-task quality and latency against the same
+runner and sampling parameters before enabling it in production.
+
 ```bash
 vllm serve <model_tag> --reasoning-parser example
 ```

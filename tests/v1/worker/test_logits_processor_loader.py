@@ -226,3 +226,15 @@ def test_loader_import_stays_frontend_safe():
         "assert 'vllm.v1.worker.gpu.buffer_utils' not in sys.modules\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_reasoning_guard_import_is_frontend_safe():
+    """Loading the optional V2 guard must not initialize worker-side modules."""
+    code = (
+        "import sys\n"
+        "from vllm.v1.worker.gpu.sample.logits_processor.reasoning_repetition "
+        "import ReasoningRepetitionLogitsProcessor\n"
+        "assert 'vllm.v1.worker.gpu.sample.reasoning_repetition' not in sys.modules\n"
+        "assert 'vllm.v1.worker.gpu.states' not in sys.modules\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
