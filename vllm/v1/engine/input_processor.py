@@ -498,6 +498,12 @@ class InputProcessor:
                 sampling_params.update_from_tokenizer(self.tokenizer)
             if sampling_params.trace_decode_token_ids:
                 self._normalize_trace_replay_params(sampling_params, prompt_len)
+            if self.vllm_config.use_v2_model_runner:
+                from vllm.v1.worker.gpu.sample.logit_bias import (
+                    validate_logit_bias_params,
+                )
+
+                validate_logit_bias_params(sampling_params)
         else:
             pooling_params = params.clone()
 

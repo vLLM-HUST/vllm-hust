@@ -9,6 +9,23 @@ from vllm.sampling_params import StructuredOutputsParams
 
 pytestmark = pytest.mark.skip_global_cleanup
 
+
+@pytest.mark.parametrize("trace", [None, [1, 2, 3]])
+def test_completion_protocol_preserves_explicit_trace_without_changing_allowance(trace):
+    from vllm.entrypoints.openai.completion.protocol import CompletionRequest
+
+    request = CompletionRequest(
+        model="test",
+        prompt=[10, 20],
+        max_tokens=32768,
+        trace_decode_token_ids=trace,
+    )
+    params = request.to_sampling_params(max_tokens=32768)
+    assert params.trace_decode_token_ids == trace
+    assert params.max_tokens == 32768
+    assert params.prompt_logprobs is None
+
+
 # ---------------------------------------------------------------------------
 # SamplingParams field
 # ---------------------------------------------------------------------------

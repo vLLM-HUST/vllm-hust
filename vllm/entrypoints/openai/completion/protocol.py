@@ -179,6 +179,13 @@ class CompletionRequest(OpenAIBaseModel):
             "need to map generated text back to input tokens."
         ),
     )
+    trace_decode_token_ids: list[int] | None = Field(
+        default=None,
+        description=(
+            "Replay token IDs through real decode steps for diagnostics. "
+            "Requires --enable-trace-replay; not normal text generation."
+        ),
+    )
     return_weight_versions: bool = Field(
         default=False,
         description=(
@@ -418,6 +425,7 @@ class CompletionRequest(OpenAIBaseModel):
             logit_bias=self.logit_bias,
             allowed_token_ids=self.allowed_token_ids,
             bad_words=self.bad_words,
+            trace_decode_token_ids=self.trace_decode_token_ids,
             extra_args=extra_args or None,
             skip_clone=True,  # Created fresh per request, safe to skip clone
             repetition_detection=self.repetition_detection,

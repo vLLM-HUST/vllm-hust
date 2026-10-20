@@ -12,6 +12,98 @@ from vllm.utils.diffusion import validate_diffusion_sampling_params
 from vllm.v1.engine.input_processor import InputProcessor
 
 
+@pytest.mark.parametrize(
+    "field,limit",
+    [("logit_bias", 1024), ("allowed_token_ids", 1024), ("stop_token_ids", 128)],
+)
+def test_v2_rejects_oversized_sampling_buffers_before_worker_writes(field, limit):
+    from vllm.v1.worker.gpu.sample.logit_bias import (
+        LogitBiasState,
+        validate_logit_bias_params,
+    )
+
+    values = (
+        dict.fromkeys(range(limit + 1), 0.5)
+        if field == "logit_bias"
+        else list(range(limit + 1))
+    )
+    params = SamplingParams(**{field: values}, min_tokens=1)
+    with pytest.raises(VLLMValidationError) as error:
+        validate_logit_bias_params(params)
+    assert error.value.parameter == field
+    assert error.value.value == limit + 1
+    # No CUDA allocation or partially staged request state is needed to reject it.
+    with pytest.raises(VLLMValidationError):
+        LogitBiasState.add_request(SimpleNamespace(), 0, params)
+
+
+@pytest.mark.parametrize(
+    "field,limit",
+    [("logit_bias", 1024), ("allowed_token_ids", 1024), ("stop_token_ids", 128)],
+)
+def test_v2_accepts_sampling_buffers_at_capacity(field, limit):
+    from vllm.v1.worker.gpu.sample.logit_bias import validate_logit_bias_params
+
+    values = (
+        dict.fromkeys(range(limit), 0.5)
+        if field == "logit_bias"
+        else list(range(limit))
+    )
+    validate_logit_bias_params(SamplingParams(**{field: values}, min_tokens=1))
+
+
+def test_v2_stop_limit_uses_effective_eos_and_only_min_tokens_mask():
+    from vllm.v1.worker.gpu.sample.logit_bias import validate_logit_bias_params
+
+    params = SamplingParams(stop_token_ids=list(range(128)), min_tokens=1)
+    params.update_from_generation_config({}, eos_token_id=200)
+    with pytest.raises(VLLMValidationError, match="129 tokens"):
+        validate_logit_bias_params(params)
+    params.min_tokens = 0
+    validate_logit_bias_params(params)
+
+
+@pytest.mark.parametrize("field", ["logit_bias", "allowed_token_ids", "stop_token_ids"])
+def test_v2_admission_rejects_effective_params_without_scheduling(field):
+    params = SamplingParams(
+        **{
+            field: (
+                dict.fromkeys(range(1025), 0.5)
+                if field == "logit_bias"
+                else list(range(1025 if field == "allowed_token_ids" else 128))
+            )
+        },
+        min_tokens=1,
+    )
+    processor = SimpleNamespace(
+        _validate_params=lambda *args: False,
+        _validate_lora=lambda *args: None,
+        _validate_model_inputs=lambda *args: None,
+        apply_watermarking=lambda *args: None,
+        model_config=SimpleNamespace(max_model_len=4096),
+        vllm_config=SimpleNamespace(
+            use_v2_model_runner=True,
+            parallel_config=SimpleNamespace(
+                data_parallel_size=1,
+                data_parallel_size_local=1,
+                local_engines_only=False,
+            ),
+        ),
+        generation_config_fields={},
+        renderer=SimpleNamespace(get_eos_token_id=lambda: 200),
+        tokenizer=None,
+    )
+    with pytest.raises(VLLMValidationError) as error:
+        InputProcessor.process_inputs(
+            processor,
+            "test-admission",
+            {"type": "tokens", "prompt_token_ids": [1, 2, 3]},
+            params,
+            ("generate",),
+        )
+    assert error.value.parameter == field
+
+
 @dataclass
 class MockModelConfig:
     is_diffusion: bool = False
