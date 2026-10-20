@@ -19,6 +19,56 @@ DEVICE = torch.device("cuda")
 VOCAB_SIZE = 128
 
 
+@pytest.mark.parametrize("alternative", [None, 16383, 16384, 32770])
+def test_reasoning_guard_preserves_sparse_finite_alternatives(alternative):
+    """The loop guard cannot empty a row, including across vocabulary tiles."""
+    from vllm.v1.worker.gpu.sample.reasoning_repetition import (
+        _mask_repeat_kernel,
+        _repeat_kernel,
+    )
+
+    vocab_size = 32771
+    tokens = torch.tensor([[90] + [10] * 128], dtype=torch.int32, device=DEVICE)
+    lengths = torch.tensor([tokens.shape[1]], dtype=torch.int32, device=DEVICE)
+    zero = torch.zeros(1, dtype=torch.int32, device=DEVICE)
+    logits = torch.full((1, vocab_size + 3), -float("inf"), device=DEVICE)
+    # Non-contiguous vocab rows and non-finite values must be handled correctly.
+    logits = logits[:, :vocab_size]
+    logits[0, 10] = 1.0
+    logits[0, 5] = float("nan")
+    logits[0, 6] = float("inf")
+    if alternative is not None:
+        logits[0, alternative] = -2.0
+    expected = logits.clone()
+    if alternative is not None:
+        expected[0, 10] = -float("inf")
+    protected = torch.zeros((1, vocab_size), dtype=torch.bool, device=DEVICE)
+    candidates = torch.empty(1, dtype=torch.int32, device=DEVICE)
+    _repeat_kernel[(1,)](
+        logits,
+        logits.stride(0),
+        zero,
+        tokens,
+        tokens.stride(0),
+        zero + 1,
+        lengths,
+        zero,
+        zero - 1,
+        protected,
+        candidates,
+        NGRAM=32,
+        WINDOW=512,
+        OCCURRENCES=4,
+        VOCAB=vocab_size,
+        START_LEN=1,
+        BLOCK=512,
+    )
+    _mask_repeat_kernel[(1, (vocab_size + 1023) // 1024)](
+        logits, logits.stride(0), candidates, VOCAB=vocab_size, BLOCK=1024
+    )
+    torch.testing.assert_close(logits, expected, equal_nan=True)
+
+
 @pytest.mark.parametrize("max_occurrences", [3, 4])
 @pytest.mark.parametrize(
     "tokens,prompt_len,expected_blocked,ngram_size",
@@ -39,6 +89,8 @@ VOCAB_SIZE = 128
             32,
         ),
         ([90] + [10] * 128, 1, 10, 32),
+        ([90] + [10, 11] * 20 + [10], 1, 11, 32),
+        ([90] + [10, 11] * 16 + [10], 1, None, 32),
         (
             [90] + list(range(10, 42)) * 4 + [50] * 600 + list(range(10, 41)),
             1,

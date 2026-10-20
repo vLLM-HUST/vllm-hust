@@ -27,7 +27,7 @@ def _repeat_kernel(
     starts,
     ends,
     protected,
-    finite_counts,
+    candidates,
     NGRAM: tl.constexpr,
     WINDOW: tl.constexpr,
     OCCURRENCES: tl.constexpr,
@@ -36,6 +36,7 @@ def _repeat_kernel(
     BLOCK: tl.constexpr,
 ):
     row = tl.program_id(0)
+    tl.store(candidates + row, -1)
     slot = tl.load(mapping + row)
     start = tl.load(starts + slot)
     end = tl.load(ends + slot)
@@ -65,7 +66,9 @@ def _repeat_kernel(
     # Repeated phrasing in distinct paragraphs is not a closed generation loop.
     # Require an uninterrupted periodic suffix, not just distant n-gram matches.
     period = length - NGRAM + 1 - latest
-    required = tl.maximum(NGRAM * OCCURRENCES, period * OCCURRENCES)
+    # Overlapping n-grams still establish distinct short-period continuations;
+    # do not wait NGRAM * OCCURRENCES tokens for a two-token loop.
+    required = tl.maximum(NGRAM + period * (OCCURRENCES - 1), period * OCCURRENCES)
     if length - required < lower:
         return
     offsets = tl.arange(0, BLOCK)
@@ -82,8 +85,33 @@ def _repeat_kernel(
     )
     count = tl.sum((match & (next_ids == candidate)).to(tl.int32), 0)
     safe = ~tl.load(protected + slot * VOCAB + candidate)
-    if count >= OCCURRENCES and safe and tl.load(finite_counts + row) > 1:
-        tl.store(logits + row * logits_stride + candidate, -float("inf"))
+    if count < OCCURRENCES or not safe:
+        return
+    candidate_logit = tl.load(logits + row * logits_stride + candidate)
+    if not tl.abs(candidate_logit) < float("inf"):
+        return
+    tl.store(candidates + row, candidate)
+
+
+@triton.jit
+def _mask_repeat_kernel(
+    logits, logits_stride, candidates, VOCAB: tl.constexpr, BLOCK: tl.constexpr
+):
+    row = tl.program_id(0)
+    candidate = tl.load(candidates + row)
+    if candidate < 0:
+        return
+    ids = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+    values = tl.load(
+        logits + row * logits_stride + ids, mask=ids < VOCAB, other=-float("inf")
+    )
+    alternatives = (ids != candidate) & (tl.abs(values) < float("inf"))
+    if tl.sum(alternatives.to(tl.int32), 0) > 0:
+        # Other finite tokens never change; concurrent tiles may safely mask the
+        # same candidate, but cannot remove a row's sole valid continuation.
+        tl.atomic_min(
+            logits + row * logits_stride + candidate, -float("inf"), sem="relaxed"
+        )
 
 
 def apply_reasoning_repetition(
@@ -118,7 +146,7 @@ def apply_reasoning_repetition(
         MAX_LEN=max(start.numel(), end.numel()),
         BLOCK=_COLD_SCAN_BLOCK,
     )
-    finite_counts = torch.isfinite(logits).sum(dim=1)
+    candidates = torch.empty(logits.shape[0], dtype=torch.int32, device=logits.device)
     _repeat_kernel[(logits.shape[0],)](
         logits,
         logits.stride(0),
@@ -130,11 +158,14 @@ def apply_reasoning_repetition(
         last_start,
         last_end,
         protected,
-        finite_counts,
+        candidates,
         NGRAM=ngram_size,
         WINDOW=window_size,
         OCCURRENCES=max_occurrences,
         VOCAB=logits.shape[1],
         START_LEN=start.numel(),
         BLOCK=triton.next_power_of_2(window_size),
+    )
+    _mask_repeat_kernel[(logits.shape[0], triton.cdiv(logits.shape[1], 1024))](
+        logits, logits.stride(0), candidates, VOCAB=logits.shape[1], BLOCK=1024
     )
