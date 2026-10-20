@@ -62,6 +62,21 @@ def _repeat_kernel(
     if latest < 0:
         return
     candidate = tl.load(tokens + slot * token_stride + latest + NGRAM - 1)
+    # Repeated phrasing in distinct paragraphs is not a closed generation loop.
+    # Require an uninterrupted periodic suffix, not just distant n-gram matches.
+    period = length - NGRAM + 1 - latest
+    required = tl.maximum(NGRAM * OCCURRENCES, period * OCCURRENCES)
+    if length - required < lower:
+        return
+    offsets = tl.arange(0, BLOCK)
+    within = offsets < required - period
+    recent_pos = length - 1 - offsets
+    recent = tl.load(tokens + slot * token_stride + recent_pos, mask=within, other=-1)
+    previous = tl.load(
+        tokens + slot * token_stride + recent_pos - period, mask=within, other=-1
+    )
+    if tl.sum((within & (recent != previous)).to(tl.int32), 0) > 0:
+        return
     next_ids = tl.load(
         tokens + slot * token_stride + positions + NGRAM - 1, mask=valid, other=-1
     )
