@@ -65,6 +65,43 @@ def test_native_model_budget_defaults_and_request_precedence(explicit, expected)
         assert params.max_tokens == 256
 
 
+@pytest.mark.parametrize(
+    "explicit, presence, frequency",
+    [("unset", 1.5, 0.5), (None, 1.5, 0.5), (0.0, 0.0, 0.0), (0.7, 0.7, 0.7)],
+)
+def test_model_penalties_reach_both_protocols_and_explicit_zero_wins(
+    explicit, presence, frequency
+):
+    config = cast(
+        ModelConfig,
+        SimpleNamespace(
+            generation_config="vllm",
+            override_generation_config={
+                "presence_penalty": 1.5,
+                "frequency_penalty": 0.5,
+            },
+        ),
+    )
+    defaults = ModelConfig.get_diff_sampling_param(config)
+    kwargs = (
+        {}
+        if explicit == "unset"
+        else {"presence_penalty": explicit, "frequency_penalty": explicit}
+    )
+    responses = ResponsesRequest(input="Explain KV cache", **kwargs).to_sampling_params(
+        default_max_tokens=32768, default_sampling_params=defaults
+    )
+    chat = ChatCompletionRequest(
+        model="test",
+        messages=[{"role": "user", "content": "Explain KV cache"}],
+        **kwargs,
+    ).to_sampling_params(max_tokens=32768, default_sampling_params=defaults)
+    for params in (responses, chat):
+        assert params.presence_penalty == presence
+        assert params.frequency_penalty == frequency
+        assert params.max_tokens == 32768
+
+
 def test_serialize_message() -> None:
     dict_value = {"a": 1, "b": "2"}
     assert serialize_message(dict_value) == dict_value

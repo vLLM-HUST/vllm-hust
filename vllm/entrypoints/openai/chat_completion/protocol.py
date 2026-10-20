@@ -214,7 +214,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
     # https://platform.openai.com/docs/api-reference/chat/create
     messages: list[ChatCompletionMessageParam]
     model: str | None = None
-    frequency_penalty: float | None = 0.0
+    frequency_penalty: float | None = None
     logit_bias: dict[str, float] | None = None
     logprobs: bool | None = False
     top_logprobs: int | None = 0
@@ -225,7 +225,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
     )
     max_completion_tokens: int | None = None
     n: int | None = 1
-    presence_penalty: float | None = 0.0
+    presence_penalty: float | None = None
     response_format: AnyResponseFormat | None = None
     seed: int | None = Field(None, ge=_INT64_MIN, le=_INT64_MAX)
     stop: StopParam = []
@@ -711,8 +711,16 @@ class ChatCompletionRequest(OpenAIBaseModel):
             extra_args["ec_transfer_params"] = self.ec_transfer_params
         return SamplingParams.from_optional(
             n=self.n,
-            presence_penalty=self.presence_penalty,
-            frequency_penalty=self.frequency_penalty,
+            presence_penalty=(
+                self.presence_penalty
+                if self.presence_penalty is not None
+                else default_sampling_params.get("presence_penalty", 0.0)
+            ),
+            frequency_penalty=(
+                self.frequency_penalty
+                if self.frequency_penalty is not None
+                else default_sampling_params.get("frequency_penalty", 0.0)
+            ),
             repetition_penalty=repetition_penalty,
             temperature=temperature,
             top_p=top_p,
