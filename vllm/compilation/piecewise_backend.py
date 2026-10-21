@@ -230,14 +230,14 @@ class PiecewiseBackend:
         out = {}
 
         for range_key, entry in self.range_entries.items():
-            if not entry.compiled:
-                logger.debug(
-                    "entry with range %s not compiled, so cannot get its bytes",
-                    range_key,
+            if not entry.compiled or not callable(
+                getattr(entry.runnable, "serialize", None)
+            ):
+                raise ValueError(
+                    f"Cannot save mega AOT artifact: range {range_key} "
+                    "is not compiled or has no callable serializer"
                 )
-                continue
-            if hasattr(entry.runnable, "serialize"):
-                out[str(range_key)] = serialize(entry.runnable)
+            out[str(range_key)] = serialize(entry.runnable)
 
         return out
 

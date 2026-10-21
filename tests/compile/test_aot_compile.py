@@ -11,6 +11,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -23,9 +24,11 @@ from vllm.compilation.backends import VllmBackend
 from vllm.compilation.caching import (
     StandaloneCompiledArtifacts,
     VllmSerializableFunction,
+    reconstruct_serializable_fn_from_mega_artifact,
 )
 from vllm.compilation.counter import compilation_counter
 from vllm.compilation.decorators import support_torch_compile
+from vllm.compilation.piecewise_backend import PiecewiseBackend
 from vllm.config import (
     CompilationConfig,
     CompilationMode,
@@ -40,6 +43,37 @@ from vllm.platforms import current_platform
 from vllm.utils.torch_utils import is_torch_equal_or_newer
 
 from ..utils import create_new_process_for_each_test
+
+
+@pytest.mark.parametrize(
+    "compiled, runnable",
+    [(True, lambda: None), (True, SimpleNamespace(serialize=None)), (False, None)],
+)
+def test_mega_aot_rejects_unserializable_range(compiled, runnable):
+    backend = object.__new__(PiecewiseBackend)
+    backend.range_entries = {
+        "range": SimpleNamespace(compiled=compiled, runnable=runnable)
+    }
+    with pytest.raises(ValueError, match="no callable serializer"):
+        backend.to_bytes()
+
+
+@pytest.mark.parametrize("present", [[], ["submod_0"]])
+def test_mega_aot_rejects_missing_submodules_before_loading(present):
+    artifacts = StandaloneCompiledArtifacts()
+    for name in present:
+        artifacts.insert(name, "range", b"not loaded")
+    with patch.object(artifacts, "load_all") as load_all:
+        with pytest.raises(ValueError, match="missing compiled submodules"):
+            reconstruct_serializable_fn_from_mega_artifact(
+                state={"prefix": "eagle_head"},
+                standalone_compile_artifacts=artifacts,
+                vllm_config=SimpleNamespace(compilation_config=None),
+                sym_shape_indices_map={"submod_0": [0], "submod_1": [0]},
+                returns_tuple_map={},
+                fake_mode=None,
+            )
+        load_all.assert_not_called()
 
 
 @pytest.fixture
