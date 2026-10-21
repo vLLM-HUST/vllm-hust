@@ -62,7 +62,7 @@ def test_chat_completion_request_forwards_predicted_length_via_extra_args():
     sampling_params = request.to_sampling_params(
         max_tokens=128, default_sampling_params={}
     )
-    assert sampling_params.extra_args["predicted_length"] == 64
+    assert (sampling_params.extra_args or {})["predicted_length"] == 64
 
 
 def test_chat_completion_request_without_prediction_leaves_extra_args_clean():
@@ -100,4 +100,4 @@ def test_completion_request_accepts_and_forwards_predicted_length():
     sampling_params = request.to_sampling_params(
         max_tokens=128, default_sampling_params={}
     )
-    assert sampling_params.extra_args["predicted_length"] == 32
+    assert (sampling_params.extra_args or {})["predicted_length"] == 32
