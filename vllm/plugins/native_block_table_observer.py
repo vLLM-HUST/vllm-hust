@@ -62,6 +62,9 @@ def _scope(role):
 
 
 def observe_request_id_mapping(request):
+    from .conditional_scheduler_evidence import mapping
+
+    mapping(request)
     if _observer is None:
         from .native_semantic_bootstrap import ensure_registered
 
