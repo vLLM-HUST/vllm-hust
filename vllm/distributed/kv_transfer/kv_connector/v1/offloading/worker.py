@@ -30,6 +30,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.observability impor
     ComputeKind,
     TransferCancellationReason,
     TransferOperation,
+    capture_transfer_descriptors,
     emit_kv_first_compute,
     emit_kv_transfer_cancelled,
     emit_kv_transfer_completed,
@@ -86,6 +87,7 @@ class OffloadingConnectorWorker:
         # job_id -> req_id for submitted stores, kept until the backend
         # reports the transfer result.
         self._store_jobs: dict[int, ReqId] = {}
+        self._observation_tokens: dict[int, str] = {}
         self._unsubmitted_store_jobs: list[
             tuple[int, ReqId, GPULoadStoreSpec, LoadStoreSpec]
         ] = []
@@ -253,7 +255,10 @@ class OffloadingConnectorWorker:
         assert self.worker is not None
         for job_id, req_id, src_spec, dst_spec in self._unsubmitted_store_jobs:
             assert isinstance(src_spec, GPULoadStoreSpec)
-            success = self.worker.submit_store(job_id, src_spec, dst_spec)
+            with capture_transfer_descriptors(
+                job_id, TransferOperation.D2H_PRESERVE
+            ) as capture:
+                success = self.worker.submit_store(job_id, src_spec, dst_spec)
             assert success
             self._store_jobs[job_id] = req_id
             emit_kv_transfer_submitted(
@@ -262,7 +267,11 @@ class OffloadingConnectorWorker:
                 rank=self._rank,
                 request_id=req_id,
                 block_count=len(src_spec.block_ids),
+                submission_token=capture.token if capture is not None else None,
             )
+            if capture is not None:
+                self._observation_tokens[job_id] = capture.token
+                capture.publish(self._rank, req_id)
         self._unsubmitted_store_jobs.clear()
 
     def handle_preemptions(self, kv_connector_metadata: OffloadingConnectorMetadata):
@@ -370,7 +379,12 @@ class OffloadingConnectorWorker:
         for job_id, entry in metadata.load_jobs.items():
             self._load_jobs[job_id] = entry.req_id
             assert isinstance(entry.dst_spec, GPULoadStoreSpec)
-            success = self.worker.submit_load(job_id, entry.src_spec, entry.dst_spec)
+            with capture_transfer_descriptors(
+                job_id, TransferOperation.H2D_RESTORE
+            ) as capture:
+                success = self.worker.submit_load(
+                    job_id, entry.src_spec, entry.dst_spec
+                )
             assert success
             if (
                 correlated_observers_configured()
@@ -397,7 +411,11 @@ class OffloadingConnectorWorker:
                 rank=self._rank,
                 request_id=entry.req_id,
                 block_count=len(entry.dst_spec.block_ids),
+                submission_token=capture.token if capture is not None else None,
             )
+            if capture is not None:
+                self._observation_tokens[job_id] = capture.token
+                capture.publish(self._rank, entry.req_id)
 
     def prepare_store_kv(self, metadata: OffloadingConnectorMetadata):
         for job_id, entry in metadata.store_jobs.items():
@@ -429,10 +447,30 @@ class OffloadingConnectorWorker:
             self._recovery_admissions_v2.pop(finished_req_id, None)
         finished_recving: set[str] = set()
         for transfer_result in self.worker.get_finished():
-            # we currently do not support job failures
             job_id = transfer_result.job_id
-            assert transfer_result.success
             is_load = job_id in self._load_jobs
+            if not transfer_result.success:
+                # Preserve the backend's fail-stop policy, but never hide the
+                # failed transfer or attest it as a successful receipt.
+                req_id = (self._load_jobs if is_load else self._store_jobs).pop(
+                    job_id, None
+                )
+                self._load_contexts.pop(job_id, None)
+                emit_kv_transfer_completed(
+                    operation=(
+                        TransferOperation.H2D_RESTORE
+                        if is_load
+                        else TransferOperation.D2H_PRESERVE
+                    ),
+                    job_id=job_id,
+                    rank=self._rank,
+                    request_id=req_id,
+                    success=False,
+                    bytes_moved=None,
+                    duration_ns=None,
+                    submission_token=self._observation_tokens.pop(job_id, None),
+                )
+                raise RuntimeError(f"KV offload transfer {job_id} failed")
             if (
                 transfer_result.transfer_time is not None
                 and transfer_result.transfer_size is not None
@@ -469,6 +507,7 @@ class OffloadingConnectorWorker:
                 rank=self._rank,
                 request_id=req_id,
                 success=True,
+                submission_token=self._observation_tokens.pop(job_id, None),
                 bytes_moved=transfer_result.transfer_size,
                 duration_ns=(
                     None
@@ -506,6 +545,7 @@ class OffloadingConnectorWorker:
                 rank=self._rank,
                 request_id=req_id,
                 reason=TransferCancellationReason.HOST_SHUTDOWN,
+                submission_token=self._observation_tokens.get(job_id),
             )
         for job_id, req_id in self._store_jobs.items():
             emit_kv_transfer_cancelled(
@@ -514,11 +554,13 @@ class OffloadingConnectorWorker:
                 rank=self._rank,
                 request_id=req_id,
                 reason=TransferCancellationReason.HOST_SHUTDOWN,
+                submission_token=self._observation_tokens.get(job_id),
             )
         self._unsubmitted_store_jobs.clear()
         self._load_jobs.clear()
         self._load_contexts.clear()
         self._store_jobs.clear()
+        self._observation_tokens.clear()
         self._recovery_admissions.clear()
         self._recovery_admissions_v2.clear()
         self._connector_worker_meta = OffloadingWorkerMetadata()

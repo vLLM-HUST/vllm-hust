@@ -20,10 +20,13 @@ observer is removed without affecting serving.
 from __future__ import annotations
 
 import os
+import secrets
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Final
 
@@ -34,7 +37,7 @@ logger = init_logger(__name__)
 # Contract identity published by this seam. Out-of-tree observers use it to
 # confirm that they attached to the expected host API.
 KV_TRANSFER_OBSERVER_CONTRACT: Final = "vllm.kv-transfer.observer.v1"
-KV_TRANSFER_OBSERVABILITY_API_VERSION: Final = "1.0"
+KV_TRANSFER_OBSERVABILITY_API_VERSION: Final = "1.1"
 
 
 class KVTransferEvent(str, Enum):
@@ -165,9 +168,56 @@ class KVTransferObservation:
     descriptors: tuple[KVRegionDescriptor, ...] = ()
     dropped_descriptors: int = 0
     compute_kind: ComputeKind | None = None
+    submission_token: str | None = None
 
 
 KVTransferObserver = Callable[[KVTransferObservation], bool | None]
+
+
+@dataclass
+class DescriptorSubmission:
+    """One synchronous submission's bounded, unpublished copy layout."""
+
+    job_id: int
+    operation: TransferOperation
+    token: str
+    record: KVTransferObservation | None = None
+    invalid: bool = False
+
+    def publish(self, rank: int, request_id: str | None) -> None:
+        record, self.record = self.record, None
+        if record is not None and not self.invalid:
+            _publish(
+                replace(
+                    record,
+                    rank=rank,
+                    request_id=request_id,
+                    submission_token=self.token,
+                )
+            )
+
+
+_descriptor_submission: ContextVar[DescriptorSubmission | None] = ContextVar(
+    "kv_descriptor_submission", default=None
+)
+
+
+@contextmanager
+def capture_transfer_descriptors(job_id: int, operation: TransferOperation):
+    """Bind copy-site layouts to an exact accepted Worker submission.
+
+    Unaccepted submissions never publish their layouts. Asynchronous copy
+    callbacks outside this scope remain unassociated v1 observations.
+    """
+    if not _observers:
+        yield None
+        return
+    capture = DescriptorSubmission(job_id, operation, secrets.token_hex(16))
+    token = _descriptor_submission.set(capture)
+    try:
+        yield capture
+    finally:
+        _descriptor_submission.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +237,7 @@ def _reset_after_fork() -> None:
     """Do not inherit parent observers or a lock held by a vanished thread."""
     global _observers, _registry_lock
     _observers = {}
+    _descriptor_submission.set(None)
     # Keep the counter so a copied parent handle cannot remove a child entry.
     _registry_lock = threading.Lock()
 
@@ -279,6 +330,7 @@ def emit_kv_transfer_submitted(
     rank: int,
     request_id: str | None,
     block_count: int | None,
+    submission_token: str | None = None,
 ) -> None:
     """Publish a transfer whose backend submission succeeded.
 
@@ -296,6 +348,7 @@ def emit_kv_transfer_submitted(
             observed_at_ns=time.monotonic_ns(),
             request_id=request_id,
             block_count=block_count,
+            submission_token=submission_token,
         )
     )
 
@@ -309,6 +362,7 @@ def emit_kv_transfer_completed(
     success: bool,
     bytes_moved: int | None,
     duration_ns: int | None,
+    submission_token: str | None = None,
 ) -> None:
     """Publish a terminal transfer result reported by the backend."""
     if not _observers:
@@ -324,6 +378,7 @@ def emit_kv_transfer_completed(
             success=success,
             bytes_moved=bytes_moved,
             duration_ns=duration_ns,
+            submission_token=submission_token,
         )
     )
 
@@ -335,6 +390,7 @@ def emit_kv_transfer_cancelled(
     rank: int,
     request_id: str | None,
     reason: TransferCancellationReason,
+    submission_token: str | None = None,
 ) -> None:
     """Publish a still-open transfer that will not complete.
 
@@ -352,6 +408,7 @@ def emit_kv_transfer_cancelled(
             observed_at_ns=time.monotonic_ns(),
             request_id=request_id,
             reason=reason,
+            submission_token=submission_token,
         )
     )
 
@@ -450,17 +507,28 @@ def emit_kv_transfer_descriptors(
     """
     if not _observers:
         return
-    _publish(
-        KVTransferObservation(
-            event=KVTransferEvent.TRANSFER_DESCRIPTORS,
-            observed_at_ns=time.monotonic_ns(),
-            operation=operation,
-            job_id=job_id,
-            rank=rank,
-            descriptors=descriptors,
-            dropped_descriptors=dropped_descriptors,
-        )
+    record = KVTransferObservation(
+        event=KVTransferEvent.TRANSFER_DESCRIPTORS,
+        observed_at_ns=time.monotonic_ns(),
+        operation=operation,
+        job_id=job_id,
+        rank=rank,
+        descriptors=descriptors[:MAX_DESCRIPTOR_REGIONS],
+        dropped_descriptors=dropped_descriptors
+        + max(0, len(descriptors) - MAX_DESCRIPTOR_REGIONS),
     )
+    capture = _descriptor_submission.get()
+    if capture is None:
+        _publish(record)
+    elif (
+        capture.record is not None
+        or capture.job_id != job_id
+        or capture.operation != operation
+    ):
+        capture.invalid = True
+        capture.record = None
+    elif not capture.invalid:
+        capture.record = record
 
 
 def emit_kv_first_compute(
