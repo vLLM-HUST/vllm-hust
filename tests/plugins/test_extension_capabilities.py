@@ -18,6 +18,7 @@ from vllm.plugins.request_processing import REQUEST_PROCESSING_HOOK_API_VERSION
 from vllm.v1.core.kv_materialization import (
     KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION,
 )
+from vllm.v1.core.length_prediction import PREDICTED_LENGTH_API_VERSION
 from vllm.v1.core.sched.batch_admission import (
     BATCH_ADMISSION_POLICY_API_VERSION,
 )
@@ -45,6 +46,7 @@ def test_extension_capability_snapshot_matches_owned_contracts() -> None:
             "vllm.kv-transfer.observer.v2": (
                 KV_TRANSFER_CORRELATED_OBSERVABILITY_API_VERSION
             ),
+            "vllm.predicted-length": PREDICTED_LENGTH_API_VERSION,
         },
     }
 
