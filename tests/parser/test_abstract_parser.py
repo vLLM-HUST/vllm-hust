@@ -390,6 +390,7 @@ class TestResponsesCustomToolStructuralTags:
 
         out = self._parser(request).adjust_request(request)
 
+        assert isinstance(out, ResponsesRequest)
         assert out.text is None
         assert out.structured_outputs is not None
         grammar = Grammar.from_structural_tag(out.structured_outputs.structural_tag)
