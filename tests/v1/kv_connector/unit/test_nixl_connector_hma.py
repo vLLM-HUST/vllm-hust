@@ -1851,6 +1851,15 @@ def test_compute_physical_blocks_per_logical(ssm_sizes, block_len, expected_rati
             (256, 256, 768),
             id="qwen35_27b_tp8",
         ),
+        pytest.param(
+            "qwen_gdn_attention",
+            2,
+            5120,
+            3,
+            (24, 128, 128),
+            (1024, 1024, 3072),
+            id="qwen_gdn_invariant_tp2",
+        ),
         # ai21labs/AI21-Jamba2-Mini (Mamba1)
         # mamba d_inner = mamba_expand(2) * hidden_size(4096) = 8192
         # mamba_d_state=16, mamba_d_conv=4 → conv_rows=3.
@@ -1908,6 +1917,7 @@ def test_derive_mamba_conv_split(
         "mamba1": MambaAttentionBackendEnum.MAMBA1,
         "mamba2": MambaAttentionBackendEnum.MAMBA2,
         "gdn_attention": MambaAttentionBackendEnum.GDN_ATTN,
+        "qwen_gdn_attention": MambaAttentionBackendEnum.QWEN_GDN_ATTN,
     }
     mamba_type_enum = _TYPE_MAP[mamba_type]
 

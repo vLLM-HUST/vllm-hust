@@ -85,6 +85,20 @@ class GDNAttentionBackend(AttentionBackend):
         return True
 
 
+class QwenGDNAttentionBackend(GDNAttentionBackend):
+    """Qwen shared-recurrence backend; other GDN implementations stay gated."""
+
+    @staticmethod
+    def get_name() -> str:
+        return "QWEN_GDN_ATTN"
+
+    @classmethod
+    def supports_batch_invariance(cls) -> bool:
+        from vllm.platforms import current_platform
+
+        return current_platform.is_cuda() and current_platform.has_device_capability(80)
+
+
 @dataclass
 class GDNAttentionMetadata:
     num_prefills: int

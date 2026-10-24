@@ -10,16 +10,156 @@ Environment variables:
 
 """
 
+import json
 import os
 import random
 import sys
 from typing import Any
 
+import httpx
 import openai
 import pytest
 from utils import BACKENDS, TEST_MODEL, _random_prompt, skip_if_not_cuda_alike
 
 from tests.utils import RemoteOpenAIServer
+
+
+def test_qwen_gdn_speculative_prefix_replay_preserves_greedy_tokens() -> None:
+    """Real HTTP regression: prefill, cached replay and Suffix verification agree.
+
+    This requires the same invariant numerical policy in every phase, rather
+    than assuming greedy decoding alone makes a hybrid model deterministic.
+    VLLM_TEST_MODEL and VLLM_TP_SIZE allow the original 35B/TP2 acceptance run.
+    """
+    model = os.environ.get("VLLM_TEST_MODEL", "Qwen/Qwen3.5-0.8B")
+    sequence = " ".join(f"item{i:03d}" for i in range(1, 41))
+    prompts = [
+        "This is a verbatim copy task. Preserve every word.\n"
+        + ("Reference: " + sequence + "\n") * 12
+        + f"Example {number}. Source: "
+        + sequence
+        + " END\nCopy:"
+        for number in (1, 2)
+    ]
+    common = [
+        "--host",
+        "127.0.0.1",
+        "--served-model-name",
+        "gdn-parity",
+        "--tensor-parallel-size",
+        os.environ.get("VLLM_TP_SIZE", "1"),
+        "--max-model-len",
+        os.environ.get("VLLM_TEST_MAX_MODEL_LEN", "4096"),
+        "--max-num-seqs",
+        "8",
+        "--gpu-memory-utilization",
+        "0.85",
+        "--distributed-executor-backend",
+        "mp",
+        "--block-size",
+        "1088",
+        "--max-num-batched-tokens",
+        "1088",
+        "--no-async-scheduling",
+    ]
+    env = {
+        "VLLM_BATCH_INVARIANT": "1",
+        "VLLM_GDN_DECODE_KERNEL": "triton",
+        "VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE": "0",
+        "VLLM_USE_V2_MODEL_RUNNER": "0",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+    }
+    baseline = None
+    prompt_ids = None
+
+    def counter(metrics: str, name: str) -> float:
+        return sum(
+            float(line.rsplit(" ", 1)[1])
+            for line in metrics.splitlines()
+            if line.startswith(name + "{") or line.startswith(name + " ")
+        )
+
+    for apc, suffix in ((False, False), (True, False), (False, True), (True, True)):
+        args = common + [
+            "--enable-prefix-caching" if apc else "--no-enable-prefix-caching"
+        ]
+        if suffix:
+            args += [
+                "--speculative-config",
+                json.dumps({"method": "suffix", "num_speculative_tokens": 5}),
+            ]
+        with (
+            RemoteOpenAIServer(model, args, env_dict=env) as server,
+            httpx.Client(timeout=120, trust_env=False) as client,
+        ):
+            if prompt_ids is None:
+                prompt_ids = []
+                for prompt in prompts:
+                    response = client.post(
+                        server.url_for("tokenize"),
+                        json={
+                            "model": "gdn-parity",
+                            "prompt": prompt,
+                            "add_special_tokens": False,
+                        },
+                    )
+                    response.raise_for_status()
+                    prompt_ids.append(response.json()["tokens"])
+            before = client.get(server.url_for("metrics"))
+            before.raise_for_status()
+            for _ in range(2):
+                outputs = []
+                for ids in prompt_ids:
+                    token_ids: list[int] = []
+                    text, finish, done = "", [], False
+                    with client.stream(
+                        "POST",
+                        server.url_for("v1/completions"),
+                        json={
+                            "model": "gdn-parity",
+                            "prompt": ids,
+                            "temperature": 0,
+                            "seed": 42,
+                            "max_tokens": 512,
+                            "add_special_tokens": False,
+                            "stop": ["END", "\n\n"],
+                            "stream": True,
+                            "return_token_ids": True,
+                        },
+                    ) as response:
+                        response.raise_for_status()
+                        for line in response.iter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data = line[6:]
+                            if data == "[DONE]":
+                                done = True
+                                continue
+                            event = json.loads(data)
+                            assert "error" not in event, event
+                            for choice in event.get("choices", []):
+                                text += choice.get("text", "")
+                                token_ids.extend(choice.get("token_ids") or [])
+                                if choice.get("finish_reason"):
+                                    finish.append(choice["finish_reason"])
+                    assert done and finish == ["stop"] and text and token_ids
+                    outputs.append((text, token_ids))
+                if baseline is None:
+                    baseline = outputs
+                assert outputs == baseline, (apc, suffix)
+            after = client.get(server.url_for("metrics"))
+            after.raise_for_status()
+            names = []
+            if apc:
+                names.append("vllm:prefix_cache_hits_total")
+            if suffix:
+                names += [
+                    "vllm:spec_decode_num_draft_tokens_total",
+                    "vllm:spec_decode_num_accepted_tokens_total",
+                ]
+            for name in names:
+                assert counter(after.text, name) > counter(before.text, name), name
 
 
 def _request_completion(
