@@ -38,6 +38,18 @@ from . import silly_attention  # noqa: F401
 DEVICE_TYPE = current_platform.device_type
 
 
+def test_inductor_invariant_policy_has_distinct_cache_key(monkeypatch):
+    """Never reuse a normal-mode graph for invariant reductions."""
+    monkeypatch.setenv("VLLM_BATCH_INVARIANT", "0")
+    normal = CompilationConfig(backend="inductor")
+    monkeypatch.setenv("VLLM_BATCH_INVARIANT", "1")
+    invariant = CompilationConfig(backend="inductor")
+    assert invariant.inductor_compile_config["batch_invariant"] is True
+    assert invariant.compute_hash() != normal.compute_hash()
+    with pytest.raises(ValueError, match="requires Inductor batch_invariant=True"):
+        CompilationConfig(inductor_compile_config={"batch_invariant": False})
+
+
 def test_version():
     # Test the version comparison logic using the private function
     assert _is_torch_equal_or_newer("2.8.0.dev20250624+cu128", "2.8.0.dev")

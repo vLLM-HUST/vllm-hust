@@ -119,6 +119,40 @@ for output in outputs:
     print(f"Generated: {generated_text!r}\n")
 ```
 
+## Experimental Qwen3.5 GDN Speculative Consistency
+
+Qwen3.5's invariant path uses a Qwen-specific GDN backend on NVIDIA CUDA SM80+
+with FP32 recurrent state. It shares the token-ordered Triton recurrence across
+prefill, ordinary decode and speculative verification, including accepted-state
+snapshots. Generic GDN backends remain unsupported. Explicit CUDA fused GDN
+selection conflicts with this mode and is rejected; use
+`VLLM_GDN_DECODE_KERNEL=triton`. Mamba cache modes `none` and `align` are supported;
+checkpoint-export mode `all` is rejected rather than silently losing checkpoints.
+The prefill backend must also be `triton`. If another backend is selected, set
+`additional_config={"gdn_prefill_backend":"triton"}` explicitly; the invariant
+path rejects FlashInfer checkpoint-export metadata rather than bypassing it.
+
+Use identical batch-invariance, runner, scheduling and cache/prefill geometry
+in both sides of a speculative comparison. Greedy sampling by itself does not
+guarantee identical tokens. Invariant mode can change tokens relative to the
+ordinary numerical path and may reduce prefill throughput. It does not establish
+factual accuracy or unrestricted equivalence across devices or model versions.
+
+The real HTTP regression is
+`tests/v1/determinism/test_online_batch_invariance.py::test_qwen_gdn_speculative_prefix_replay_preserves_greedy_tokens`.
+It checks streamed token IDs and text, normal completion, replay, prefix hits
+and real draft/accept activity using original raw copying prompts. Override
+`VLLM_TEST_MODEL` and `VLLM_TP_SIZE` for the checkpoint and topology under test.
+Controlled deployment qualification additionally requires mirrored ON/OFF phases;
+passing a kernel test alone does not qualify a serving configuration.
+Current deployment qualification covers synchronous V1 execution; these results
+do not qualify V2 or asynchronous Suffix execution.
+
+This fork extends the shared-recurrence approach discussed in upstream
+[PR 60033](https://github.com/vllm-project/vllm/pull/60033) to speculative
+accepted-state verification. Row-invariant gated normalization follows the issue
+identified in [PR 57280](https://github.com/vllm-project/vllm/pull/57280).
+
 ## Tested Models
 
 Batch invariance has been tested and verified on the following models:

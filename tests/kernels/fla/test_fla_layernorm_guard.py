@@ -19,6 +19,32 @@ from vllm.utils.torch_utils import set_random_seed
 DEVICE = "xpu" if current_platform.is_xpu() else "cuda"
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@torch.inference_mode()
+def test_invariant_gated_norm_matches_serial_rows(dtype, monkeypatch):
+    """Batch placement must not change a row's reduction layout."""
+    monkeypatch.setenv("VLLM_BATCH_INVARIANT", "1")
+    torch.manual_seed(42)
+    x = torch.randn(1024, 128, dtype=dtype, device=DEVICE)
+    z = torch.randn_like(x)
+    weight = torch.randn(128, dtype=dtype, device=DEVICE)
+    bulk, _, rstd = layer_norm_fwd(
+        x, weight, None, 1e-6, z=z, is_rms_norm=True, norm_before_gate=True
+    )
+    for row in (0, 17, 127, 1023):
+        expected, _, expected_rstd = layer_norm_fwd(
+            x[row : row + 1],
+            weight,
+            None,
+            1e-6,
+            z=z[row : row + 1],
+            is_rms_norm=True,
+            norm_before_gate=True,
+        )
+        torch.testing.assert_close(bulk[row : row + 1], expected, atol=0, rtol=0)
+        torch.testing.assert_close(rstd[row : row + 1], expected_rstd, atol=0, rtol=0)
+
+
 def layer_norm_ref(
     x,
     weight,

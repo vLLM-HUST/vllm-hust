@@ -612,7 +612,7 @@ steps:
   - vllm/device_allocator/
   - vllm/connections.py
   - vllm/engine/arg_utils.py
-  - vllm/entrypoints/chat_utils.py
+  - vllm/renderers/chat_utils/
   - vllm/entrypoints/mcp/
   - vllm/entrypoints/openai/chat_completion/protocol.py
   - vllm/entrypoints/openai/completion/protocol.py
@@ -791,6 +791,27 @@ steps:
       - tests/v1/determinism/
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
+
+- label: ":nvidia: (A100) Qwen GDN Speculative Invariance"
+  key: qwen-gdn-speculative-invariance-a100
+  timeout_in_minutes: 60
+  device: a100
+  source_file_dependencies:
+    - vllm/config/compilation.py
+    - vllm/v1/attention
+    - vllm/model_executor/layers/mamba/gdn
+    - vllm/third_party/flash_linear_attention
+    - vllm/distributed/kv_transfer/kv_connector/v1/ssm_conv_transfer_utils.py
+    - tests/v1/determinism/test_online_batch_invariance.py
+    - tests/compile/test_config.py
+    - tests/kernels/fla/test_fla_layernorm_guard.py
+    - tests/v1/kv_connector/unit/test_nixl_connector_hma.py
+  commands:
+    - export VLLM_WORKER_MULTIPROC_METHOD=spawn
+    - pytest -v -s compile/test_config.py::test_inductor_invariant_policy_has_distinct_cache_key
+    - pytest -v -s kernels/fla/test_fla_layernorm_guard.py -k invariant_gated_norm
+    - pytest -v -s v1/kv_connector/unit/test_nixl_connector_hma.py -k derive_mamba_conv_split
+    - pytest -v -s v1/determinism/test_online_batch_invariance.py::test_qwen_gdn_speculative_prefix_replay_preserves_greedy_tokens
 
 - label: ":nvidia: (H100) Batch Invariance"
   key: batch-invariance-h100
