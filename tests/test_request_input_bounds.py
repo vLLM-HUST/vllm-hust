@@ -122,6 +122,53 @@ def test_routed_experts_offset_validated_before_engine_submission(offset):
     )
 
 
+def test_predicted_length_validated_before_engine_submission():
+    """Reject a malformed decode-length prediction before EngineCoreRequest exists.
+
+    ``predicted_length`` travels in ``SamplingParams.extra_args``; a string (or
+    any non-integer) must fail closed here - at the trusted boundary - instead
+    of crashing the scheduling path later.
+    """
+    processor = Mock(spec=InputProcessor)
+    processor.tokenizer = None
+    processor.generation_config_fields = {}
+    processor.renderer = Mock()
+    processor.renderer.get_eos_token_id.return_value = None
+    processor.vllm_config = Mock()
+    prompt = {"type": "token", "prompt_token_ids": [1, 2, 3]}
+
+    with pytest.raises(VLLMValidationError, match="predicted_length") as exc_info:
+        InputProcessor.process_inputs(
+            processor,
+            "invalid",
+            prompt,
+            SamplingParams(max_tokens=8, extra_args={"predicted_length": "64"}),
+            ("generate",),
+        )
+    assert exc_info.value.parameter == "predicted_length"
+
+
+@pytest.mark.parametrize("predicted", [0, 64, 10**6])
+def test_predicted_length_carried_into_engine_request(predicted):
+    """A valid prediction survives input processing into EngineCoreRequest."""
+    processor = Mock(spec=InputProcessor)
+    processor.tokenizer = None
+    processor.generation_config_fields = {}
+    processor.renderer = Mock()
+    processor.renderer.get_eos_token_id.return_value = None
+    processor.vllm_config = Mock()
+    prompt = {"type": "token", "prompt_token_ids": [1, 2, 3]}
+
+    request = InputProcessor.process_inputs(
+        processor,
+        "valid",
+        prompt,
+        SamplingParams(max_tokens=8, extra_args={"predicted_length": predicted}),
+        ("generate",),
+    )
+    assert request.predicted_length == predicted
+
+
 def _process_inputs_with_max_model_len(
     params: SamplingParams, max_model_len: int = 2048
 ):
