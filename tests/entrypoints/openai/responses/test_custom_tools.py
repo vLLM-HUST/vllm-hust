@@ -157,7 +157,9 @@ def test_request_lowers_custom_tools_and_inputs_for_function_renderers() -> None
         "name": "apply_patch",
     }
     assert request.vllm_custom_tool_names == {"apply_patch"}
+    assert request.vllm_original_tools is not None
     assert request.vllm_original_tools[0]["type"] == "custom"
+    assert isinstance(request.input, list)
     assert request.input[0]["type"] == "function_call_output"
 
 
