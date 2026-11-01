@@ -466,6 +466,17 @@ def reconstruct_serializable_fn_from_mega_artifact(
     is_encoder = state.get("is_encoder", False)
     compilation_config = vllm_config.compilation_config
 
+    # A backend may execute successfully without supporting standalone
+    # serialization. Older caches could silently omit those subgraphs.
+    missing = set(sym_shape_indices_map) - set(
+        standalone_compile_artifacts.submodule_names()
+    )
+    if missing:
+        raise ValueError(
+            "Incomplete mega AOT artifact: missing compiled submodules "
+            f"{sorted(missing)}"
+        )
+
     standalone_compile_artifacts.load_all()
 
     piecewise_submod_names = standalone_compile_artifacts.submodule_names()
