@@ -13,6 +13,7 @@ from unittest.mock import Mock
 import pytest
 import ray
 import torch
+from vllm.v1.worker.gpu_worker import AsyncIntermediateTensors
 
 from vllm.distributed import (
     broadcast_tensor_dict,
@@ -21,16 +22,52 @@ from vllm.distributed import (
     tensor_model_parallel_all_reduce,
     tensor_model_parallel_reduce_scatter,
 )
+from vllm.distributed.communication_provider import (
+    CommunicationProviderBase,
+    load_communication_provider,
+    run_collective,
+)
 from vllm.distributed.device_communicators import flashinfer_all_reduce
 from vllm.distributed.device_communicators.cuda_communicator import CudaCommunicator
 from vllm.distributed.parallel_state import GroupCoordinator, TensorMetadata
-from vllm.v1.worker.gpu_worker import AsyncIntermediateTensors
 
 from ..utils import (
     init_test_distributed_environment,
     multi_gpu_test,
     multi_process_parallel,
 )
+
+
+class _TestCommunicationProvider(CommunicationProviderBase):
+    def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
+        return input_ + 1
+
+
+def test_communication_provider_contract() -> None:
+    native = Mock()
+    provider = _TestCommunicationProvider(native, "tp")
+    input_ = torch.tensor([1])
+
+    result = run_collective(provider, "all_reduce", native.all_reduce, input_)
+    assert torch.equal(result, torch.tensor([2]))
+    native.all_reduce.assert_not_called()
+
+    native.all_gather.return_value = torch.tensor([1, 1])
+    result = run_collective(provider, "all_gather", native.all_gather, input_, 0)
+    assert torch.equal(result, torch.tensor([1, 1]))
+    native.all_gather.assert_called_once_with(input_, 0)
+    assert load_communication_provider(None, native, "tp") is None
+
+
+def test_communication_provider_failure_is_not_hidden() -> None:
+    class FailingProvider(_TestCommunicationProvider):
+        def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
+            raise RuntimeError("provider failed")
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        run_collective(
+            FailingProvider(Mock(), "tp"), "all_reduce", Mock(), torch.tensor([1])
+        )
 
 
 @ray.remote(num_gpus=1, max_calls=1)

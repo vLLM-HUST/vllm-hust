@@ -25,6 +25,7 @@ If you only need to use the distributed environment without model/pipeline
 
 import contextlib
 import gc
+import os
 import pickle
 import weakref
 from collections import deque, namedtuple
@@ -41,10 +42,22 @@ import torch
 import torch.distributed
 import torch.distributed._functional_collectives as funcol
 import torch.distributed._symmetric_memory
+import vllm.envs as envs
 from torch.distributed import Backend, ProcessGroup, Store
 from torch.distributed.constants import default_pg_timeout
+from vllm.logger import init_logger
+from vllm.utils.import_utils import resolve_obj_by_qualname
+from vllm.utils.network_utils import get_distributed_init_method
+from vllm.utils.system_utils import suppress_stdout
+from vllm.utils.torch_utils import (
+    direct_register_custom_op,
+)
 
-import vllm.envs as envs
+from vllm.distributed.communication_provider import (
+    CommunicationProviderBase,
+    load_communication_provider,
+    run_collective,
+)
 from vllm.distributed.device_communicators.base_device_communicator import (
     DeviceCommunicatorBase,
 )
@@ -53,13 +66,6 @@ from vllm.distributed.utils import (
     cpu_all_reduce_,
     create_tcp_store,
     get_cached_tcp_store_client,
-)
-from vllm.logger import init_logger
-from vllm.utils.import_utils import resolve_obj_by_qualname
-from vllm.utils.network_utils import get_distributed_init_method
-from vllm.utils.system_utils import suppress_stdout
-from vllm.utils.torch_utils import (
-    direct_register_custom_op,
 )
 
 if TYPE_CHECKING:
@@ -450,6 +456,7 @@ class GroupCoordinator:
     device_group: ProcessGroup  # group for device communication
     # device communicator (if use_device_communicator=True)
     device_communicator: DeviceCommunicatorBase | None
+    communication_provider: CommunicationProviderBase | None
     mq_broadcaster: Any | None  # shared memory broadcaster
 
     def __init__(
@@ -557,6 +564,16 @@ class GroupCoordinator:
                 unique_name=self.unique_name,
                 use_all2all=use_all2all,
             )
+        platform_provider = None
+        if self.device_communicator is not None:
+            platform_provider = getattr(
+                current_platform, "get_communication_provider_cls", lambda: None
+            )()
+        self.communication_provider = load_communication_provider(
+            os.environ.get("VLLM_HUST_COMMUNICATION_PROVIDER") or platform_provider,
+            self.device_communicator,
+            self.unique_name,
+        )
 
         from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
 
@@ -748,7 +765,12 @@ class GroupCoordinator:
     def _all_reduce_out_place(self, input_: torch.Tensor) -> torch.Tensor:
         if self.device_communicator is None:
             raise ValueError("No device communicator found")
-        return self.device_communicator.all_reduce(input_)
+        return run_collective(
+            self.communication_provider,
+            "all_reduce",
+            self.device_communicator.all_reduce,
+            input_,
+        )
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
         world_size = self.world_size
@@ -769,7 +791,13 @@ class GroupCoordinator:
     def _all_gather_out_place(self, input_: torch.Tensor, dim: int) -> torch.Tensor:
         if self.device_communicator is None:
             raise ValueError("No device communicator found")
-        return self.device_communicator.all_gather(input_, dim)
+        return run_collective(
+            self.communication_provider,
+            "all_gather",
+            self.device_communicator.all_gather,
+            input_,
+            dim,
+        )
 
     def all_gatherv(
         self,
@@ -820,7 +848,13 @@ class GroupCoordinator:
     def _reduce_scatter_out_place(self, input_: torch.Tensor, dim: int) -> torch.Tensor:
         if self.device_communicator is None:
             raise ValueError("No device communicator found")
-        return self.device_communicator.reduce_scatter(input_, dim)
+        return run_collective(
+            self.communication_provider,
+            "reduce_scatter",
+            self.device_communicator.reduce_scatter,
+            input_,
+            dim,
+        )
 
     def gather(
         self, input_: torch.Tensor, dst: int = 0, dim: int = -1
@@ -846,11 +880,15 @@ class GroupCoordinator:
         # Bypass the function if we are using only 1 GPU.
         if self.world_size == 1:
             return input_
-        # Broadcast.
-        torch.distributed.broadcast(
-            input_, src=self.ranks[src], group=self.device_group
+        if self.device_communicator is None:
+            raise ValueError("No device communicator found")
+        return run_collective(
+            self.communication_provider,
+            "broadcast",
+            self.device_communicator.broadcast,
+            input_,
+            src,
         )
-        return input_
 
     def broadcast_object(self, obj: Any | None = None, src: int = 0):
         """Broadcast the input object.
@@ -1401,6 +1439,9 @@ class GroupCoordinator:
         # Device communicators can own collective workspaces whose teardown
         # uses these process groups (for example FlashInfer PCIe IPC barriers).
         # Release them before destroying the groups they depend on.
+        if self.communication_provider is not None:
+            self.communication_provider.destroy()
+            self.communication_provider = None
         if self.device_communicator is not None:
             self.device_communicator.destroy()
         if hasattr(self, "device_group"):
