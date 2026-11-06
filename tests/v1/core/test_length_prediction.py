@@ -10,15 +10,15 @@ is covered by ``test_scheduler.py``.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from vllm.exceptions import VLLMValidationError
+from vllm.sampling_params import SamplingParams
 from vllm.v1.core.length_prediction import (
     predicted_full_sequence_tokens,
     validate_predicted_length,
 )
+from vllm.v1.request import Request
 
 pytestmark = [pytest.mark.cpu_test, pytest.mark.skip_global_cleanup]
 
@@ -29,16 +29,19 @@ def make_request(
     output_tokens: int = 0,
     computed_tokens: int | None = None,
     max_tokens: int = 256,
-) -> SimpleNamespace:
-    """Minimal stand-in for the Request attributes the helper reads."""
-    return SimpleNamespace(
-        num_prompt_tokens=prompt_tokens,
-        num_tokens=prompt_tokens + output_tokens,
-        num_computed_tokens=(
-            computed_tokens if computed_tokens is not None else prompt_tokens
-        ),
-        max_tokens=max_tokens,
+) -> Request:
+    request = Request(
+        request_id="length-prediction-test",
+        prompt_token_ids=[0] * prompt_tokens,
+        sampling_params=SamplingParams(max_tokens=max_tokens),
+        pooling_params=None,
     )
+    if output_tokens:
+        request.append_output_token_ids([0] * output_tokens)
+    request.num_computed_tokens = (
+        computed_tokens if computed_tokens is not None else prompt_tokens
+    )
+    return request
 
 
 def test_no_prediction_reproduces_upstream_behaviour():

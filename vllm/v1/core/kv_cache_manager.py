@@ -542,7 +542,9 @@ class KVCacheManager:
                 external predictor, or None. When set and the request is still
                 prefilling, the full-sequence gate plans for the predicted
                 output as well, clamped to the request's own output budget and
-                to ``max_model_len``. None keeps upstream behaviour.
+                to ``max_model_len``. A reservation larger than the physical
+                KV pool falls back to native admission. None keeps upstream
+                behaviour.
 
         Blocks layout:
         ```
@@ -666,6 +668,28 @@ class KVCacheManager:
                 prefill_end=prefill_end,
             )
             required_blocks = num_blocks_to_allocate + watermark_blocks
+            if (
+                predicted_length is not None
+                and num_blocks_to_allocate > self.block_pool.num_gpu_blocks - 1
+            ):
+                # A prediction is advisory. If its reservation can never fit
+                # this instance, fall back to the native admission boundary
+                # instead of permanently blocking the waiting queue.
+                full_num_tokens = predicted_full_sequence_tokens(
+                    request, None, self.max_model_len
+                )
+                num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
+                    request_id=request.request_id,
+                    num_tokens=full_num_tokens,
+                    new_computed_blocks=new_computed_block_list,
+                    num_encoder_tokens=num_encoder_tokens,
+                    total_computed_tokens=total_computed_tokens,
+                    num_local_computed_tokens=num_local_computed_tokens,
+                    num_tokens_main_model=full_num_tokens,
+                    apply_admission_cap=True,
+                    prefill_end=prefill_end,
+                )
+                required_blocks = num_blocks_to_allocate + watermark_blocks
             if required_blocks > self.block_pool.get_num_free_blocks():
                 return None
 

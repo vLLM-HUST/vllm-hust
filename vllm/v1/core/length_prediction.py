@@ -27,6 +27,9 @@ and this module is where the scheduler stops trusting the caller:
   (``Request.max_tokens``), so a caller cannot reserve more output space than
   the request is allowed to generate in the first place;
 * the resulting sequence length is clamped to ``max_model_len``;
+* if that reservation still exceeds the instance's physical KV capacity,
+  admission ignores the prediction and uses the native current-sequence
+  boundary so an advisory estimate cannot permanently block the queue;
 * the prediction is only honoured while the request is still prefilling. Once
   the request has produced output its real length is known, and per-step
   decode allocation stays purely reactive, exactly as upstream.

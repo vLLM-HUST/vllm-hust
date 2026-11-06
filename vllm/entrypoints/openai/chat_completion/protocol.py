@@ -530,7 +530,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
             "part of the OpenAI API). Only affects admission when the "
             "scheduler's full-sequence reservation is enabled: the admission "
             "check then plans for it, clamped to max_tokens and to the "
-            "model's maximum length. None keeps upstream behaviour."
+            "model's maximum length. Estimates that exceed physical KV "
+            "capacity fall back to native admission. None keeps upstream "
+            "behaviour."
         ),
     )
 

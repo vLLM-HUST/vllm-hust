@@ -65,33 +65,85 @@ def test_no_prediction_matches_upstream_admission():
     assert request.status == RequestStatus.RUNNING
 
 
-def test_prediction_too_large_for_the_pool_delays_admission():
-    """A prediction that cannot fit holds the request back instead of thrashing.
+def test_impossible_prediction_does_not_block_queue_progress():
+    """An advisory prediction larger than the KV pool falls back to native.
 
-    Without a prediction a 32-token prompt enters a pool sized for a few
-    blocks. With a prediction covering a long output, the same pool cannot
-    promise the full sequence, so the gate refuses admission for this step.
+    Both the overpredicted request and the normal request behind it must make
+    progress across multiple scheduling rounds. Otherwise the first request
+    can permanently block the waiting queue even though both prompts fit.
     """
     requests = create_requests(
+        num_requests=2,
+        num_tokens=8,
+        block_size=BLOCK_SIZE,
+        max_tokens=512,
+        predicted_length=[512, None],
+    )
+    scheduler = make_scheduler(num_blocks=4)
+    for request in requests:
+        scheduler.add_request(request)
+
+    prefill_output = scheduler.schedule()
+    assert set(prefill_output.num_scheduled_tokens) == {
+        request.request_id for request in requests
+    }
+
+    scheduler.update_from_output(
+        prefill_output,
+        ModelRunnerOutput(
+            req_ids=[request.request_id for request in requests],
+            req_id_to_index={
+                request.request_id: index for index, request in enumerate(requests)
+            },
+            sampled_token_ids=[[0] for _ in requests],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
+    )
+    decode_output = scheduler.schedule()
+    assert set(decode_output.num_scheduled_tokens) == {
+        request.request_id for request in requests
+    }
+
+
+def test_feasible_prediction_waits_for_temporarily_unavailable_capacity():
+    """A feasible reserve still waits while another request holds its room."""
+    blocker = create_requests(
+        num_requests=1,
+        num_tokens=8,
+        block_size=BLOCK_SIZE,
+        max_tokens=8,
+        req_ids=["blocker"],
+    )[0]
+    predicted = create_requests(
         num_requests=1,
         num_tokens=32,
         block_size=BLOCK_SIZE,
         max_tokens=512,
         predicted_length=512,
+        req_ids=["predicted"],
+    )[0]
+    scheduler = make_scheduler(num_blocks=35)
+    scheduler.add_request(blocker)
+    prefill_output = scheduler.schedule()
+    scheduler.update_from_output(
+        prefill_output,
+        ModelRunnerOutput(
+            req_ids=[blocker.request_id],
+            req_id_to_index={blocker.request_id: 0},
+            sampled_token_ids=[[0]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[],
+        ),
     )
-    request = requests[0]
-    assert request.predicted_length == 512
 
-    # Enough blocks for the prompt (2) plus a couple, nowhere near 512 tokens
-    # (32 blocks) worth.
-    scheduler = make_scheduler(num_blocks=6)
-
-    scheduler.add_request(request)
+    scheduler.add_request(predicted)
     output = scheduler.schedule()
 
-    # Not admitted: the predicted full sequence cannot fit in this pool.
-    assert request.request_id not in output.num_scheduled_tokens
-    assert request.status == RequestStatus.WAITING
+    assert predicted.request_id not in output.num_scheduled_tokens
+    assert predicted.status == RequestStatus.WAITING
 
 
 def test_prediction_that_fits_is_admitted_normally():
