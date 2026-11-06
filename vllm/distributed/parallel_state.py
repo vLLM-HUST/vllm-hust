@@ -564,16 +564,7 @@ class GroupCoordinator:
                 unique_name=self.unique_name,
                 use_all2all=use_all2all,
             )
-        platform_provider = None
-        if self.device_communicator is not None:
-            platform_provider = getattr(
-                current_platform, "get_communication_provider_cls", lambda: None
-            )()
-        self.communication_provider = load_communication_provider(
-            os.environ.get("VLLM_HUST_COMMUNICATION_PROVIDER") or platform_provider,
-            self.device_communicator,
-            self.unique_name,
-        )
+        self.communication_provider = self._get_communication_provider()
 
         from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
 
@@ -603,6 +594,27 @@ class GroupCoordinator:
         # attribute init because some subclasses replicate ``__init__``
         # without calling ``super().__init__``.
         self._pending_isends: deque[tuple[list[Handle], list[torch.Tensor]]] = deque()
+
+    def _get_communication_provider(self) -> CommunicationProviderBase | None:
+        """Initialize lazily for platform subclasses that replace ``__init__``."""
+        if "communication_provider" not in self.__dict__:
+            self.communication_provider = None
+            if self.device_communicator is not None:
+                from vllm.platforms import current_platform
+
+                provider_getter = getattr(
+                    type(current_platform), "get_communication_provider_cls", None
+                )
+                platform_provider = (
+                    provider_getter() if callable(provider_getter) else None
+                )
+                self.communication_provider = load_communication_provider(
+                    os.environ.get("VLLM_HUST_COMMUNICATION_PROVIDER")
+                    or platform_provider,
+                    self.device_communicator,
+                    self.unique_name,
+                )
+        return self.communication_provider
 
     def make_sibling_device_group(self, group_desc: str | None = None) -> ProcessGroup:
         """Create a new device-side ProcessGroup with the same per-rank membership
@@ -766,7 +778,7 @@ class GroupCoordinator:
         if self.device_communicator is None:
             raise ValueError("No device communicator found")
         return run_collective(
-            self.communication_provider,
+            self._get_communication_provider(),
             "all_reduce",
             self.device_communicator.all_reduce,
             input_,
@@ -792,7 +804,7 @@ class GroupCoordinator:
         if self.device_communicator is None:
             raise ValueError("No device communicator found")
         return run_collective(
-            self.communication_provider,
+            self._get_communication_provider(),
             "all_gather",
             self.device_communicator.all_gather,
             input_,
@@ -849,7 +861,7 @@ class GroupCoordinator:
         if self.device_communicator is None:
             raise ValueError("No device communicator found")
         return run_collective(
-            self.communication_provider,
+            self._get_communication_provider(),
             "reduce_scatter",
             self.device_communicator.reduce_scatter,
             input_,
@@ -883,7 +895,7 @@ class GroupCoordinator:
         if self.device_communicator is None:
             raise ValueError("No device communicator found")
         return run_collective(
-            self.communication_provider,
+            self._get_communication_provider(),
             "broadcast",
             self.device_communicator.broadcast,
             input_,
@@ -1439,8 +1451,9 @@ class GroupCoordinator:
         # Device communicators can own collective workspaces whose teardown
         # uses these process groups (for example FlashInfer PCIe IPC barriers).
         # Release them before destroying the groups they depend on.
-        if self.communication_provider is not None:
-            self.communication_provider.destroy()
+        provider = self.__dict__.get("communication_provider")
+        if provider is not None:
+            provider.destroy()
             self.communication_provider = None
         if self.device_communicator is not None:
             self.device_communicator.destroy()

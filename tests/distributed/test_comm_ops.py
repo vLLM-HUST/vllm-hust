@@ -70,6 +70,45 @@ def test_communication_provider_failure_is_not_hidden() -> None:
         )
 
 
+def test_communication_provider_is_lazy_for_platform_subclass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ascend-style subclasses can replace __init__ without losing the provider."""
+    coordinator = object.__new__(GroupCoordinator)
+    coordinator.device_communicator = Mock()
+    coordinator.device_communicator.all_reduce.return_value = torch.tensor([2])
+    coordinator.unique_name = "tp:0"
+    provider = _TestCommunicationProvider(coordinator.device_communicator, "tp:0")
+    loader = Mock(return_value=provider)
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.load_communication_provider", loader
+    )
+    monkeypatch.setenv("VLLM_HUST_COMMUNICATION_PROVIDER", "example.Provider")
+
+    result = coordinator._all_reduce_out_place(torch.tensor([1]))
+
+    assert torch.equal(result, torch.tensor([2]))
+    loader.assert_called_once_with(
+        "example.Provider", coordinator.device_communicator, "tp:0"
+    )
+
+
+def test_communication_provider_skips_groups_without_device_communicator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator = object.__new__(GroupCoordinator)
+    coordinator.device_communicator = None
+    coordinator.unique_name = "pp:0"
+    loader = Mock()
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.load_communication_provider", loader
+    )
+    monkeypatch.setenv("VLLM_HUST_COMMUNICATION_PROVIDER", "example.Provider")
+
+    assert coordinator._get_communication_provider() is None
+    loader.assert_not_called()
+
+
 @ray.remote(num_gpus=1, max_calls=1)
 def all_reduce_test_worker(
     monkeypatch: pytest.MonkeyPatch,
