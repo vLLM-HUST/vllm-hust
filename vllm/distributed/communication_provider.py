@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Optional host contract for out-of-tree collective providers.
 
 Providers sit above the platform's existing ``DeviceCommunicatorBase``.  They
