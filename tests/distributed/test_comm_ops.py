@@ -13,14 +13,6 @@ from unittest.mock import Mock
 import pytest
 import ray
 import torch
-from vllm.distributed.communication_provider import (
-    CommunicationProviderBase,
-    load_communication_provider,
-    run_collective,
-)
-from vllm.distributed.device_communicators import flashinfer_all_reduce
-from vllm.distributed.device_communicators.cuda_communicator import CudaCommunicator
-from vllm.v1.worker.gpu_worker import AsyncIntermediateTensors
 
 from vllm.distributed import (
     broadcast_tensor_dict,
@@ -29,7 +21,15 @@ from vllm.distributed import (
     tensor_model_parallel_all_reduce,
     tensor_model_parallel_reduce_scatter,
 )
+from vllm.distributed.communication_provider import (
+    CommunicationProviderBase,
+    load_communication_provider,
+    run_collective,
+)
+from vllm.distributed.device_communicators import flashinfer_all_reduce
+from vllm.distributed.device_communicators.cuda_communicator import CudaCommunicator
 from vllm.distributed.parallel_state import GroupCoordinator, TensorMetadata
+from vllm.v1.worker.gpu_worker import AsyncIntermediateTensors
 
 from ..utils import (
     init_test_distributed_environment,

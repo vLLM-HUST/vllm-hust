@@ -42,9 +42,10 @@ import torch
 import torch.distributed
 import torch.distributed._functional_collectives as funcol
 import torch.distributed._symmetric_memory
-import vllm.envs as envs
 from torch.distributed import Backend, ProcessGroup, Store
 from torch.distributed.constants import default_pg_timeout
+
+import vllm.envs as envs
 from vllm.distributed.communication_provider import (
     CommunicationProviderBase,
     load_communication_provider,
