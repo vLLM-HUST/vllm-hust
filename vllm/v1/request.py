@@ -19,6 +19,7 @@ from vllm.v1.core.kv_materialization import (
     KVMaterializationRuntimeControl,
     parse_kv_materialization_runtime_control,
 )
+from vllm.v1.core.length_prediction import validate_predicted_length
 from vllm.v1.engine import (
     EngineCoreEvent,
     EngineCoreEventType,
@@ -85,6 +86,7 @@ class Request:
         reasoning_parser_kwargs: dict[str, Any] | None = None,
         abort_immediately: bool = False,
         kv_hints: KvHintsEnvelope | None = None,
+        predicted_length: int | None = None,
     ) -> None:
         self.request_id = request_id
         self.client_index = client_index
@@ -227,6 +229,22 @@ class Request:
         self.session_id = session_id
         self.kv_hints = kv_hints
 
+        # Predicted total output length (tokens) from an external length
+        # predictor, read before admission. None means no prediction and the
+        # scheduler behaves exactly as upstream. Both entry paths are
+        # validated here so a malformed value can never reach the scheduler.
+        self.predicted_length = validate_predicted_length(predicted_length)
+        if (
+            self.predicted_length is None
+            and sampling_params is not None
+            and sampling_params.extra_args is not None
+        ):
+            # A client-supplied prediction arrives via OpenAI extra_body and
+            # travels in extra_args, like kv_transfer_params.
+            self.predicted_length = validate_predicted_length(
+                sampling_params.extra_args.get("predicted_length")
+            )
+
         # True if this request is scheduled as a non-final prefill chunk.
         self.is_prefill_chunk = False
 
@@ -297,6 +315,7 @@ class Request:
             reasoning_ended=request.reasoning_ended,
             reasoning_parser_kwargs=request.reasoning_parser_kwargs,
             abort_immediately=request.abort_immediately,
+            predicted_length=request.predicted_length,
         )
 
     def append_output_token_ids(

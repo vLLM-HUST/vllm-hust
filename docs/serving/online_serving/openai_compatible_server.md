@@ -92,6 +92,27 @@ completion = client.chat.completions.create(
 )
 ```
 
+### Prediction-aware admission
+
+The HUST host accepts an optional `predicted_length` extra parameter for Chat
+and Completions requests. It is the expected total output length in tokens and
+only affects admission while full-sequence reservation is enabled (the
+default). It does not change the request's output limit.
+
+```python
+completion = client.chat.completions.create(
+    model="NousResearch/Meta-Llama-3-8B-Instruct",
+    messages=[{"role": "user", "content": "Summarize this document."}],
+    max_tokens=512,
+    extra_body={"predicted_length": 256},
+)
+```
+
+The scheduler clamps the estimate to `max_tokens` and the model's maximum
+length. If the resulting reservation cannot fit the instance's physical KV
+capacity, the estimate is ignored for admission so it cannot permanently
+block the waiting queue. Omit the parameter to keep native admission behavior.
+
 ## Extra HTTP Headers
 
 The `X-Request-Id` HTTP request header can be enabled with

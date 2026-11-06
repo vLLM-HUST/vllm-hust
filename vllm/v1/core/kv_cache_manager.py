@@ -22,6 +22,7 @@ from vllm.v1.core.kv_cache_utils import (
 from vllm.v1.core.kv_materialization import (
     emit_kv_materialization_runtime_event,
 )
+from vllm.v1.core.length_prediction import predicted_full_sequence_tokens
 from vllm.v1.core.single_type_kv_cache_manager import MambaManager
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
@@ -502,6 +503,7 @@ class KVCacheManager:
         reserved_blocks: int = 0,
         has_scheduled_reqs: bool = True,
         skip_zeroing_group_ids: tuple[int, ...] = (),
+        predicted_length: int | None = None,
     ) -> KVCacheBlocks | None:
         """Add slots for a request with new tokens to append.
 
@@ -536,6 +538,13 @@ class KVCacheManager:
                 this step, controls whether watermark is applied.
             skip_zeroing_group_ids: Groups whose external-token blocks will be
                 written by an async load and must not be zeroed concurrently.
+            predicted_length: Expected total output length in tokens from an
+                external predictor, or None. When set and the request is still
+                prefilling, the full-sequence gate plans for the predicted
+                output as well, clamped to the request's own output budget and
+                to ``max_model_len``. A reservation larger than the physical
+                KV pool falls back to native admission. None keeps upstream
+                behaviour.
 
         Blocks layout:
         ```
@@ -640,8 +649,12 @@ class KVCacheManager:
         prefill_end = max(request.num_prompt_tokens, request.num_tokens - 1)
 
         if full_sequence_must_fit:
-            # First check and fail if the full request sequence won't fit.
-            full_num_tokens = min(request.num_tokens, self.max_model_len)
+            # First check and fail if the full request sequence won't fit. A
+            # length prediction extends the plan by the predicted output, so
+            # admission becomes a prediction-aware reserve gate.
+            full_num_tokens = predicted_full_sequence_tokens(
+                request, predicted_length, self.max_model_len
+            )
 
             num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
                 request_id=request.request_id,
@@ -655,6 +668,28 @@ class KVCacheManager:
                 prefill_end=prefill_end,
             )
             required_blocks = num_blocks_to_allocate + watermark_blocks
+            if (
+                predicted_length is not None
+                and num_blocks_to_allocate > self.block_pool.num_gpu_blocks - 1
+            ):
+                # A prediction is advisory. If its reservation can never fit
+                # this instance, fall back to the native admission boundary
+                # instead of permanently blocking the waiting queue.
+                full_num_tokens = predicted_full_sequence_tokens(
+                    request, None, self.max_model_len
+                )
+                num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
+                    request_id=request.request_id,
+                    num_tokens=full_num_tokens,
+                    new_computed_blocks=new_computed_block_list,
+                    num_encoder_tokens=num_encoder_tokens,
+                    total_computed_tokens=total_computed_tokens,
+                    num_local_computed_tokens=num_local_computed_tokens,
+                    num_tokens_main_model=full_num_tokens,
+                    apply_admission_cap=True,
+                    prefill_end=prefill_end,
+                )
+                required_blocks = num_blocks_to_allocate + watermark_blocks
             if required_blocks > self.block_pool.get_num_free_blocks():
                 return None
 

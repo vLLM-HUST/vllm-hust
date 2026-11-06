@@ -42,17 +42,10 @@ import torch
 import torch.distributed
 import torch.distributed._functional_collectives as funcol
 import torch.distributed._symmetric_memory
-import vllm.envs as envs
 from torch.distributed import Backend, ProcessGroup, Store
 from torch.distributed.constants import default_pg_timeout
-from vllm.logger import init_logger
-from vllm.utils.import_utils import resolve_obj_by_qualname
-from vllm.utils.network_utils import get_distributed_init_method
-from vllm.utils.system_utils import suppress_stdout
-from vllm.utils.torch_utils import (
-    direct_register_custom_op,
-)
 
+import vllm.envs as envs
 from vllm.distributed.communication_provider import (
     CommunicationProviderBase,
     load_communication_provider,
@@ -66,6 +59,13 @@ from vllm.distributed.utils import (
     cpu_all_reduce_,
     create_tcp_store,
     get_cached_tcp_store_client,
+)
+from vllm.logger import init_logger
+from vllm.utils.import_utils import resolve_obj_by_qualname
+from vllm.utils.network_utils import get_distributed_init_method
+from vllm.utils.system_utils import suppress_stdout
+from vllm.utils.torch_utils import (
+    direct_register_custom_op,
 )
 
 if TYPE_CHECKING:
