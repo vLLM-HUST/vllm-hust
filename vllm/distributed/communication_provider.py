@@ -12,12 +12,12 @@ from types import NotImplementedType
 from typing import Any
 
 import torch
-from vllm.logger import init_logger
-from vllm.utils.import_utils import resolve_obj_by_qualname
 
 from vllm.distributed.device_communicators.base_device_communicator import (
     DeviceCommunicatorBase,
 )
+from vllm.logger import init_logger
+from vllm.utils.import_utils import resolve_obj_by_qualname
 
 logger = init_logger(__name__)
 
