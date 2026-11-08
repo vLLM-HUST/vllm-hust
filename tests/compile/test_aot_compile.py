@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import torch
+from torch._subclasses import FakeTensorMode
 
 import vllm.envs as envs
 import vllm.kernels  # noqa: F401 to register kernels
@@ -23,9 +24,11 @@ from vllm.compilation.backends import VllmBackend
 from vllm.compilation.caching import (
     StandaloneCompiledArtifacts,
     VllmSerializableFunction,
+    reconstruct_serializable_fn_from_mega_artifact,
 )
 from vllm.compilation.counter import compilation_counter
 from vllm.compilation.decorators import support_torch_compile
+from vllm.compilation.piecewise_backend import PiecewiseBackend
 from vllm.config import (
     CompilationConfig,
     CompilationMode,
@@ -105,6 +108,44 @@ def make_vllm_config() -> VllmConfig:
             backend="inductor",
         )
     )
+
+
+@pytest.mark.skip_global_cleanup
+def test_mega_aot_rejects_unserializable_range():
+    vllm_config = make_vllm_config()
+    compile_ranges = vllm_config.compilation_config.get_compile_ranges()
+    compiled_runnables = {str(r): lambda *args: args for r in compile_ranges}
+    backend = PiecewiseBackend(
+        graph=None,
+        vllm_config=vllm_config,
+        piecewise_compile_index=0,
+        total_piecewise_compiles=1,
+        sym_shape_indices=[],
+        vllm_backend=VllmBackend(vllm_config, use_aot_compile=False),
+        returns_tuple=False,
+        compiled_runnables=compiled_runnables,
+    )
+
+    with pytest.raises(ValueError, match="no callable serializer"):
+        backend.to_bytes()
+
+
+@pytest.mark.parametrize("present", [[], ["submod_0"]])
+@pytest.mark.skip_global_cleanup
+def test_mega_aot_rejects_missing_submodules_before_loading(present):
+    artifacts = StandaloneCompiledArtifacts()
+    for name in present:
+        artifacts.insert(name, "range", b"not loaded")
+
+    with pytest.raises(ValueError, match="missing compiled submodules"):
+        reconstruct_serializable_fn_from_mega_artifact(
+            state={"prefix": "eagle_head"},
+            standalone_compile_artifacts=artifacts,
+            vllm_config=make_vllm_config(),
+            sym_shape_indices_map={"submod_0": [0], "submod_1": [0]},
+            returns_tuple_map={"submod_0": False, "submod_1": False},
+            fake_mode=FakeTensorMode(),
+        )
 
 
 @contextmanager
